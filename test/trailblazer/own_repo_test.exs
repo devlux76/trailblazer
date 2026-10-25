@@ -44,6 +44,23 @@ defmodule Trailblazer.OwnRepoTest do
     refute Workspace.own_repo?(System.tmp_dir!())
   end
 
+  test "identity survives a history rewrite: an unrelated root with our mix.exs is refused" do
+    dir = Path.join(System.tmp_dir!(), "tb-rewrite-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+
+    try do
+      File.cp!("mix.exs", Path.join(dir, "mix.exs"))
+      git = fn args -> {_, 0} = System.cmd("git", ["-c", "core.hooksPath=/dev/null"] ++ args, cd: dir) end
+      git.(["init", "-q"])
+      git.(["add", "mix.exs"])
+      git.(["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "new root"])
+      assert Workspace.own_repo?(dir)
+      assert {:error, :own_repo} = Workspace.open(dir, "rewrite-case")
+    after
+      File.rm_rf!(dir)
+    end
+  end
+
   test "run is refused before a case, preparation or worker exists", ctx do
     parent = self()
 

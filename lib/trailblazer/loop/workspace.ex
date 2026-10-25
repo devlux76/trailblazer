@@ -29,7 +29,7 @@ defmodule Trailblazer.Loop.Workspace do
     with true <- File.dir?(repo),
          {:ok, common} <- git(repo, ["rev-parse", "--path-format=absolute", "--git-common-dir"]),
          {:ok, roots} <- git(repo, ["rev-list", "--max-parents=0", "HEAD"]) do
-      own?(common, roots)
+      own?(repo, common, roots)
     else
       _ -> false
     end
@@ -40,7 +40,7 @@ defmodule Trailblazer.Loop.Workspace do
          {:ok, repo} <- git(repo, ["rev-parse", "--show-toplevel"]),
          {:ok, common} <- git(repo, ["rev-parse", "--path-format=absolute", "--git-common-dir"]),
          {:ok, roots} <- git(repo, ["rev-list", "--max-parents=0", "HEAD"]),
-         false <- own?(common, roots),
+         false <- own?(repo, common, roots),
          {:ok, base} <- git(repo, ["rev-parse", "HEAD"]),
          :ok <- File.mkdir_p(root()),
          path = Path.join(root(), case_id),
@@ -159,7 +159,7 @@ defmodule Trailblazer.Loop.Workspace do
   def prune(repo, older_than) when is_integer(older_than) do
     with {:ok, common} <- git(repo, ["rev-parse", "--path-format=absolute", "--git-common-dir"]),
          {:ok, roots} <- git(repo, ["rev-list", "--max-parents=0", "HEAD"]),
-         false <- own?(common, roots),
+         false <- own?(repo, common, roots),
          {:ok, text} <- git(repo, ["worktree", "list", "--porcelain", "-z"]) do
       text
       |> String.split("\0\0", trim: true)
@@ -196,8 +196,20 @@ defmodule Trailblazer.Loop.Workspace do
     end
   end
 
-  defp own?(common, roots),
-    do: common == @own_common or Enum.any?(String.split(roots), &(&1 in @own_roots))
+  # The root-commit check is fixed at compile time and a history rewrite defeats it
+  # (trailblazer:d5e9070), so identity also comes from the checked-out project:
+  # any HEAD whose mix.exs declares the :trailblazer application is this repository.
+  defp own?(repo, common, roots),
+    do:
+      common == @own_common or Enum.any?(String.split(roots), &(&1 in @own_roots)) or
+        trailblazer_project?(repo)
+
+  defp trailblazer_project?(repo) do
+    case git(repo, ["show", "HEAD:mix.exs"]) do
+      {:ok, mix} -> Regex.match?(~r/\bapp:\s*:trailblazer\b/, mix)
+      _ -> false
+    end
+  end
 
   defp validate(%{path: path, branch: branch}) do
     with true <- managed?(path, branch),
