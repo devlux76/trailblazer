@@ -349,8 +349,11 @@ defmodule Trailblazer.Vortex.Bridge do
 
   defp receive_message(event, policy, %{"type" => "task"} = message, _state) do
     with {:ok, task} <- Protocol.task(message, policy, event.peer),
-         {:ok, id, _} <- Store.admit(event.peer, event.room, message["request_id"], task) do
+         {planner, task} = Map.pop(task, :planner),
+         {:ok, id, fresh} <-
+           Store.admit(event.peer, event.room, message["request_id"], task, planner) do
       Events.subscribe({:case, id})
+      if planner && fresh == :new, do: Events.publish(:planner, {:assigned, id})
       :ok
     end
   end

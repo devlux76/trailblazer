@@ -57,7 +57,7 @@ defmodule Trailblazer.Vortex.Protocol do
 
   def task(%{"type" => "task", "payload" => payload}, %{role: role, repos: repos}, peer)
       when role in [:caller, :collaborator] do
-    with true <- Enum.all?(Map.keys(payload), &(&1 in ~w(repo request check files design))),
+    with true <- Enum.all?(Map.keys(payload), &(&1 in ~w(repo request check files design planner))),
          repo when is_binary(repo) <- payload["repo"],
          {:ok, repo} <- Files.canonical_path(repo),
          checks when is_list(checks) <- repos[repo],
@@ -68,22 +68,44 @@ defmodule Trailblazer.Vortex.Protocol do
          true <- is_list(files) and Enum.all?(files, &relative?/1),
          design <- Map.get(payload, "design", []),
          true <- is_list(design) and Enum.all?(design, &is_binary/1),
-         false <- Workspace.own_repo?(repo) do
-      {:ok,
-       %{
-         repo: repo,
-         request: request,
-         check: check,
-         files: files,
-         design: design,
-         from: "vortex:#{peer}"
-       }}
+         false <- Workspace.own_repo?(repo),
+         {:ok, planner} <- planner(payload["planner"], repo) do
+      task = %{
+        repo: repo,
+        request: request,
+        check: check,
+        files: files,
+        design: design,
+        from: "vortex:#{peer}"
+      }
+
+      {:ok, if(planner, do: Map.put(task, :planner, planner), else: task)}
     else
       _ -> {:error, :unauthorized_task}
     end
   end
 
   def task(_, _, _), do: {:error, :unauthorized_task}
+
+  # Optional planner card (trailblazer:9fa7ba4): a card of the same admitted
+  # repository, never a shared one, and an optional deadline. Nothing in it can
+  # name an executable or a state path.
+  defp planner(nil, _repo), do: {:ok, nil}
+
+  defp planner(%{"ref" => ref} = planner, repo) when is_binary(ref) do
+    seconds = Map.get(planner, "deadline_seconds")
+
+    with true <- Enum.all?(Map.keys(planner), &(&1 in ~w(ref deadline_seconds))),
+         [_, name] <- Regex.run(~r/\A([a-z0-9][a-z0-9_.-]*):[0-9a-f]{7,64}\z/, ref),
+         true <- name != "shared" and name == Path.basename(repo),
+         true <- seconds == nil or (is_integer(seconds) and seconds > 0) do
+      {:ok, %{ref: ref, deadline_ms: seconds && seconds * 1000}}
+    else
+      _ -> {:error, :bad_planner}
+    end
+  end
+
+  defp planner(_, _), do: {:error, :bad_planner}
 
   defp payload?("receipt", payload),
     do: Map.keys(payload) == ["message_id"] and id?(payload["message_id"])

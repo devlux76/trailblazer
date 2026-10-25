@@ -4,7 +4,7 @@ defmodule Trailblazer.Vortex.Store do
   alias Trailblazer.Loop.CaseRecord
   alias Trailblazer.Vortex.Protocol
 
-  def admit(peer, room, request_id, task) do
+  def admit(peer, room, request_id, task, planner \\ nil) do
     encoded = Jason.encode!(task)
 
     id =
@@ -44,6 +44,9 @@ defmodule Trailblazer.Vortex.Store do
             "INSERT INTO vortex_request (case_id,peer,room,request_id,task,state) VALUES (?,?,?,?,?,'waiting_resource')",
             [id, peer, room, request_id, encoded]
           )
+
+          # the card is stored with the case, before the accepted reply exists
+          if planner, do: Trailblazer.Planner.Companion.record(conn, id, planner)
 
           put(conn, id, peer, room, "accepted", request_id, %{
             "case" => id,
