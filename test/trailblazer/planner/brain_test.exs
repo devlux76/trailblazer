@@ -397,13 +397,14 @@ defmodule Trailblazer.Planner.BrainTest do
     refs = Path.join([state_dir, ".git", "refs", "bugs"])
     File.mkdir_p!(refs)
 
-    start_brain(ctx,
-      config: %{repos: %{state_dir => ["true"]}, planner: {"/bin/true", []}},
-      start_watcher: nil
-    )
+    brain =
+      start_brain(ctx,
+        config: %{repos: %{state_dir => ["true"]}, planner: {"/bin/true", []}},
+        start_watcher: nil
+      )
 
     eventually(fn -> count(ctx.log, :board) == 1 end)
-    Process.sleep(100)
+    eventually(fn -> Brain.status(brain).watcher == :ready end)
     File.write!(Path.join(refs, "fixture-ref"), "changed\n")
     eventually(fn -> count(ctx.log, :board) >= 2 end, 200)
     Process.sleep(100)

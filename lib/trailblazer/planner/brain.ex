@@ -170,7 +170,7 @@ defmodule Trailblazer.Planner.Brain do
   def handle_info({:file_event, worker, event}, state) do
     if watcher_pid(state) == worker do
       case event do
-        :ready -> noreply(state)
+        :ready -> noreply(%{state | watcher_ready: true})
         {:error, reason} -> noreply(%{state | watcher: {:down, reason}})
         _ -> noreply(request_cycle(state))
       end
