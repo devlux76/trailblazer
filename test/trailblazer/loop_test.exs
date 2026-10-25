@@ -143,8 +143,8 @@ defmodule Trailblazer.LoopTest do
     assert File.read!(Path.join(repo, "lib/greeting.ex")) == @greeting
     assert git(repo, ["rev-parse", "--abbrev-ref", "HEAD"]) == "main\n"
 
-    assert git(repo, ["log", "-1", "--format=%B", report.branch]) =~
-             "Trailblazer case #{report.case}"
+    # the request's first line is the whole message (trailblazer:6cccd98)
+    assert git(repo, ["log", "-1", "--format=%B", report.branch]) |> String.trim() == "Greet with a comma"
 
     # the tool call was answered and its answer sent back
     assert_received {:asked, _first, first_opts}
@@ -478,7 +478,30 @@ defmodule Trailblazer.LoopTest do
     script([reply(blocks_only), reply("PASS")])
     report = Loop.run(task(repo), opts)
     assert report.summary == "Changed lib/greeting.ex."
-    assert git(repo, ["log", "-1", "--format=%B", report.branch]) =~ "Changed lib/greeting.ex."
+    assert git(repo, ["log", "-1", "--format=%B", report.branch]) |> String.trim() == "Greet with a comma"
+  end
+
+  test "an over-long request line is never truncated into a commit; the work stays uncommitted",
+       %{repo: repo, opts: opts} do
+    script([reply(@fix), reply("PASS")])
+    long = String.duplicate("x", 250) <> " bug:abcdef1"
+    report = Loop.run(task(repo, %{request: long <> "\nDetails."}), opts)
+    assert report.status == :failed
+    assert report.summary =~ "over 255 characters"
+    assert report[:commit] == nil
+  end
+
+  test "worker commits run the repository's hooks, and a refusal is reported", %{
+    repo: repo,
+    opts: opts
+  } do
+    hook = Path.join([repo, ".git", "hooks", "commit-msg"])
+    File.write!(hook, "#!/bin/sh\necho 'refused by hook' >&2\nexit 1\n")
+    File.chmod!(hook, 0o755)
+    script([reply(@fix), reply("PASS")])
+    report = Loop.run(task(repo), opts)
+    assert report.status == :failed
+    assert report.summary =~ "refused by hook"
   end
 
   # Live T3 on sojourney: blocks alone and without fences; the summary was the

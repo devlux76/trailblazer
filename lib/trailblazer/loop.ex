@@ -605,14 +605,14 @@ defmodule Trailblazer.Loop do
         )
 
       true ->
-        message = "#{first_line(st.task.request)}\n\n#{explanation}\n\nTrailblazer case #{st.id}"
 
         evidence = tally(:check)
         current_tree = Lifecycle.tree(st.ws, tally(:changed))
 
         commit =
           if evidence.tree == current_tree do
-            with {:ok, _} <- Lifecycle.prepare_commit(st.id, current_tree, evidence),
+            with {:ok, message} <- commit_message(st.task.request),
+                 {:ok, _} <- Lifecycle.prepare_commit(st.id, current_tree, evidence),
                  do: workspace.commit(st.ws, message, tally(:changed))
           else
             {:error,
@@ -866,8 +866,18 @@ defmodule Trailblazer.Loop do
     |> String.slice(0, 500)
   end
 
-  defp first_line(text),
-    do: text |> String.trim() |> String.split("\n", parts: 2) |> hd() |> String.slice(0, 72)
+  # The request's first line is the whole commit message: the operator's hooks (run
+  # by Workspace.commit) require a bug:<id> in our repositories and cap the message at
+  # 255 characters, details living in the bug. Never truncate: a cut could drop the
+  # reference, so an over-long line leaves the work uncommitted.
+  @commit_limit 255
+  defp commit_message(request) do
+    line = request |> String.trim() |> String.split("\n", parts: 2) |> hd() |> String.trim()
+
+    if String.length(line) > @commit_limit,
+      do: {:error, "the request's first line is over #{@commit_limit} characters"},
+      else: {:ok, line}
+  end
 
   defp describe(reason) when is_binary(reason), do: reason
 

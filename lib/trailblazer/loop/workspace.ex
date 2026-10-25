@@ -90,17 +90,25 @@ defmodule Trailblazer.Loop.Workspace do
   def commit(ws, message, paths \\ :all) do
     with :ok <- validate(ws),
          {:ok, _} <- git(ws.path, ["add"] ++ pathspec(paths)),
-         {:ok, _} <-
-           git(ws.path, [
-             "-c",
-             "core.hooksPath=/dev/null",
-             "commit",
-             "--no-gpg-sign",
-             "-m",
-             message
-           ]),
+         {:ok, _} <- commit_with_hooks(ws.path, message),
          {:ok, sha} <- git(ws.path, ["rev-parse", "HEAD"]),
          do: {:ok, sha}
+  end
+
+  # Unlike every other git call here, the commit runs the repository's hooks: the
+  # operator's commit rules and UTC restamp apply to worker commits too
+  # (trailblazer:6cccd98). git-bug, which the commit-msg hook calls, is in ~/.local/bin.
+  defp commit_with_hooks(repo, message) do
+    path = Enum.join([Path.expand("~/.local/bin"), System.get_env("PATH", "")], ":")
+
+    case System.cmd("git", ["commit", "--no-gpg-sign", "-m", message],
+           cd: repo,
+           stderr_to_stdout: true,
+           env: [{"PATH", path}]
+         ) do
+      {_, 0} -> {:ok, :committed}
+      {text, _} -> {:error, {:git, String.trim(text)}}
+    end
   end
 
   defp pathspec(:all), do: ["--", ":/"]
