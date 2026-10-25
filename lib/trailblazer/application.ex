@@ -48,5 +48,5 @@ defmodule Trailblazer.Application do
 
   # Planner assignments are supervised here, not by a detached script (trailblazer:9fa7ba4).
   defp planner_children,
-    do: [{Task.Supervisor, name: Trailblazer.Planner.Tasks}, Trailblazer.Planner.Companion]
+    do: [Trailblazer.Planner.Supervisor]
 end

@@ -19,8 +19,8 @@ defmodule Trailblazer.Planner.Companion do
   """
   use GenServer
   require Logger
-  alias Trailblazer.{Backstop, CaseStore, Events}
-  alias Trailblazer.Loop.CaseRecord
+  alias Trailblazer.{Backstop, CaseStore, Config, Events}
+  alias Trailblazer.Loop.{CaseRecord, Check}
   alias Trailblazer.Vortex.Store
 
   @default_deadline_ms 4 * 60 * 60 * 1000
@@ -56,6 +56,7 @@ defmodule Trailblazer.Planner.Companion do
       planner: opts[:planner] || {Path.expand("~/.local/bin/planner"), []},
       tasks: opts[:tasks] || Trailblazer.Planner.Tasks,
       check_limit_ms: opts[:check_limit_ms] || @check_limit_ms,
+      mirror_limit_ms: opts[:mirror_limit_ms] || 60_000,
       running: %{},
       deadlines: %{}
     }
@@ -213,34 +214,41 @@ defmodule Trailblazer.Planner.Companion do
 
     with true <- is_binary(commit) and Regex.match?(~r/\A[0-9a-f]{40}\z/, commit),
          {:ok, ^commit} <- git(repo, ["rev-parse", "refs/heads/" <> branch]) do
-      root = Path.join(System.tmp_dir!(), "planner-verify-#{System.unique_integer([:positive])}")
+      root = Path.join([Config.get(:state_dir), "planner-verification", record.id])
 
       try do
-        with {:ok, _} <- git(repo, ["worktree", "add", "--detach", root, commit]) do
+        with :ok <- File.mkdir_p(Path.dirname(root)),
+             :ok <- remove_interrupted_worktree(repo, root),
+             {:ok, _} <- git(repo, ["worktree", "add", "--detach", root, commit]) do
           for dir <- ~w(node_modules deps),
               File.dir?(Path.join(repo, dir)),
               do: File.ln_s(Path.join(repo, dir), Path.join(root, dir))
 
-          seconds = limit |> div(1000) |> Integer.to_string()
+          result = Check.run(root, command, timeout: limit)
 
-          {out, code} =
-            System.cmd("timeout", [seconds, "bash", "-c", command],
-              cd: root,
-              stderr_to_stdout: true
-            )
-
-          tail = out |> String.slice(-900, 900) |> String.replace(root, "<verification-worktree>")
+          tail =
+            result.output_tail
+            |> String.slice(-900, 900)
+            |> String.replace(root, "<verification-worktree>")
 
           cond do
-            code != 0 ->
-              {:error, "Independent verification failed (exit #{code}): #{command}. #{tail}"}
-
-            dirty?(root) ->
-              {:error, "Independent verification changed tracked candidate files."}
+            result.status != :pass ->
+              {:error,
+               "Independent verification failed (#{result.status}, exit #{inspect(result.exit)}): #{command}. #{tail}"}
 
             true ->
-              {:ok,
-               "Independent verification passed (exit 0): #{command}. Candidate #{commit} on #{branch}; not merged. #{tail}"}
+              case git(root, ["status", "--porcelain", "--untracked-files=no"]) do
+                {:ok, ""} ->
+                  {:ok,
+                   "Independent verification passed (exit 0): #{command}. Candidate #{commit} on #{branch}; not merged. #{tail}"}
+
+                {:ok, _} ->
+                  {:error, "Independent verification changed tracked candidate files."}
+
+                {:error, reason} ->
+                  {:error,
+                   "Independent verification status failed: #{String.slice(reason, -300, 300)}"}
+              end
           end
         end
       after
@@ -248,6 +256,16 @@ defmodule Trailblazer.Planner.Companion do
       end
     else
       _ -> {:error, "The case's reported commit does not match its branch #{branch}."}
+    end
+  end
+
+  defp remove_interrupted_worktree(repo, root) do
+    existed = File.exists?(root)
+
+    case git(repo, ["worktree", "remove", "--force", root]) do
+      {:ok, _} -> :ok
+      {:error, _} when not existed -> :ok
+      {:error, reason} -> {:error, "Interrupted verification cleanup failed: #{reason}"}
     end
   end
 
@@ -265,7 +283,7 @@ defmodule Trailblazer.Planner.Companion do
         "block" -> ["--actor", "trailblazer", "block", row.ref, text]
       end
 
-    case run_planner(state.planner, args) do
+    case run_planner(state.planner, args, state.mirror_limit_ms) do
       :ok ->
         set(row.case_id, action, text)
 
@@ -287,16 +305,19 @@ defmodule Trailblazer.Planner.Companion do
     end
   end
 
-  defp run_planner({cmd, extra}, args) do
+  defp run_planner({cmd, extra}, args, limit) do
     path = Enum.join([Path.expand("~/.local/bin"), System.get_env("PATH", "")], ":")
+    command = Enum.map_join(["env", "PATH=" <> path, cmd] ++ extra ++ args, " ", &shell_quote/1)
 
-    case System.cmd(cmd, extra ++ args, stderr_to_stdout: true, env: [{"PATH", path}]) do
-      {_, 0} -> :ok
-      {out, code} -> {:error, "exit #{code}: #{String.slice(out, -300, 300)}"}
+    case Check.run(File.cwd!(), command, timeout: limit) do
+      %{status: :pass} -> :ok
+      result -> {:error, "#{result.status}: #{String.slice(result.output_tail, -300, 300)}"}
     end
   rescue
     error -> {:error, Exception.message(error)}
   end
+
+  defp shell_quote(value), do: "'" <> String.replace(value, "'", "'\\''") <> "'"
 
   defp case_status(id) do
     case CaseRecord.get(id, inline: false) do
@@ -307,13 +328,6 @@ defmodule Trailblazer.Planner.Companion do
 
   defp field(nil, _), do: nil
   defp field(map, key), do: Map.get(map, key) || Map.get(map, Atom.to_string(key))
-
-  defp dirty?(root),
-    do:
-      match?(
-        {:ok, out} when out != "",
-        git(root, ["status", "--porcelain", "--untracked-files=no"])
-      )
 
   defp git(dir, args) do
     case System.cmd("git", ["-c", "core.hooksPath=/dev/null"] ++ args,

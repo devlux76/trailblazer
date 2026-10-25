@@ -27,6 +27,7 @@ defmodule Trailblazer.Planner.CompanionTest do
     File.write!(cli, """
     #!/bin/sh
     [ -e #{dir}/fail ] && exit 1
+    [ -e #{dir}/hang ] && sleep 30
     printf '%s\\n' "$*" >> #{dir}/calls.log
     """)
 
@@ -38,7 +39,11 @@ defmodule Trailblazer.Planner.CompanionTest do
   defp repo(dir) do
     repo = Path.join(dir, "vortex")
     File.mkdir_p!(repo)
-    git = fn args -> {_, 0} = System.cmd("git", ["-c", "core.hooksPath=/dev/null"] ++ args, cd: repo) end
+
+    git = fn args ->
+      {_, 0} = System.cmd("git", ["-c", "core.hooksPath=/dev/null"] ++ args, cd: repo)
+    end
+
     git.(["init", "-q", "-b", "main"])
     File.write!(Path.join(repo, "a.txt"), "one\n")
     git.(["add", "."])
@@ -46,9 +51,19 @@ defmodule Trailblazer.Planner.CompanionTest do
     {repo, git}
   end
 
-  defp admit(repo, planner) do
-    task = %{repo: repo, request: "fix bug:abcdef1", check: "test -f a.txt", files: [], design: [], from: "vortex:caller"}
-    {:ok, id, :new} = Store.admit("caller", "room", "req-#{System.unique_integer([:positive])}", task, planner)
+  defp admit(repo, planner, check \\ "test -f a.txt") do
+    task = %{
+      repo: repo,
+      request: "fix bug:abcdef1",
+      check: check,
+      files: [],
+      design: [],
+      from: "vortex:caller"
+    }
+
+    {:ok, id, :new} =
+      Store.admit("caller", "room", "req-#{System.unique_integer([:positive])}", task, planner)
+
     id
   end
 
@@ -96,7 +111,10 @@ defmodule Trailblazer.Planner.CompanionTest do
     CaseRecord.close(id, %{case: id, status: :fixed, commit: String.trim(sha), summary: "ok"})
     Trailblazer.Events.publish({:case, id}, %{closed: true})
     eventually(fn -> row(id).state == "done" end)
-    assert calls(ctx.dir) =~ "--actor trailblazer done vortex:abcdef1 --evidence Independent verification passed (exit 0): test -f a.txt"
+
+    assert calls(ctx.dir) =~
+             "--actor trailblazer done vortex:abcdef1 --evidence Independent verification passed (exit 0): test -f a.txt"
+
     assert calls(ctx.dir) =~ "not merged"
     {list, 0} = System.cmd("git", ["worktree", "list"], cd: repo)
     assert length(String.split(list, "\n", trim: true)) == 1
@@ -139,9 +157,10 @@ defmodule Trailblazer.Planner.CompanionTest do
     CaseRecord.close(id, %{case: id, status: :fixed, commit: String.trim(sha), summary: "ok"})
 
     Trailblazer.CaseStore.transaction(fn conn ->
-      Exqlite.query!(conn, "UPDATE planner_assignment SET state = 'verifying' WHERE case_id = ?", [id],
-        timeout: :infinity
-      )
+      Exqlite.query!(
+        conn,
+        "UPDATE planner_assignment SET state = 'verifying' WHERE case_id = ?",
+        [id], timeout: :infinity)
     end)
 
     start(ctx)
@@ -152,14 +171,129 @@ defmodule Trailblazer.Planner.CompanionTest do
     policy = %{role: :collaborator, repos: %{"/tmp" => ["true"]}}
 
     msg = fn planner ->
-      %{"type" => "task", "payload" => %{"repo" => "/tmp", "request" => "r", "check" => "true", "planner" => planner}}
+      %{
+        "type" => "task",
+        "payload" => %{
+          "repo" => "/tmp",
+          "request" => "r",
+          "check" => "true",
+          "planner" => planner
+        }
+      }
     end
 
-    assert {:ok, %{planner: %{ref: "tmp:abcdef1"}}} = Protocol.task(msg.(%{"ref" => "tmp:abcdef1"}), policy, "p")
+    assert {:ok, %{planner: %{ref: "tmp:abcdef1"}}} =
+             Protocol.task(msg.(%{"ref" => "tmp:abcdef1"}), policy, "p")
+
     assert {:error, _} = Protocol.task(msg.(%{"ref" => "vortex:abcdef1"}), policy, "p")
     assert {:error, _} = Protocol.task(msg.(%{"ref" => "shared:abcdef1"}), policy, "p")
-    assert {:error, _} = Protocol.task(msg.(%{"ref" => "tmp:abcdef1", "exec" => "/bin/sh"}), policy, "p")
-    assert {:ok, task} = Protocol.task(Map.update!(msg.(nil), "payload", &Map.delete(&1, "planner")), policy, "p")
+
+    assert {:error, _} =
+             Protocol.task(msg.(%{"ref" => "tmp:abcdef1", "exec" => "/bin/sh"}), policy, "p")
+
+    assert {:ok, task} =
+             Protocol.task(
+               Map.update!(msg.(nil), "payload", &Map.delete(&1, "planner")),
+               policy,
+               "p"
+             )
+
     refute Map.has_key?(task, :planner)
+  end
+
+  test "a companion crash restarts its task group and kills old verification workers", ctx do
+    start_supervised!(
+      {Trailblazer.Planner.Supervisor,
+       name: :planner_group,
+       tasks: :planner_group_tasks,
+       companion_name: :planner_group_companion,
+       planner: {ctx.cli, []}}
+    )
+
+    old = Process.whereis(:planner_group_companion)
+    parent = self()
+
+    {:ok, worker} =
+      Task.Supervisor.start_child(:planner_group_tasks, fn ->
+        send(parent, :verification_started)
+        Process.sleep(:infinity)
+      end)
+
+    assert_receive :verification_started
+    monitor = Process.monitor(worker)
+    Process.exit(old, :kill)
+    assert_receive {:DOWN, ^monitor, :process, ^worker, _}, 2_000
+
+    eventually(fn ->
+      is_pid(Process.whereis(:planner_group_companion)) and
+        Process.whereis(:planner_group_companion) != old
+    end)
+
+    assert Task.Supervisor.children(:planner_group_tasks) == []
+  end
+
+  test "a hanging planner mirror is bounded so the companion remains responsive", ctx do
+    {repo, _} = repo(ctx.dir)
+    id = admit(repo, %{ref: "vortex:abcdef1", deadline_ms: nil})
+    File.write!(Path.join(ctx.dir, "hang"), "")
+    pid = start(ctx, mirror_limit_ms: 100)
+    CaseRecord.close(id, %{case: id, status: :failed, summary: "bounded mirror"})
+    Trailblazer.Events.publish({:case, id}, %{closed: true})
+    eventually(fn -> row(id).state == "mirror_block" end)
+    assert is_map(:sys.get_state(pid, 1_000))
+    assert row(id).state == "mirror_block"
+  end
+
+  test "a failed verification status read cannot be marked done", ctx do
+    {repo, git} = repo(ctx.dir)
+    id = admit(repo, %{ref: "vortex:abcdef1", deadline_ms: nil}, "rm .git")
+    git.(["branch", "trailblazer/" <> id])
+    {sha, 0} = System.cmd("git", ["rev-parse", "trailblazer/" <> id], cd: repo)
+    start(ctx)
+
+    CaseRecord.close(id, %{
+      case: id,
+      status: :fixed,
+      commit: String.trim(sha),
+      summary: "test status failure"
+    })
+
+    Trailblazer.Events.publish({:case, id}, %{closed: true})
+    eventually(fn -> row(id).state in ["done", "block"] end)
+    assert row(id).state == "block"
+    assert calls(ctx.dir) =~ "status"
+  end
+
+  test "recovery removes an interrupted verification worktree before checking again", ctx do
+    {repo, git} = repo(ctx.dir)
+    gate = Path.join(ctx.dir, "allow-check")
+    started = Path.join(ctx.dir, "check-started")
+    check = "touch #{started}; while [ ! -e #{gate} ]; do sleep 0.05; done; test -f a.txt"
+    id = admit(repo, %{ref: "vortex:abcdef1", deadline_ms: nil}, check)
+    git.(["branch", "trailblazer/" <> id])
+    {sha, 0} = System.cmd("git", ["rev-parse", "trailblazer/" <> id], cd: repo)
+
+    start_supervised!(
+      {Trailblazer.Planner.Supervisor,
+       name: :planner_group,
+       tasks: :planner_group_tasks,
+       companion_name: :planner_group_companion,
+       planner: {ctx.cli, []}}
+    )
+
+    CaseRecord.close(id, %{
+      case: id,
+      status: :fixed,
+      commit: String.trim(sha),
+      summary: "restart during check"
+    })
+
+    Trailblazer.Events.publish({:case, id}, %{closed: true})
+    eventually(fn -> File.exists?(started) end)
+    Process.exit(Process.whereis(:planner_group_companion), :kill)
+    File.write!(gate, "")
+    eventually(fn -> row(id).state == "done" end)
+    {list, 0} = System.cmd("git", ["worktree", "list", "--porcelain"], cd: repo)
+    assert length(Regex.scan(~r/^worktree /m, list)) == 1
   end
 end
