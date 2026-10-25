@@ -1,0 +1,44 @@
+# Trailblazer's core as a systemd user service.
+#
+# Build the release first (it bundles its own Erlang runtime and the
+# tree-sitter Port):
+#   cd ~/projects/trailblazer && MIX_ENV=prod mix release --overwrite
+# Each repository's git directory is watched through inotify (`sudo apt install
+# inotify-tools`); without it every request still reconciles from git first, and
+# `trailblazer status` says why under `watch_error`.
+# Install and start:
+#   cp deploy/trailblazer.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now trailblazer
+#
+# The API listens on 127.0.0.1 only; endpoint.json (url and token, mode 0600)
+# is written to ~/.local/share/trailblazer/.
+#
+# The node runs distributed on loopback only (trailblazer@127.0.0.1, epmd and
+# the distribution port bound to 127.0.0.1, the release's own cookie), so a
+# fix is loaded into the running service without a restart:
+#   deploy/hot-load.sh
+
+[Unit]
+Description=Trailblazer core: a repository's graph, vectors and trails
+After=network.target
+
+[Service]
+Type=exec
+WorkingDirectory=%h/projects/trailblazer
+# ripgrep (a snap on this machine) lists and searches files.
+Environment=PATH=/usr/local/bin:/usr/bin:/bin:/snap/bin
+Environment=RELEASE_DISTRIBUTION=name
+Environment=RELEASE_NODE=trailblazer@127.0.0.1
+Environment=ERL_EPMD_ADDRESS=127.0.0.1
+# File names are UTF-8 whatever locale the session has (without it the VM falls
+# back to latin1 and mangles non-ASCII paths). Distribution listens on loopback.
+Environment="ELIXIR_ERL_OPTIONS=+fnu -kernel inet_dist_use_interface {127,0,0,1}"
+ExecStart=%h/projects/trailblazer/_build/prod/rel/trailblazer/bin/trailblazer start
+# Only the VM gets SIGTERM; it closes its Ports (inotifywait, parsers) itself,
+# so a stop records no watcher_down anomalies. Leftovers are killed after it.
+KillMode=mixed
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

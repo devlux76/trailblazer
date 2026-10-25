@@ -1,0 +1,21 @@
+[package]
+name = "ts_port"
+version = "0.1.0"
+edition = "2024"
+
+# The tree-sitter parsers of JavaScript, TypeScript, Python, C, C++ and Go,
+# behind an Erlang Port: a parser crash costs this process and not the VM.
+# Trailblazer's own build copies the release binary to priv/ts_port.
+
+[dependencies]
+serde_json = "1.0.154"
+tree-sitter = "0.27.1"
+tree-sitter-c = "0.24.2"
+tree-sitter-cpp = "0.23.4"
+tree-sitter-go = "0.25.0"
+tree-sitter-javascript = "0.25.0"
+tree-sitter-python = "0.25.0"
+tree-sitter-typescript = "0.23.2"
+
+[profile.release]
+strip = true

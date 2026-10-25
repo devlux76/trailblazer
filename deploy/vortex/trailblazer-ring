@@ -1,0 +1,8 @@
+#!/bin/sh
+# Fixed model-free entry point: peer message text never becomes a command.
+# A failed/unavailable/busy API must leave VORTEX's durable mail queued.
+if "$HOME/.local/bin/trailblazer" vortex; then
+  exit 0
+else
+  exit 75
+fi

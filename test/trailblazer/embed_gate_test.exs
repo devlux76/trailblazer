@@ -1,0 +1,164 @@
+defmodule Trailblazer.EmbedGateTest do
+  use ExUnit.Case, async: true
+  alias Trailblazer.EmbedGate
+
+  test "a crashed permit holder releases the single permit" do
+    gate = start_supervised!({EmbedGate, name: nil})
+    :ok = EmbedGate.update(10, true, gate)
+    parent = self()
+
+    holder =
+      spawn(fn ->
+        :ok = EmbedGate.acquire(parent, gate)
+        send(parent, {:holding, self()})
+        receive do: (:finish -> :ok)
+      end)
+
+    assert_receive {:holding, ^holder}
+
+    next =
+      spawn(fn ->
+        :ok = EmbedGate.acquire(parent, gate)
+        send(parent, {:holding, self()})
+        EmbedGate.release(gate)
+      end)
+
+    refute_receive {:holding, ^next}, 30
+    Process.exit(holder, :kill)
+    assert_receive {:holding, ^next}, 1000
+  end
+
+  test "hold waits for the running batch, then goes ahead of every queued job" do
+    gate = start_supervised!({EmbedGate, name: nil})
+    :ok = EmbedGate.update(10, true, gate)
+    parent = self()
+
+    batch =
+      spawn(fn ->
+        :ok = EmbedGate.acquire(parent, gate)
+        send(parent, :batch_running)
+        receive do: (:finish -> EmbedGate.release(gate))
+      end)
+
+    assert_receive :batch_running
+
+    queued =
+      spawn(fn ->
+        :ok = EmbedGate.acquire(parent, gate)
+        send(parent, :queued_ran)
+      end)
+
+    eventually(fn -> EmbedGate.queued?(queued, gate) end)
+
+    model =
+      spawn(fn ->
+        :ok = EmbedGate.hold(gate)
+        send(parent, :held)
+        receive do: (:let_go -> :ok)
+      end)
+
+    refute_receive :held, 50
+    send(batch, :finish)
+    assert_receive :held, 1000
+    refute_receive :queued_ran, 50
+
+    # the holder exits without releasing: the gate is free again
+    send(model, :let_go)
+    assert_receive :queued_ran, 1000
+  end
+
+  test "a held gate is released by the holder" do
+    gate = start_supervised!({EmbedGate, name: nil})
+    :ok = EmbedGate.update(10, true, gate)
+    :ok = EmbedGate.hold(gate)
+    parent = self()
+
+    spawn(fn ->
+      :ok = EmbedGate.acquire(parent, gate)
+      send(parent, :ran)
+    end)
+
+    refute_receive :ran, 50
+    :ok = EmbedGate.release(gate)
+    assert_receive :ran, 1000
+  end
+
+  test "a dead waiting job cannot strand the queue" do
+    gate = start_supervised!({EmbedGate, name: nil})
+    :ok = EmbedGate.update(10, true, gate)
+    parent = self()
+    :ok = EmbedGate.acquire(parent, gate)
+    waiter = spawn(fn -> EmbedGate.acquire(parent, gate) end)
+    eventually(fn -> EmbedGate.queued?(waiter, gate) end)
+    Process.exit(waiter, :kill)
+    :ok = EmbedGate.release(gate)
+    :ok = EmbedGate.acquire(parent, gate)
+    :ok = EmbedGate.release(gate)
+  end
+
+  test "equal priorities drain the earlier watch first, regardless of enqueue order" do
+    gate = start_supervised!({EmbedGate, name: nil})
+    :ok = EmbedGate.update(0, false, gate)
+    :ok = EmbedGate.acquire(self(), gate)
+    parent = self()
+    earlier = owner(gate, parent)
+    assert_receive {:registered, ^earlier}
+    later = owner(gate, parent)
+    assert_receive {:registered, ^later}
+    send(later, :run)
+    send(earlier, :run)
+    eventually(fn -> EmbedGate.queued?(earlier, gate) and EmbedGate.queued?(later, gate) end)
+    :ok = EmbedGate.release(gate)
+    assert_receive {:admitted, ^earlier}
+    refute_receive {:admitted, ^later}, 30
+    send(earlier, :finish)
+    assert_receive {:admitted, ^later}
+    send(later, :finish)
+  end
+
+  test "a dead repository cannot reserve priority forever" do
+    gate = start_supervised!({EmbedGate, name: nil})
+    :ok = EmbedGate.update(0, false, gate)
+    parent = self()
+    owner = owner(gate, parent)
+    assert_receive {:registered, ^owner}
+
+    waiter =
+      spawn(fn ->
+        :ok = EmbedGate.acquire(parent, gate)
+        send(parent, :admitted)
+        EmbedGate.release(gate)
+      end)
+
+    eventually(fn -> EmbedGate.queued?(waiter, gate) end)
+    refute_receive :admitted, 30
+    Process.exit(owner, :kill)
+    assert_receive :admitted
+  end
+
+  defp owner(gate, parent) do
+    spawn(fn ->
+      :ok = EmbedGate.update(10, true, gate)
+      send(parent, {:registered, self()})
+      receive do: (:run -> :ok)
+      :ok = EmbedGate.acquire(self(), gate)
+      send(parent, {:admitted, self()})
+      receive do: (:finish -> :ok)
+      :ok = EmbedGate.update(10, false, gate)
+      :ok = EmbedGate.release(gate)
+    end)
+  end
+
+  defp eventually(check, tries \\ 100)
+  defp eventually(check, 0), do: assert(check.())
+
+  defp eventually(check, tries) do
+    if check.(),
+      do: :ok,
+      else:
+        (
+          Process.sleep(10)
+          eventually(check, tries - 1)
+        )
+  end
+end

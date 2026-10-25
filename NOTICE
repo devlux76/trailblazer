@@ -1,0 +1,6 @@
+Trailblazer (mirai-agent)
+Copyright 2026 the mirai-agent authors.
+
+Parts of this software are derived from Aider (https://github.com/Aider-AI/aider),
+Copyright Paul Gauthier and contributors, licensed under the Apache License, Version 2.0.
+Derived files say so in their module documentation and describe what was changed.
