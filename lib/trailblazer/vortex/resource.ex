@@ -14,10 +14,13 @@ defmodule Trailblazer.Vortex.Resource do
         )
       )
 
-  def acquire(id, server \\ __MODULE__), do: GenServer.call(server, {:acquire, id}, :infinity)
+  # `model` is the router model the holder runs (default `:code_model`): the
+  # idle check and the verified unload are about that model, never another.
+  def acquire(id, server \\ __MODULE__, model \\ nil),
+    do: GenServer.call(server, {:acquire, id, model || Config.get(:code_model)}, :infinity)
 
-  def release(lease, server \\ __MODULE__),
-    do: GenServer.call(server, {:release, lease}, :infinity)
+  def release(lease, server \\ __MODULE__, model \\ nil),
+    do: GenServer.call(server, {:release, lease, model || Config.get(:code_model)}, :infinity)
 
   @impl true
   def init(opts) do
@@ -27,16 +30,17 @@ defmodule Trailblazer.Vortex.Resource do
      %{
        lock: opts[:lock] || Path.expand("~/.local/state/local-ai/heavy.lock"),
        offline: opts[:offline] || (&offline?/0),
-       router: opts[:router] || (&router/1),
+       router: opts[:router] || (&router/2),
        held: nil
      }}
   end
 
   @impl true
-  def handle_call({:acquire, id}, _, %{held: nil} = s) do
+  def handle_call({:acquire, id, model}, _, %{held: nil} = s) do
     case take_lock(s) do
       {:ok, port} ->
-        if safe?(s) and s.router.(:models) in [:exclusive, :unloaded] and s.router.(:idle) == true do
+        if safe?(s) and route(s, :models, model) in [:exclusive, :unloaded] and
+             route(s, :idle, model) == true do
           lease = id
           {:reply, {:ok, lease}, %{s | held: {lease, port}}}
         else
@@ -49,29 +53,29 @@ defmodule Trailblazer.Vortex.Resource do
     end
   end
 
-  def handle_call({:acquire, _}, _, s), do: {:reply, :blocked, s}
+  def handle_call({:acquire, _, _}, _, s), do: {:reply, :blocked, s}
 
-  def handle_call({:release, lease}, from, %{held: {lease, nil}} = s),
-    do: handle_call({:release, lease}, from, %{s | held: nil})
+  def handle_call({:release, lease, model}, from, %{held: {lease, nil}} = s),
+    do: handle_call({:release, lease, model}, from, %{s | held: nil})
 
-  def handle_call({:release, lease}, from, %{held: nil} = s) do
+  def handle_call({:release, lease, model}, from, %{held: nil} = s) do
     # A durable bridge hold survives this process. Reclaim the kernel lock
     # before attempting cleanup; never unload a newer owner's model.
     case take_lock(s) do
-      {:ok, port} -> handle_call({:release, lease}, from, %{s | held: {lease, port}})
+      {:ok, port} -> handle_call({:release, lease, model}, from, %{s | held: {lease, port}})
       _ -> {:reply, {:error, :release_unconfirmed}, s}
     end
   end
 
-  def handle_call({:release, lease}, _, %{held: {lease, port}} = s) do
+  def handle_call({:release, lease, model}, _, %{held: {lease, port}} = s) do
     result =
       if safe?(s) do
-        case s.router.(:models) do
+        case route(s, :models, model) do
           :unloaded ->
             :ok
 
           :exclusive ->
-            if s.router.(:unload) == :ok and s.router.(:models) == :unloaded,
+            if route(s, :unload, model) == :ok and route(s, :models, model) == :unloaded,
               do: :ok,
               else: :error
 
@@ -90,7 +94,7 @@ defmodule Trailblazer.Vortex.Resource do
     end
   end
 
-  def handle_call({:release, _}, _, s), do: {:reply, {:error, :stale_lease}, s}
+  def handle_call({:release, _, _}, _, s), do: {:reply, {:error, :stale_lease}, s}
 
   # A dead lock holder invalidates the grant. Keep the logical hold fenced;
   # release can only succeed after a fresh lock and verified cleanup.
@@ -105,6 +109,10 @@ defmodule Trailblazer.Vortex.Resource do
   def terminate(_, _), do: :ok
 
   defp safe?(s), do: s.offline.() == true
+
+  # An injected router may ignore the model (arity 1).
+  defp route(%{router: router}, op, model) when is_function(router, 2), do: router.(op, model)
+  defp route(%{router: router}, op, _), do: router.(op)
 
   defp take_lock(s) do
     File.mkdir_p!(Path.dirname(s.lock))
@@ -165,14 +173,13 @@ defmodule Trailblazer.Vortex.Resource do
     end
   end
 
-  defp router(op) do
-    do_router(op)
+  defp router(op, model) do
+    do_router(op, model)
   rescue
     _ -> :error
   end
 
-  defp do_router(op) do
-    model = Config.get(:code_model)
+  defp do_router(op, model) do
     base = String.trim_trailing(Config.get(:code_model_url), "/v1")
 
     case op do
@@ -197,7 +204,7 @@ defmodule Trailblazer.Vortex.Resource do
         end
 
       :idle ->
-        case router(:models) do
+        case router(:models, model) do
           :unloaded ->
             true
 

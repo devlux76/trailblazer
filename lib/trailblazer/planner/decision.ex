@@ -1,8 +1,8 @@
 defmodule Trailblazer.Planner.Decision do
   @moduledoc """
   The advisory selection call: one short, deterministic, non-streaming request
-  to the existing local coding model, whose reply is a strict JSON choice
-  between listed cards and waiting.
+  to the local `planner_model` (by default the coding model), whose reply is
+  a strict JSON choice between listed cards and waiting.
 
   The URL must be the loopback `code_model_url`; the call is bounded by one
   Backstop (nothing here is retried or repaired — a bad, truncated or
@@ -55,7 +55,7 @@ defmodule Trailblazer.Planner.Decision do
 
       case Backstop.guard(
              :planner_decision,
-             Config.get(:code_model),
+             Config.get(:planner_model),
              limit,
              fn ->
                %{cards: length(cards)}
@@ -80,7 +80,7 @@ defmodule Trailblazer.Planner.Decision do
 
   defp body(cards) do
     %{
-      model: Config.get(:code_model),
+      model: Config.get(:planner_model),
       messages: [
         %{role: "system", content: @prompt},
         %{role: "user", content: Jason.encode!(%{cards: Enum.map(cards, & &1.context)})}

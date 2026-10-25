@@ -147,4 +147,36 @@ defmodule Trailblazer.Vortex.ResourceTest do
     assert {:ok, next} = Resource.acquire("b", restored)
     assert :ok = Resource.release(next, restored)
   end
+
+  test "every router check and the unload name the lease holder's model", c do
+    {:ok, seen} = Agent.start_link(fn -> [] end)
+    {:ok, loaded} = Agent.start_link(fn -> true end)
+
+    router = fn op, model ->
+      Agent.update(seen, &[{op, model} | &1])
+
+      case op do
+        :models -> if(Agent.get(loaded, & &1), do: :exclusive, else: :unloaded)
+        :idle -> true
+        :unload -> Agent.update(loaded, fn _ -> false end)
+      end
+    end
+
+    opts = Keyword.put(c.opts, :router, router)
+    server = start_supervised!({Resource, opts}, id: :model_resource)
+    stop_supervised!(Resource)
+
+    assert {:ok, lease} = Resource.acquire("planner", server, "bolt")
+    assert :ok = Resource.release(lease, server, "bolt")
+    assert {:unload, "bolt"} in Agent.get(seen, & &1)
+    assert Enum.all?(Agent.get(seen, & &1), fn {_, model} -> model == "bolt" end)
+
+    Agent.update(seen, fn _ -> [] end)
+    Agent.update(loaded, fn _ -> true end)
+    assert {:ok, lease} = Resource.acquire("bridge", server)
+    assert :ok = Resource.release(lease, server)
+    code_model = Trailblazer.Config.get(:code_model)
+    assert {:unload, code_model} in Agent.get(seen, & &1)
+    assert Enum.all?(Agent.get(seen, & &1), fn {_, model} -> model == code_model end)
+  end
 end

@@ -131,7 +131,7 @@ defmodule Trailblazer.Planner.Brain do
   def handle_call(:status, _, state) do
     {:reply,
      %{
-       model: Config.get(:code_model),
+       model: Config.get(:planner_model),
        state: state.state,
        watcher:
          case state.watcher do
@@ -566,13 +566,13 @@ defmodule Trailblazer.Planner.Brain do
   end
 
   defp decode_frame(payload) do
-    code_model = Config.get(:code_model)
+    planner_model = Config.get(:planner_model)
 
     with {:ok, json} <- Jason.decode(payload),
          "status_change" <- json["event"],
          %{"status" => "unloaded"} <- json["data"],
          model when is_binary(model) <- json["model"],
-         true <- model in [code_model, String.replace(code_model, ":", "-")] do
+         true <- model in [planner_model, String.replace(planner_model, ":", "-")] do
       :unload
     else
       _ -> nil
@@ -681,14 +681,24 @@ defmodule Trailblazer.Planner.Brain do
 
   # The real resource boundary: the lease is the caller's own id.
   defp acquire(id) do
-    case Trailblazer.Vortex.Resource.acquire(id) do
+    case Trailblazer.Vortex.Resource.acquire(
+           id,
+           Trailblazer.Vortex.Resource,
+           Config.get(:planner_model)
+         ) do
       :ok -> {:ok, id}
       {:ok, lease} -> {:ok, lease}
       :blocked -> :blocked
     end
   end
 
-  defp release(lease), do: Trailblazer.Vortex.Resource.release(lease)
+  defp release(lease),
+    do:
+      Trailblazer.Vortex.Resource.release(
+        lease,
+        Trailblazer.Vortex.Resource,
+        Config.get(:planner_model)
+      )
 
   defp format(term) when is_binary(term), do: String.slice(term, 0, 900)
   defp format(term), do: String.slice(inspect(term), 0, 900)

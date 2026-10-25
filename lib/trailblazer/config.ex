@@ -104,6 +104,8 @@ defmodule Trailblazer.Config do
   defp default(:loop_trail_tokens), do: 1500
   defp default(:code_model), do: "qwen3.6-35b-a3b:mtp-q4"
   defp default(:code_model_url), do: "http://127.0.0.1:8094/v1"
+  # The planner brain's model on the same router; its lease unloads this one.
+  defp default(:planner_model), do: get(:code_model)
   defp default(:code_model_max_tokens), do: 16_384
   # Backstops (design §13.2): set from measurements with a wide margin, so
   # firing means something is wrong. A model call can read an 11-minute
