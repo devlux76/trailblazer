@@ -19,7 +19,7 @@ defmodule Trailblazer.Planner.Companion do
   """
   use GenServer
   require Logger
-  alias Trailblazer.{CaseStore, Events}
+  alias Trailblazer.{Backstop, CaseStore, Events}
   alias Trailblazer.Loop.CaseRecord
   alias Trailblazer.Vortex.Store
 
@@ -56,7 +56,8 @@ defmodule Trailblazer.Planner.Companion do
       planner: opts[:planner] || {Path.expand("~/.local/bin/planner"), []},
       tasks: opts[:tasks] || Trailblazer.Planner.Tasks,
       check_limit_ms: opts[:check_limit_ms] || @check_limit_ms,
-      running: %{}
+      running: %{},
+      deadlines: %{}
     }
 
     Events.subscribe(:planner)
@@ -70,25 +71,18 @@ defmodule Trailblazer.Planner.Companion do
   def handle_info({:trailblazer_event, :planner, {:assigned, id}}, state),
     do: {:noreply, with_row(id, nil, state, &resume/2)}
 
-  def handle_info({:trailblazer_event, {:case, id}, %{closed: true}}, state),
-    do: {:noreply, with_row(id, "open", state, &closed/2)}
+  def handle_info({:trailblazer_event, {:case, id}, %{closed: true}}, state) do
+    state = disarm(state, id)
+    {:noreply, with_row(id, "open", state, &closed/2)}
+  end
 
-  def handle_info({:deadline, id}, state) do
-    {:noreply,
-     with_row(id, "open", state, fn row, state ->
-       if case_status(id) == "open" do
-         at = row.deadline_at |> DateTime.from_unix!(:millisecond) |> DateTime.to_iso8601()
-
-         finish(
-           row,
-           "block",
-           "No result by the deadline #{at}; investigate case #{id}. Not retried or cancelled.",
-           state
-         )
-       else
-         closed(row, state)
-       end
-     end)}
+  # The deadline is a Backstop (the only timer, design §13.2): its firing is
+  # an anomaly that starts an investigation, never a retry.
+  def handle_info({:backstop, ref, _anomaly}, state) do
+    case Enum.find(state.deadlines, fn {_, r} -> r == ref end) do
+      nil -> {:noreply, state}
+      {id, _} -> {:noreply, deadline(id, %{state | deadlines: Map.delete(state.deadlines, id)})}
+    end
   end
 
   # A verification task's result.
@@ -118,13 +112,32 @@ defmodule Trailblazer.Planner.Companion do
 
       {row, running} ->
         state = %{state | running: running}
-        {:noreply, finish(row, "block", "Independent verification crashed: #{inspect(reason)}", state)}
+
+        {:noreply,
+         finish(row, "block", "Independent verification crashed: #{inspect(reason)}", state)}
     end
   end
 
   def handle_info(_, state), do: {:noreply, state}
 
   ## Steps
+
+  defp deadline(id, state) do
+    with_row(id, "open", state, fn row, state ->
+      if case_status(id) == "open" do
+        at = row.deadline_at |> DateTime.from_unix!(:millisecond) |> DateTime.to_iso8601()
+
+        finish(
+          row,
+          "block",
+          "No result by the deadline #{at}; investigate case #{id}. Not retried or cancelled.",
+          state
+        )
+      else
+        closed(row, state)
+      end
+    end)
+  end
 
   defp with_row(id, wanted, state, fun) do
     case Enum.find(list(), &(&1.case_id == id and (wanted == nil or &1.state == wanted))) do
@@ -139,16 +152,26 @@ defmodule Trailblazer.Planner.Companion do
     Events.subscribe({:case, row.case_id})
 
     if case_status(row.case_id) == "open" do
-      delay = max(row.deadline_at - System.os_time(:millisecond), 0)
-      Process.send_after(self(), {:deadline, row.case_id}, delay)
-      state
+      delay = max(row.deadline_at - System.os_time(:millisecond), 1)
+
+      if Map.has_key?(state.deadlines, row.case_id) do
+        state
+      else
+        ref =
+          Backstop.arm(:planner_deadline, row.case_id, {:ms, delay}, fn -> %{ref: row.ref} end)
+
+        put_in(state.deadlines[row.case_id], ref)
+      end
     else
       closed(row, state)
     end
   end
 
   defp resume(%{state: "verifying"} = row, state), do: verify(row, state)
-  defp resume(%{state: "mirror_" <> action} = row, state), do: mirror(row, action, row.note, state)
+
+  defp resume(%{state: "mirror_" <> action} = row, state),
+    do: mirror(row, action, row.note, state)
+
   defp resume(_row, state), do: state
 
   defp closed(row, state) do
@@ -194,13 +217,17 @@ defmodule Trailblazer.Planner.Companion do
 
       try do
         with {:ok, _} <- git(repo, ["worktree", "add", "--detach", root, commit]) do
-          for dir <- ~w(node_modules deps), File.dir?(Path.join(repo, dir)),
+          for dir <- ~w(node_modules deps),
+              File.dir?(Path.join(repo, dir)),
               do: File.ln_s(Path.join(repo, dir), Path.join(root, dir))
 
           seconds = limit |> div(1000) |> Integer.to_string()
 
           {out, code} =
-            System.cmd("timeout", [seconds, "bash", "-c", command], cd: root, stderr_to_stdout: true)
+            System.cmd("timeout", [seconds, "bash", "-c", command],
+              cd: root,
+              stderr_to_stdout: true
+            )
 
           tail = out |> String.slice(-900, 900) |> String.replace(root, "<verification-worktree>")
 
@@ -253,6 +280,13 @@ defmodule Trailblazer.Planner.Companion do
 
   ## Helpers
 
+  defp disarm(state, id) do
+    case Map.pop(state.deadlines, id) do
+      {nil, _} -> state
+      {ref, deadlines} -> Backstop.disarm(ref) && %{state | deadlines: deadlines}
+    end
+  end
+
   defp run_planner({cmd, extra}, args) do
     path = Enum.join([Path.expand("~/.local/bin"), System.get_env("PATH", "")], ":")
 
@@ -275,7 +309,11 @@ defmodule Trailblazer.Planner.Companion do
   defp field(map, key), do: Map.get(map, key) || Map.get(map, Atom.to_string(key))
 
   defp dirty?(root),
-    do: match?({:ok, out} when out != "", git(root, ["status", "--porcelain", "--untracked-files=no"]))
+    do:
+      match?(
+        {:ok, out} when out != "",
+        git(root, ["status", "--porcelain", "--untracked-files=no"])
+      )
 
   defp git(dir, args) do
     case System.cmd("git", ["-c", "core.hooksPath=/dev/null"] ++ args,
