@@ -96,6 +96,7 @@ and the caller does not watch the run.
 - **No inference lock.** The operator decided: `inference-lock` was a
   rule Claude and Codex made while benchmarking and is not part of
   Trailblazer. Trailblazer only schedules its own work (§6.6).
+  NOTE(question bug:9c45208): dedicated resource mode holds the inference-lock flock; is that the sanctioned exception?
 - **Toolchain:** Erlang/OTP and Elixir as mirai-agent pins them;
   dependencies at latest while developing, pinned at release.
 - **Licence:** the Aider-derived parts are Apache-2.0 and carry the
