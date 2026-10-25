@@ -227,6 +227,7 @@ defmodule Trailblazer.Vortex.Bridge do
 
       :blocked ->
         Store.released(id)
+      Events.publish(:planner, {:resource_released, id})
 
         if CaseRecord.get(id, inline: false).status == "open",
           do: Store.state(id, "waiting_resource")
@@ -249,6 +250,7 @@ defmodule Trailblazer.Vortex.Bridge do
 
     if result == :ok do
       Store.released(id)
+      Events.publish(:planner, {:resource_released, id})
       state |> Map.put(:blocked_release, nil) |> reconcile() |> flush() |> dispatch()
     else
       %{state | blocked_release: lease}

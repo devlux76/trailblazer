@@ -48,6 +48,11 @@ defmodule Trailblazer.Config do
       do: Trailblazer.Vortex.Settings.load!(path)
   end
 
+  defp from_system_env(:planner) do
+    if path = System.get_env("TRAILBLAZER_PLANNER_CONFIG"),
+      do: Trailblazer.Planner.Board.load_config!(path)
+  end
+
   defp from_system_env(:compact_roots) do
     case System.get_env("TRAILBLAZER_COMPACT_ROOTS") do
       nil -> nil
@@ -72,6 +77,8 @@ defmodule Trailblazer.Config do
   defp from_system_env(_key), do: nil
 
   defp default(:vortex), do: nil
+  # The planner brain is off until a config file admits repositories to it.
+  defp default(:planner), do: nil
 
   defp default(:state_dir), do: Path.join(System.user_home!(), ".local/share/trailblazer")
   defp default(:embed_url), do: "http://127.0.0.1:8091/v1/embeddings"

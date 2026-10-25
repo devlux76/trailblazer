@@ -23,3 +23,22 @@ assign command. Existing candidate verification remains unchanged.
 Bound prompts, tokens and calls. Model failure, bad JSON, stale selection,
 blocked cleanup or missing watcher stays visible and dispatches nothing.
 No paid fallback, self-repair, automatic candidate merge or backlog relabeling.
+
+## Live acceptance finding: asynchronous unload (b3aac14)
+
+Root ran a real Qwen fixture under Resource.acquire. It correctly chose p1
+stability work over p3 documentation. Resource.release initially returned
+release_unconfirmed even though unload succeeded asynchronously. A later
+observation found every model unloaded, and releasing the SAME lease then
+returned :ok. Keep this fence; do not weaken resource ownership.
+
+The installed llama router supports real status SSE at
+`http://127.0.0.1:8094/models/sse`. Frames are `data: JSON\n\n`, e.g.
+`{"model":"qwen3.6-35b-a3b-mtp-q4","event":"status_change","data":{"status":"unloaded","exit_code":0}}`.
+Use this actual event to wake cleanup after an initial unconfirmed release;
+no polling timer. Preserve a validated decision durably across cleanup so a
+normal asynchronous unload does not permanently lose every planning decision.
+Only dispatch that stored decision after cleanup and a fresh matching snapshot;
+never repeat model inference. Interrupted dispatch must still use the existing
+idempotent assignment gate. Source evidence: llama.cpp server-models.cpp
+1270-1295 (asynchronous unload), 1363-1380 (status event), 2170-2191 (SSE handler).

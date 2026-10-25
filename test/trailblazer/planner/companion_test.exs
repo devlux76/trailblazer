@@ -201,6 +201,18 @@ defmodule Trailblazer.Planner.CompanionTest do
     refute Map.has_key?(task, :planner)
   end
 
+  test "a successful mirror publishes a planner wake event", ctx do
+    {repo, _} = repo(ctx.dir)
+    id = admit(repo, %{ref: "vortex:abcdef1", deadline_ms: nil})
+    start(ctx)
+    Trailblazer.Events.subscribe(:planner)
+    CaseRecord.close(id, %{case: id, status: :failed, summary: "mirrored"})
+    Trailblazer.Events.publish({:case, id}, %{closed: true})
+    eventually(fn -> row(id).state == "block" end)
+
+    assert_receive {:trailblazer_event, :planner, {:mirrored, "vortex:abcdef1", "block"}}
+  end
+
   test "a companion crash restarts its task group and kills old verification workers", ctx do
     start_supervised!(
       {Trailblazer.Planner.Supervisor,

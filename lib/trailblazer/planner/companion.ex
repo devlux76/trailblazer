@@ -286,6 +286,8 @@ defmodule Trailblazer.Planner.Companion do
     case run_planner(state.planner, args, state.mirror_limit_ms) do
       :ok ->
         set(row.case_id, action, text)
+        # the brain (and any other planner listener) wakes on the durable state
+        Events.publish(:planner, {:mirrored, row.ref, action})
 
       {:error, reason} ->
         Logger.warning(

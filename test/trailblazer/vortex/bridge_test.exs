@@ -119,6 +119,37 @@ defmodule Trailblazer.Vortex.BridgeTest do
     assert Enum.any?(Store.outbox(), &(&1.case_id == id and &1.type == "report"))
   end
 
+  test "a confirmed resource release publishes a planner wake", ctx do
+    Agent.update(ctx.page, fn _ -> %{events: [event(ctx)], cursor: 1} end)
+    parent = self()
+    Trailblazer.Events.subscribe(:planner)
+
+    run = fn _, opts ->
+      id = opts[:case_id]
+      CaseRecord.close(id, %{case: id, status: :fixed, attempts: 1, summary: "fixed"})
+    end
+
+    runner = start_supervised!({Runner, name: nil, prepare: fn _ -> :ok end, run: run})
+
+    resource =
+      {fn id -> {:ok, id} end,
+       fn lease ->
+         send(parent, {:released, lease})
+         :ok
+       end}
+
+    bridge =
+      start_supervised!(
+        {Bridge,
+         name: nil, peers: ctx.peers, transport: ctx.transport, runner: runner, resource: resource}
+      )
+
+    assert :ok = Bridge.pump(bridge)
+    assert_receive {:released, lease}
+    assert_receive {:trailblazer_event, :planner, {:resource_released, id}}
+    assert String.starts_with?(lease, id <> ":")
+  end
+
   test "admission still answers while the model worker is busy", ctx do
     parent = self()
 
