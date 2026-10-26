@@ -285,17 +285,16 @@ reported as *unverified* and is not committed (Claude's call).
 
 ### 7.2 The model
 
-Qwen3.6-35B-A3B, Unsloth's MTP build
-(`~/models/qwen3.6-35b-a3b-mtp/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf`). The
-operator chose it for the best coding benchmarks in its weight class:
-fine for most daily tasks, if not perfect. Codex is adding it to the
-llama router (branch `codex/trailblazer-qwen-mtp`) with the settings
-from Unsloth's card:
+Spark-X2.6-4B, the publisher's Q4_K_M GGUF, selected by the operator
+for a compact coding-worker trial. The existing CPU llama router serves
+it as `spark-x2.6-4b:q4` with the model-card sampling parameters:
 
-- MTP, 2 draft tokens
-- temperature 0.6, top_p 0.95, top_k 20, min_p 0, presence penalty 0
-- 65,536 tokens of context
+- temperature 1.0, top_p 0.95, top_k 0 (disabled), min_p 0, presence penalty 0
+- repetition penalty 1.0
+- 16,384 tokens of runtime context; the model's maximum is 1,048,576
 - thinking on, `preserve_thinking` off
+
+Source: https://huggingface.co/XHToken/Spark-X2.6-4B
 
 Trailblazer reads the model name and base URL from configuration. The
 model's reasoning is recorded (§8) but never sent back to it.

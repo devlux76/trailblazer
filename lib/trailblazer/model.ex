@@ -113,9 +113,9 @@ defmodule Trailblazer.Model do
       stream: true,
       stream_options: %{include_usage: true},
       return_progress: true,
-      temperature: 0.6,
+      temperature: 1.0,
       top_p: 0.95,
-      top_k: 20,
+      top_k: 0,
       min_p: 0,
       presence_penalty: 0,
       chat_template_kwargs: %{preserve_thinking: false}

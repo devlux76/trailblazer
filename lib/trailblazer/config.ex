@@ -102,7 +102,7 @@ defmodule Trailblazer.Config do
   # a coding task that names its files gets them in full; its trail is for
   # what those files touch, and prompt tokens cost ~90 s per 1000 on the CPU
   defp default(:loop_trail_tokens), do: 1500
-  defp default(:code_model), do: "qwen3.6-35b-a3b:mtp-q4"
+  defp default(:code_model), do: "spark-x2.6-4b:q4"
   defp default(:code_model_url), do: "http://127.0.0.1:8094/v1"
   # The planner brain's model (Bolt + DFlash, small strict-JSON choices) on its
   # own server on the iGPU (Vulkan), so it never takes CPU from the coding model.

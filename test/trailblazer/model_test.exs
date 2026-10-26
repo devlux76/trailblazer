@@ -19,10 +19,10 @@ defmodule Trailblazer.ModelTest do
     Req.Test.stub(:model_happy, fn conn ->
       {:ok, body, conn} = Plug.Conn.read_body(conn)
       body = Jason.decode!(body)
-      assert body["model"] == "qwen3.6-35b-a3b:mtp-q4"
-      assert body["temperature"] == 0.6
+      assert body["model"] == "spark-x2.6-4b:q4"
+      assert body["temperature"] == 1.0
       assert body["top_p"] == 0.95
-      assert body["top_k"] == 20
+      assert body["top_k"] == 0
       assert body["min_p"] == 0
       assert body["presence_penalty"] == 0
       assert body["chat_template_kwargs"] == %{"preserve_thinking" => false}
