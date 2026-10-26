@@ -328,6 +328,26 @@ defmodule Trailblazer.Vortex.Bridge do
     flush(state, attempted, peer)
   end
 
+  # Conference messages are the research route's reply channel (trailblazer:4cc63df):
+  # they lift unaltered to the planner, and an authorized peer's message also says
+  # it recovered, which wakes a held card's retry. They are not protocol intake.
+  defp process_event(%{"kind" => "conference_message", "room" => "conference:" <> id} = raw, state) do
+    peer = value(raw, "peer")
+
+    Events.publish(:planner, {
+      :research_conference,
+      %{
+        "conference" => id,
+        "peer" => peer,
+        "body" => value(raw, "body"),
+        "cursor" => value(raw, "cursor")
+      }
+    })
+
+    if Map.has_key?(state.peers, peer),
+      do: Events.publish(:planner, {:research_recovered, peer})
+  end
+
   defp process_event(raw, state) do
     event = %{peer: value(raw, "peer"), room: value(raw, "room")}
 
