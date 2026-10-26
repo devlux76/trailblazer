@@ -26,12 +26,13 @@ defmodule Trailblazer.Planner.Supervisor do
         config ->
           children ++
             [
+              {Trailblazer.Planner.Research, [config: config]},
               {Trailblazer.Planner.Brain,
-               [
+               Keyword.merge(Keyword.get(opts, :brain_opts, []),
                  config: config,
                  tasks: tasks,
                  name: Keyword.get(opts, :brain_name, Trailblazer.Planner.Brain)
-               ]}
+               )}
             ]
       end
 

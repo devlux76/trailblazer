@@ -64,7 +64,7 @@ defmodule Trailblazer.Planner.Brain do
       board_fun: opts[:board] || (&Board.read/1),
       choose_fun: opts[:choose] || (&Decision.choose/1),
       assign_fun: opts[:assign] || (&Board.assign/2),
-      research_fun: opts[:research],
+      research_fun: opts[:research] || (&Trailblazer.Planner.Research.dispatch(opts[:config], &1)),
       acquire_fun: opts[:acquire] || (&acquire/1),
       release_fun: opts[:release] || (&release/1),
       status_fun: opts[:bridge_status] || (&Trailblazer.Vortex.Bridge.status/0),

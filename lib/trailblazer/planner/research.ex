@@ -29,7 +29,7 @@ defmodule Trailblazer.Planner.Research do
 
   def child_spec(opts) do
     %{
-      id: {__MODULE__, Keyword.get(opts, :name, __MODULE__)},
+      id: Keyword.get(opts, :name, __MODULE__),
       start: {__MODULE__, :start_link, [opts]},
       restart: :permanent,
       shutdown: 5_000
@@ -73,7 +73,7 @@ defmodule Trailblazer.Planner.Research do
   def init(opts) do
     state = %{
       config: opts[:config],
-      transport: opts[:transport],
+      transport: opts[:transport] || endpoint_transport(),
       run: opts[:run],
       label: opts[:label],
       reply_limit_ms: opts[:reply_limit_ms] || @reply_limit_ms,
@@ -197,6 +197,19 @@ defmodule Trailblazer.Planner.Research do
     Backstop.arm(:planner_research_reply, ref, {:ms, state.reply_limit_ms}, fn ->
       %{ref: ref, conference: conference}
     end)
+  end
+
+  # The application's own authenticated VORTEX endpoint carries the research
+  # route's ops; nothing here needs a peer credential. With no vortex at all
+  # the announce holds on :no_transport instead of crashing.
+  defp endpoint_transport do
+    case Trailblazer.Config.get(:vortex) do
+      %{endpoint: endpoint} when is_binary(endpoint) ->
+        &Trailblazer.Vortex.Transport.call(endpoint, &1, &2)
+
+      _ ->
+        nil
+    end
   end
 
   ## Reply intake: exactly one waiting row owns a conference, and only the
