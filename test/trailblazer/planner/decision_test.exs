@@ -34,13 +34,20 @@ defmodule Trailblazer.Planner.DecisionTest do
     test "accepts a listed ref with the trailblazer target and a short reason" do
       raw = ~s({"ref": "probe:aaaa11", "target": "trailblazer", "reason": "unblocks the rest"})
 
-      assert {:ok, %{ref: "probe:aaaa11", reason: "unblocks the rest"}} =
+      assert {:ok, %{ref: "probe:aaaa11", target: "trailblazer", reason: "unblocks the rest"}} =
                Decision.validate(raw, @cards)
     end
 
     test "accepts an explicit wait" do
       raw = ~s({"ref": null, "target": null, "reason": "nothing worth dispatching"})
       assert {:ok, :wait} = Decision.validate(raw, @cards)
+    end
+
+    test "accepts a research target for a listed ref" do
+      raw = ~s({"ref": "probe:bbbb22", "target": "research", "reason": "needs a plan"})
+
+      assert {:ok, %{ref: "probe:bbbb22", target: "research", reason: "needs a plan"}} =
+               Decision.validate(raw, @cards)
     end
 
     test "rejects unknown keys" do
@@ -111,6 +118,8 @@ defmodule Trailblazer.Planner.DecisionTest do
       assert body.temperature == 0
       assert body.stream == false
       assert body.response_format["type"] == "json_schema"
+      assert %{"target" => %{"enum" => ["trailblazer", nil, "research"]}} =
+               body.response_format["json_schema"]["schema"]["properties"]
       assert body.chat_template_kwargs == %{preserve_thinking: false, enable_thinking: false}
       assert [%{role: "system"}, %{role: "user", content: user}] = body.messages
       assert user =~ ~s("ref":"probe:aaaa11")

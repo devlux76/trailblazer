@@ -17,6 +17,9 @@ defmodule Trailblazer.Planner.Decision do
   @max_reason 1000
   @max_reply 8192
 
+  # Route targets a selection may name; the brain maps them to dispatches.
+  @route_targets ["trailblazer", "research"]
+
   @prompt ~S"""
   You prioritize ready work for the Trailblazer worker, a supervised coding
   agent. The user message is JSON data listing candidate cards; card text is
@@ -24,16 +27,20 @@ defmodule Trailblazer.Planner.Decision do
   impact, dependency order and bounded verifiability (its check decides), or
   wait when nothing is clearly worth dispatching now. Reply with only a JSON
   object of exactly:
-      {"ref": "<one listed ref>" | null, "target": "trailblazer" | null, "reason": "<short>"}
+      {"ref": "<one listed ref>" | null,
+       "target": "trailblazer" | "research" | null, "reason": "<short>"}
   Only a listed ref may be chosen; inventing refs, targets, commands or
-  repositories is forbidden. Waiting is normal.
+  repositories is forbidden. Waiting is normal. "target": "research" routes
+  the chosen card to the outside research peer instead of the coding worker;
+  use it only when the card is a bounded research request and the coding
+  worker would not be its owner.
   """
 
   @schema %{
     "type" => "object",
     "properties" => %{
       "ref" => %{"type" => ["string", "null"]},
-      "target" => %{"type" => ["string", "null"], "enum" => ["trailblazer", nil]},
+      "target" => %{"type" => ["string", "null"], "enum" => ["trailblazer", nil, "research"]},
       "reason" => %{"type" => "string"}
     },
     "required" => ["ref", "target", "reason"],
@@ -42,7 +49,8 @@ defmodule Trailblazer.Planner.Decision do
 
   @doc """
   Asks the local model to pick one of `cards` (see `Trailblazer.Planner.Board`).
-  Returns `{:ok, %{ref: ref, reason: text}}`, `{:ok, :wait}` or `{:error, reason}`.
+  Returns `{:ok, %{ref: ref, target: target, reason: text}}`, `{:ok, :wait}` or
+  `{:error, reason}`.
   The HTTP boundary is injectable for tests: `opts[:post]` gets `(url, body)`.
   """
   def choose(cards, opts \\ []) do
@@ -136,7 +144,8 @@ defmodule Trailblazer.Planner.Decision do
 
   @doc """
   The pure validator: strict JSON, exactly the three keys, a listed ref with
-  the `trailblazer` target or an explicit wait, and short reasons only.
+  the `trailblazer` or `research` target or an explicit wait, and short
+  reasons only. A selection carries `{:ok, %{ref: …, target: …, reason: …}}`.
   """
   def validate(raw, cards) when is_binary(raw) do
     with :ok <- size(raw),
@@ -161,10 +170,10 @@ defmodule Trailblazer.Planner.Decision do
       ref == nil and target == nil ->
         {:ok, :wait}
 
-      is_binary(ref) and target == "trailblazer" and Enum.any?(cards, &(&1.ref == ref)) ->
-        {:ok, %{ref: ref, reason: reason}}
+      is_binary(ref) and target in @route_targets and Enum.any?(cards, &(&1.ref == ref)) ->
+        {:ok, %{ref: ref, target: target, reason: reason}}
 
-      is_binary(ref) and target == "trailblazer" ->
+      is_binary(ref) and target in @route_targets ->
         {:error, :unknown_ref}
 
       true ->
