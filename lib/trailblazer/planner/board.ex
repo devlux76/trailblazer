@@ -18,10 +18,16 @@ defmodule Trailblazer.Planner.Board do
   """
 
   alias Trailblazer.{Files, Loop.Check}
+  alias Trailblazer.Planner.Route
 
   @limit 8
   @board_limit 100
   @limit_ms 60_000
+  @research_default %{"actor" => "research", "session" => "trailblazer"}
+  @actor ~r/\A[0-9A-Za-z][0-9A-Za-z_-]{0,31}\z/
+  @session ~r/\A[^\x00-\x1f]{1,128}\z/
+  # a bare peer identity: the base58 multihash the VORTEX CLI admits
+  @peer ~r/\A[1-9A-HJ-NP-Za-km-z]{10,}\z/
 
   # Bounds a reply under the check tail. A board reply is stripped to the
   # eligibility facts per card (ref, actor, priority); a show reply keeps its
@@ -60,7 +66,7 @@ defmodule Trailblazer.Planner.Board do
       print(json.dumps(d))
   '''
 
-  defstruct repos: %{}, planner: nil
+  defstruct repos: %{}, planner: nil, research: nil
 
   @doc """
   Loads the admitted map from the JSON file named by `path`: `"repos"` maps
@@ -125,7 +131,7 @@ defmodule Trailblazer.Planner.Board do
           {Path.expand("~/.local/bin/planner"), []}
       end
 
-    %__MODULE__{repos: repos, planner: planner}
+    %__MODULE__{repos: repos, planner: planner, research: research(config["research"])}
   end
 
   @doc """
@@ -184,6 +190,44 @@ defmodule Trailblazer.Planner.Board do
     end
   end
 
+  @doc """
+  Runs planner CLI `args` through the check runner (the same channel `read/2`
+  and `assign/3` use), so a research server's own commands stay bounded and
+  observed. `opts[:run]` replaces the runner.
+  """
+  def run(config, args, opts \\ []), do: runner(config, opts).(args)
+
+  # The optional `"research"` entry: the VORTEX peer id of the research agent,
+  # its planner actor and the conference session. The defaults keep to the
+  # planner CLI's own actor rules; anything else is refused at load.
+  defp research(nil), do: nil
+
+  defp research(%{"peer" => peer} = entry) when is_binary(peer) and peer != "" do
+    if Map.keys(entry) -- ["peer", "actor", "session"] != [] do
+      raise ArgumentError, "planner config research admits only peer, actor and session"
+    end
+
+    actor = entry["actor"]
+    session = entry["session"]
+
+    if actor != nil and not (is_binary(actor) and Regex.match?(@actor, actor)) do
+      raise ArgumentError, "planner config research actor must be a short name"
+    end
+
+    if session != nil and not (is_binary(session) and Regex.match?(@session, session)) do
+      raise ArgumentError, "planner config research session must be a plain name"
+    end
+
+    unless Regex.match?(@peer, peer) do
+      raise ArgumentError, "planner config research peer must be a bare peer identity"
+    end
+
+    entry = Map.merge(@research_default, entry)
+    %{peer: peer, actor: entry["actor"], session: entry["session"]}
+  end
+
+  defp research(_), do: raise(ArgumentError, "planner config research must name a peer")
+
   ## Candidates
 
   # The whole todo board of one admitted repository, then the show call
@@ -212,6 +256,10 @@ defmodule Trailblazer.Planner.Board do
          true <- shown["claim"] == nil,
          true <- is_list(shown["labels"]) and "dispatch:ready" in shown["labels"],
          title when is_binary(title) <- shown["title"] do
+      labels = shown["labels"]
+      body = shown["body"] || ""
+      files = of_files(Route.parse_files(body))
+
       [
         %{
           ref: ref,
@@ -221,10 +269,15 @@ defmodule Trailblazer.Planner.Board do
             "ref" => ref,
             "repo" => name,
             "title" => title,
-            "body" => shown["body"] || "",
+            "body" => body,
             "priority" => priority,
             "recent" => Enum.take(shown["recent"] || [], 3),
-            "check" => check
+            "check" => check,
+            # the routing facts (bug:4cc63df): the fetched labels and the
+            # routes the body's own markers admit to
+            "labels" => labels,
+            "files" => files,
+            "route" => to_string(Route.classify(%{"labels" => labels, "body" => body}))
           }
         }
       ]
@@ -232,6 +285,11 @@ defmodule Trailblazer.Planner.Board do
       _ -> []
     end
   end
+
+  # A parsed file list is context data even when empty; only a parse error has
+  # nothing on the card to name.
+  defp of_files({:ok, files}) when is_list(files), do: files
+  defp of_files(_), do: []
 
   # A cross-repository .bugs tree is "shared" on the planner's board.
   defp repo_name(path) do

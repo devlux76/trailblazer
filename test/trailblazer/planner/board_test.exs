@@ -93,6 +93,35 @@ defmodule Trailblazer.Planner.BoardTest do
     assert {:ok, %{fingerprint: ^fp}} = read(config)
   end
 
+  test "the context carries the routing facts the check reads", ctx do
+    ref =
+      card(ctx, "split the parser", @ready, """
+      Reset it.
+
+      Files: lib/parser.ex test/parser_test.exs
+      Acceptance: make test passes
+      """)
+
+    config = config(ctx, %{ctx.repo => ["make check"]})
+
+    assert {:ok, %{cards: [c]}} = read(config)
+    assert c.ref == ref
+    assert c.context["labels"] == @ready
+    assert c.context["files"] == ["lib/parser.ex", "test/parser_test.exs"]
+    assert c.context["route"] == "trailblazer"
+
+    labelled = card(ctx, "needs research first", ["dispatch:research", "dispatch:ready"])
+    assert {:ok, %{cards: cards}} = read(config)
+    research = Enum.find(cards, &(&1.ref == labelled))
+    assert research.context["route"] == "research"
+    assert research.context["files"] == []
+
+    body_ref = card(ctx, "half specified", @ready, "Files: lib/only.ex")
+    assert {:ok, %{cards: cards}} = read(config)
+    tie = Enum.find(cards, &(&1.ref == body_ref))
+    assert tie.context["route"] == "tie"
+  end
+
   test "the fingerprint follows the card's priority, check and context", ctx do
     ref = card(ctx, "priority matters", @ready)
     id = String.replace_prefix(ref, "probe:", "")
@@ -316,6 +345,54 @@ defmodule Trailblazer.Planner.BoardTest do
       File.write!(path, "not json")
       assert_raise ArgumentError, fn -> Board.load_config!(path) end
     end
+
+    test "an optional research entry names the peer, actor and session", ctx do
+      config =
+        config(ctx, %{ctx.repo => ["c"]}, %{"research" => %{"peer" => "12D3KooTestPeer"}})
+
+      assert config.research == %{
+               peer: "12D3KooTestPeer",
+               actor: "research",
+               session: "trailblazer"
+             }
+
+      config =
+        config(ctx, %{ctx.repo => ["c"]},
+          %{"research" => %{"peer" => "12D3KooTestPeer", "actor" => "probe", "session" => "work"}}
+        )
+
+      assert config.research == %{peer: "12D3KooTestPeer", actor: "probe", session: "work"}
+      assert config(ctx, %{ctx.repo => ["c"]}).research == nil
+    end
+
+    test "an invalid research entry is refused", ctx do
+      for research <- [
+            %{},
+            %{"peer" => 7},
+            %{"peer" => "p"},
+            %{"peer" => "p", "actor" => 7},
+            %{"peer" => "p", "actor" => "ok", "session" => 7},
+            %{"peer" => "p", "extra" => true}
+          ] do
+        path = Path.join(ctx.dir, "bad.json")
+        File.write!(path, Jason.encode!(%{"repos" => %{ctx.repo => ["c"]}, "research" => research}))
+        assert_raise ArgumentError, ~r/research/, fn -> Board.load_config!(path) end
+      end
+    end
+  end
+
+  test "run/2 executes planner arguments through the injected runner", ctx do
+    parent = self()
+
+    assert %{status: :pass} =
+             Board.run(config(ctx, %{}), ["show", "probe:abc"],
+               run: fn args ->
+                 send(parent, {:run_args, args})
+                 %{status: :pass}
+               end
+             )
+
+    assert_receive {:run_args, ["show", "probe:abc"]}
   end
 
   test "TRAILBLAZER_PLANNER_CONFIG loads the runtime config; unset means disabled", ctx do
