@@ -1,10 +1,10 @@
 defmodule Trailblazer.Planner.Decision do
   @moduledoc """
   The advisory selection call: one short, deterministic, non-streaming request
-  to the local `planner_model` (by default the coding model), whose reply is
+  to the local `planner_model` (Bolt, on its own iGPU server), whose reply is
   a strict JSON choice between listed cards and waiting.
 
-  The URL must be the loopback `code_model_url`; the call is bounded by one
+  The URL must be the loopback `planner_model_url`; the call is bounded by one
   Backstop (nothing here is retried or repaired — a bad, truncated or
   oversized reply is an error the brain journals and shows). `validate/2` is
   pure: the model can only name a listed reference, never a command, target
@@ -46,7 +46,7 @@ defmodule Trailblazer.Planner.Decision do
   The HTTP boundary is injectable for tests: `opts[:post]` gets `(url, body)`.
   """
   def choose(cards, opts \\ []) do
-    url = Config.get(:code_model_url)
+    url = Config.get(:planner_model_url)
 
     if loopback?(url) do
       post = opts[:post] || (&http_post/2)

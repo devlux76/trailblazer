@@ -385,7 +385,7 @@ defmodule Trailblazer.Planner.BrainTest do
     eventually(fn -> match?(%{state: "wait"}, Journal.latest()) end)
 
     status = Brain.status(brain)
-    assert status.model == Trailblazer.Config.get(:code_model)
+    assert status.model == Trailblazer.Config.get(:planner_model)
     assert status.watcher == :off
     assert %{state: "wait"} = status.last
     refute Map.has_key?(status, :token)
