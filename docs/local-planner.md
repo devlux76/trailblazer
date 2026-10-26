@@ -49,3 +49,24 @@ Completion produces an independently checked candidate branch. It does not
 merge or deploy it. Producer interruption before admission and complete
 assignment generations remain shared:40dbd63; automatic integration remains
 trailblazer:1beebca. Source issue: trailblazer:cf1c78a.
+
+## The research route
+
+A ready card goes to the research route when its body lacks the `Files:` and
+`Acceptance:` markers, or when it carries `dispatch:research`; the local
+model only breaks ties and validates research targets. Research dispatches
+to the research server in the planner group, which claims the card for the
+research actor, opens one VORTEX conference per card, posts a brief with the
+card text, the admitted repositories and the reply contract, subscribes for
+a day and wakes the peer.
+
+The peer answers with exactly one JSON object. Valid children become
+`planner add` cards with the `dispatch:ready` label on their named
+repositories and the parent is noted; invalid or off-board children drop
+with a reason into the journal, and if nothing survived the parent is
+blocked for the operator. A card is researched at most once afterwards.
+Without a reply inside three hours the card holds with its claim kept; it
+retries when the peer resurfaces, the board changes, or any other planner
+event wakes the brain. Children completing wake nothing; the parent is
+marked done by the planner mirror only once every child is done. Source
+issue: trailblazer:4cc63df.

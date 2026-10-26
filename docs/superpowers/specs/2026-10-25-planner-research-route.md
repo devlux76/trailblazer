@@ -60,3 +60,30 @@ Routing check (both outcomes and the tie-break), schema validation of the
 target, the research lease being serial, hold on each error class and retry
 only on an event, child validation and the parent's state, the once-only
 research rule, and Trailblazer dispatch continuing while research is held.
+
+## Decisions (as implemented, trailblazer:4cc63df)
+
+- The deterministic route check (`Trailblazer.Planner.Route`) runs before the
+  model: both markers → trailblazer, one marker → tie, none or the
+  `dispatch:research` label → research. The model only breaks ties and picks
+  targets for research cards.
+- `Research.dispatch/2` answers `:ok` under one serial job; every refusal is
+  a tuple (`{:error, :busy}`, `{:error, {:researched, state}}`,
+  `{:error, {:claim, tail}}`, `{:error, {step, reason}}`,
+  `{:error, :not_configured}`) and the same text lands in the brain's
+  journal: dispatched, unavailable, assign_failed.
+- A per-child add failure drops that child into the journal instead of
+  holding the whole reply; the surviving children still count.
+- The reply backstop is three hours (one armed timer per waiting job).
+  Firing holds the card with its claim kept and frees the slot; a reply that
+  lands later changes nothing. `{:research_recovered, peer}` or any other
+  planner event wakes the brain's cycle, which re-dispatches held cards.
+- The brief is one JSON object (card text, admitted repo basenames and the
+  reply contract); it never names a model. The bridge lifts conference
+  messages unaltered to the planner; the direct-room protocol intake is
+  untouched.
+- The brain's production default dispatch is the named research server in
+  the planner group (`Trailblazer.Planner.Supervisor`), and the server's own
+  transport is the application's authenticated VORTEX endpoint. Research
+  never takes the local inference resource: a worker busy for Trailblazer
+  stays independent (the brain gates as before).
