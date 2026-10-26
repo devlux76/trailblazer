@@ -24,7 +24,7 @@ defmodule Trailblazer.Planner.Brain do
   use GenServer
   require Logger
   alias Trailblazer.{Backstop, Config, Events}
-  alias Trailblazer.Planner.{Board, Companion, Decision, Journal}
+  alias Trailblazer.Planner.{Board, Companion, Decision, Journal, Route}
   alias Trailblazer.Watcher.Inotify
 
   # An unload takes seconds; one minute without the router's announcement
@@ -64,6 +64,7 @@ defmodule Trailblazer.Planner.Brain do
       board_fun: opts[:board] || (&Board.read/1),
       choose_fun: opts[:choose] || (&Decision.choose/1),
       assign_fun: opts[:assign] || (&Board.assign/2),
+      research_fun: opts[:research],
       acquire_fun: opts[:acquire] || (&acquire/1),
       release_fun: opts[:release] || (&release/1),
       status_fun: opts[:bridge_status] || (&Trailblazer.Vortex.Bridge.status/0),
@@ -370,7 +371,7 @@ defmodule Trailblazer.Planner.Brain do
     case state.release_fun.(lease) do
       :ok ->
         if is_binary(row.ref) and row.ref != "" do
-          retain(fp, row.ref, row.reason, snapshot, state)
+          retain(fp, row.ref, nil, row.reason, snapshot, state)
         else
           Journal.record(fp, "", "interrupted", row.ref, row.reason)
         end
@@ -400,25 +401,25 @@ defmodule Trailblazer.Planner.Brain do
 
         case state.choose_fun.(cards) do
           {:ok, :wait} ->
-            conclude(fp, held, "wait", nil, "waited", state)
+            conclude(fp, held, "wait", nil, nil, "waited", state)
 
-          {:ok, %{ref: ref, reason: reason}} ->
+          {:ok, %{ref: ref, reason: reason} = choice} ->
             Journal.record(fp, held, "intent", ref, reason)
-            conclude(fp, held, :decided, ref, reason, state)
+            conclude(fp, held, :decided, ref, Map.get(choice, :target), reason, state)
 
           {:error, reason} ->
-            conclude(fp, held, "error", nil, format(reason), state)
+            conclude(fp, held, "error", nil, nil, format(reason), state)
         end
     end
   end
 
   # Releases the lease, then journals the outcome — or, for a decision,
   # verifies currency against a fresh board read and dispatches.
-  defp conclude(fp, lease, outcome, ref, reason, state) do
+  defp conclude(fp, lease, outcome, ref, target, reason, state) do
     case state.release_fun.(lease) do
       :ok ->
         if outcome == :decided do
-          retain(fp, ref, reason, snapshot_now(state), state)
+          retain(fp, ref, target, reason, snapshot_now(state), state)
         else
           Journal.record(fp, "", outcome, ref, reason)
         end
@@ -443,21 +444,67 @@ defmodule Trailblazer.Planner.Brain do
   # A decision dispatches only when the fresh board reads exactly as it did
   # when the decision was made: the same fingerprint and the same ref. An
   # edited context or check is a different board, however similar the ref.
-  defp retain(fp, ref, reason, fresh, state) do
+  # The card's own routing check decides the destination: a `dispatch:research`
+  # or markerless card never reaches the coder, a checked card never carries
+  # the model's research choice, and only a tie is decided by the model's
+  # target. Trailblazer dispatch never waits for research; Research holds
+  # its own errors.
+  defp retain(fp, ref, target, reason, fresh, state) do
     card = fresh && Enum.find(fresh[:cards] || [], &(&1.ref == ref))
 
     cond do
       fresh == nil ->
         Journal.record(fp, "", "interrupted", ref, reason)
 
-      fresh[:fingerprint] == fp and card != nil and not worker_busy?(state) ->
-        case state.assign_fun.(state.config, card) do
-          :ok -> Journal.record(fp, "", "dispatched", ref, reason)
-          {:error, why} -> Journal.record(fp, "", "assign_failed", ref, format(why))
+      fresh[:fingerprint] == fp and card != nil ->
+        route = retention_route(Route.classify(card.context), target)
+
+        cond do
+          route == :trailblazer and target == "research" ->
+            Journal.record(
+              fp,
+              "",
+              "error",
+              ref,
+              "model target research contradicts the checked card"
+            )
+
+          route == :research ->
+            research_dispatch(fp, ref, card, reason, state)
+
+          not worker_busy?(state) ->
+            case state.assign_fun.(state.config, card) do
+              :ok -> Journal.record(fp, "", "dispatched", ref, reason)
+              {:error, why} -> Journal.record(fp, "", "assign_failed", ref, format(why))
+            end
+
+          true ->
+            Journal.record(fp, "", "stale", ref, reason)
         end
 
       true ->
         Journal.record(fp, "", "stale", ref, reason)
+    end
+  end
+
+  # A tie decidable only by the model's target: a "research" pick makes its
+  # route research; every other pick keeps the checked route.
+  defp retention_route(:tie, "research"), do: :research
+  defp retention_route(route, _target), do: route
+
+  # OpenCode runs one research job at a time: a busy reply is retried by a
+  # later event, any other failure holds the card in Research.
+  defp research_dispatch(fp, ref, card, reason, state) do
+    case state.research_fun do
+      nil ->
+        Journal.record(fp, "", "assign_failed", ref, "research is not configured")
+
+      fun ->
+        case fun.(card) do
+          :ok -> Journal.record(fp, "", "dispatched", ref, reason)
+          {:error, :busy} -> Journal.record(fp, "", "unavailable", ref, "research is busy")
+          {:error, other} -> Journal.record(fp, "", "assign_failed", ref, format(other))
+        end
     end
   end
 
@@ -625,7 +672,7 @@ defmodule Trailblazer.Planner.Brain do
   # A retained decision from a previous run resumes in its own task.
   defp resume(pending, state) do
     start_cycle(state, fn ->
-      retain(pending.fp, pending.ref, pending.reason, snapshot_now(state), state)
+      retain(pending.fp, pending.ref, nil, pending.reason, snapshot_now(state), state)
       :ok
     end)
   end

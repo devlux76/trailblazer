@@ -48,9 +48,22 @@ defmodule Trailblazer.Planner.BrainTest do
       ref: ref,
       check: check,
       repo: "/tmp/repo",
-      context: %{"ref" => ref, "title" => "t", "priority" => "p1", "body" => "b", "recent" => []}
+      context: %{
+        "ref" => ref,
+        "title" => "t",
+        "priority" => "p1",
+        # both markers: the deterministic routing check says trailblazer
+        "body" => "Files: lib/x.ex\nAcceptance: make test",
+        "recent" => []
+      }
     }
   end
+
+  defp research_card(ref \\ "probe:aaaa11"), do: card(ref) |> put_body("needs investigation")
+  defp tie_card(ref \\ "probe:aaaa11"), do: card(ref) |> put_body("Files: lib/x.ex")
+
+  defp put_body(%{context: context} = card, body),
+    do: %{card | context: Map.put(context, "body", body)}
 
   defp snapshot(cards, n), do: %{fingerprint: "fp-#{n}", cards: cards}
 
@@ -580,5 +593,133 @@ defmodule Trailblazer.Planner.BrainTest do
     assert count(ctx.log, :release) == 1
     assert Process.alive?(Process.whereis(:brain_crash))
     assert Task.Supervisor.children(:brain_crash_tasks) == []
+  end
+
+  test "a research card dispatches through the research fun, never the coder", ctx do
+    start_brain(ctx,
+      board: static_board(ctx.log, snapshot([research_card()], 1)),
+      choose:
+        choose_fun(ctx.log, {:ok, %{ref: "probe:aaaa11", target: "research", reason: "needs a plan"}}),
+      research: fn given ->
+        push(ctx.log, {:research, given.ref})
+        :ok
+      end
+    )
+
+    eventually(fn -> match?(%{state: "dispatched"}, Journal.latest()) end)
+    assert [{:research, "probe:aaaa11"}] = logged(ctx.log, :research)
+    assert count(ctx.log, :assign) == 0
+  end
+
+  test "a research card keeps its route even when the model names the coder", ctx do
+    start_brain(ctx,
+      board: static_board(ctx.log, snapshot([research_card()], 1)),
+      choose:
+        choose_fun(ctx.log, {:ok, %{ref: "probe:aaaa11", target: "trailblazer", reason: "r"}}),
+      research: fn given ->
+        push(ctx.log, {:research, given.ref})
+        :ok
+      end
+    )
+
+    eventually(fn -> match?(%{state: "dispatched"}, Journal.latest()) end)
+    assert [{:research, "probe:aaaa11"}] = logged(ctx.log, :research)
+    assert count(ctx.log, :assign) == 0
+  end
+
+  test "a checked card with a model research target journals an error and dispatches nothing", ctx do
+    start_brain(ctx,
+      board: static_board(ctx.log, snapshot([card()], 1)),
+      choose:
+        choose_fun(ctx.log, {:ok, %{ref: "probe:aaaa11", target: "research", reason: "r"}}),
+      research: fn given ->
+        push(ctx.log, {:research, given.ref})
+        :ok
+      end
+    )
+
+    eventually(fn -> match?(%{state: "error"}, Journal.latest()) end)
+    assert logged(ctx.log, :research) == []
+    assert count(ctx.log, :assign) == 0
+  end
+
+  test "the model target decides a tie: a research target calls the research fun", ctx do
+    start_brain(ctx,
+      board: static_board(ctx.log, snapshot([tie_card()], 1)),
+      choose:
+        choose_fun(ctx.log, {:ok, %{ref: "probe:aaaa11", target: "research", reason: "r"}}),
+      research: fn given ->
+        push(ctx.log, {:research, given.ref})
+        :ok
+      end
+    )
+
+    eventually(fn -> match?(%{state: "dispatched"}, Journal.latest()) end)
+    assert [{:research, "probe:aaaa11"}] = logged(ctx.log, :research)
+    assert count(ctx.log, :assign) == 0
+  end
+
+  test "the model target decides a tie: a trailblazer target assigns the worker", ctx do
+    start_brain(ctx,
+      board: static_board(ctx.log, snapshot([tie_card()], 1)),
+      choose:
+        choose_fun(ctx.log, {:ok, %{ref: "probe:aaaa11", target: "trailblazer", reason: "r"}}),
+      research: fn given ->
+        push(ctx.log, {:research, given.ref})
+        :ok
+      end
+    )
+
+    eventually(fn -> match?(%{state: "dispatched"}, Journal.latest()) end)
+    assert logged(ctx.log, :research) == []
+    assert count(ctx.log, :assign) == 1
+  end
+
+  test "a busy research lease journals unavailable and a later event retries it", ctx do
+    start_brain(ctx,
+      board: static_board(ctx.log, snapshot([research_card()], 1)),
+      choose:
+        choose_fun(ctx.log, {:ok, %{ref: "probe:aaaa11", target: "research", reason: "r"}}),
+      research: fn given ->
+        push(ctx.log, {:research, given.ref})
+        {:error, :busy}
+      end
+    )
+
+    eventually(fn -> match?(%{state: "unavailable"}, Journal.latest()) end)
+    assert count(ctx.log, :assign) == 0
+
+    Trailblazer.Events.publish(:planner, {:mirrored, "probe:zzzz", "block"})
+    eventually(fn -> count(ctx.log, :research) == 2 end)
+  end
+
+  test "a failed research dispatch holds the card and a trailblazer card keeps flowing", ctx do
+    board =
+      queue([
+        snapshot([research_card()], 1),
+        snapshot([research_card()], 1),
+        snapshot([card()], 2)
+      ])
+
+    start_brain(ctx,
+      board: board_fun(ctx.log, board),
+      choose:
+        choose_fun(ctx.log, {:queue, queue([
+          {:ok, %{ref: "probe:aaaa11", target: "research", reason: "r"}},
+          {:ok, %{ref: "probe:aaaa11", target: "trailblazer", reason: "r"}}
+        ])}),
+      research: fn given ->
+        push(ctx.log, {:research, given.ref})
+        {:error, :vortex_refused}
+      end
+    )
+
+    eventually(fn -> match?(%{state: "assign_failed"}, Journal.latest()) end)
+    assert count(ctx.log, :assign) == 0
+
+    Trailblazer.Events.publish(:planner, {:mirrored, "probe:zzzz", "block"})
+
+    eventually(fn -> match?(%{state: "dispatched"}, Journal.latest()) end)
+    assert count(ctx.log, :assign) == 1
   end
 end
