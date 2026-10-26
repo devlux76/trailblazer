@@ -105,7 +105,8 @@ defmodule Trailblazer.Planner.DecisionTest do
       assert_receive {:posted, url, body}
       assert String.ends_with?(url, "/chat/completions")
       assert String.starts_with?(url, "http://127.0.0.1")
-      assert body.model == Trailblazer.Config.get(:code_model)
+      assert String.starts_with?(url, Trailblazer.Config.get(:planner_model_url))
+      assert body.model == Trailblazer.Config.get(:planner_model)
       assert body.max_tokens == 384
       assert body.temperature == 0
       assert body.stream == false
@@ -116,9 +117,9 @@ defmodule Trailblazer.Planner.DecisionTest do
     end
 
     test "refuses a non-loopback model URL without calling anything" do
-      Application.put_env(:trailblazer, :code_model_url, "http://10.1.2.3:8094/v1")
+      Application.put_env(:trailblazer, :planner_model_url, "http://10.1.2.3:8098/v1")
 
-      on_exit(fn -> Application.delete_env(:trailblazer, :code_model_url) end)
+      on_exit(fn -> Application.delete_env(:trailblazer, :planner_model_url) end)
 
       assert {:error, :not_loopback} =
                Decision.choose(@cards, post: fn _url, _body -> flunk("must not post") end)

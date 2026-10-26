@@ -9,6 +9,17 @@ defmodule Trailblazer.ConfigTest do
     end)
   end
 
+  test "the planner leases the CPU model only when it shares the coding model's server" do
+    on_exit(fn -> Application.delete_env(:trailblazer, :planner_model_url) end)
+
+    # Bolt on its own iGPU server by default: no CPU lease
+    refute Config.get(:planner_model_url) == Config.get(:code_model_url)
+    refute Config.get(:planner_lease)
+
+    Application.put_env(:trailblazer, :planner_model_url, Config.get(:code_model_url))
+    assert Config.get(:planner_lease)
+  end
+
   test "documents are full length unless the repository is under a compact root" do
     assert Config.doc_limit("/home/someone/vendor/llama.cpp") == 2400
 

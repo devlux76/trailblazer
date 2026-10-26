@@ -508,7 +508,7 @@ defmodule Trailblazer.Planner.Brain do
   end
 
   defp sse_url do
-    url = String.trim_trailing(Config.get(:code_model_url) || "", "/")
+    url = String.trim_trailing(Config.get(:planner_model_url) || "", "/")
     String.replace_suffix(url, "/v1", "") <> "/models/sse"
   end
 
@@ -679,8 +679,13 @@ defmodule Trailblazer.Planner.Brain do
 
   ## Helpers
 
-  # The real resource boundary: the lease is the caller's own id.
+  # The real resource boundary: the lease is the caller's own id. A planner on
+  # its own server shares no CPU, so it holds nothing and releases at once.
   defp acquire(id) do
+    if Config.get(:planner_lease), do: lease(id), else: {:ok, id}
+  end
+
+  defp lease(id) do
     case Trailblazer.Vortex.Resource.acquire(
            id,
            Trailblazer.Vortex.Resource,
@@ -692,7 +697,11 @@ defmodule Trailblazer.Planner.Brain do
     end
   end
 
-  defp release(lease),
+  defp release(lease) do
+    if Config.get(:planner_lease), do: unlease(lease), else: :ok
+  end
+
+  defp unlease(lease),
     do:
       Trailblazer.Vortex.Resource.release(
         lease,
