@@ -28,7 +28,7 @@ defmodule Trailblazer.Loop.PromptsTest do
       Prompts.coder(
         @task,
         "lib/greeting.ex:1-3\n  def hello",
-        [{"lib/greeting.ex", "x\n"}],
+        [{"lib/greeting.ex", 3}],
         "check failed: 1 test"
       )
 
@@ -41,7 +41,7 @@ defmodule Trailblazer.Loop.PromptsTest do
           "polite",
           "## Trail",
           "## Files",
-          "lib/greeting.ex\n```elixir\nx\n```",
+          "lib/greeting.ex: 3 lines",
           "## The last attempt failed",
           "1 test"
         ] do
@@ -53,8 +53,10 @@ defmodule Trailblazer.Loop.PromptsTest do
     refute first.content =~ "failed"
   end
 
-  test "A5: a file that holds a fence gets a longer one" do
-    [_, user] = Prompts.coder(%{request: "r"}, "", [{"README.md", "```sh\nls\n```\n"}])
+  test "A5: a test to follow that holds a fence gets a longer one" do
+    [_, user] =
+      Prompts.coder(%{request: "r"}, "", [], nil, %{pattern: {"README.md", "```sh\nls\n```\n"}})
+
     assert user.content =~ "README.md\n````markdown\n```sh\nls\n```\n````"
   end
 

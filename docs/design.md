@@ -211,11 +211,13 @@ tokens; files the caller named, in full, on top of that.
 (the operator's aim; Claude's call on the means, revised 2026-10-18
 after T1 of L9, whose 6,500-token prompt was 72% trail, mostly noise):
 
-1. *Files named are given in full and never repeated in the trail*
-   (D21). The trail is then for what those files touch: callers,
-   callees and the design they implement, as signatures and excerpts,
-   within 1,500 tokens (`loop_trail_tokens`). A task with no files keeps
-   the 4,000-token exploring trail.
+1. *Files named are never sent whole* (operator, 2026-10-25, replacing
+   D21's files-in-full). They seed the trail, which packs their relevant
+   chunks with what they touch (callers, callees, the design they
+   implement) within the 4,000-token trail budget; under Files the model
+   sees only each named file's path and line count, and reads anything
+   else it needs with `read`/`search`. Chunks are embedded so that no
+   prompt has to carry a whole file.
 2. *The head start* is what the model would otherwise spend a tool round
    or an attempt finding out, and only that: the check command it must
    pass and, when the request asks for a test, the project's test file

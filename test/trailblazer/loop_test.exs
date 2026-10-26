@@ -537,7 +537,7 @@ defmodule Trailblazer.LoopTest do
     assert git(repo, ["show", "--name-only", "--format=", report.branch]) == "lib/greeting.ex\n"
   end
 
-  test "a task naming its files gets a short trail that leaves them out", %{
+  test "a task naming its files gets their chunks in the trail and only their names as files", %{
     repo: repo,
     opts: opts
   } do
@@ -552,13 +552,15 @@ defmodule Trailblazer.LoopTest do
     script([reply(@fix), reply("PASS")])
     Loop.run(task(repo), opts)
     assert_received {:trail_opts, named}
-    assert named[:omit] == ["lib/greeting.ex"]
-    assert named[:budget] == Trailblazer.Config.get(:loop_trail_tokens)
+    # the named files seed the trail and their chunks are packed like any other
+    assert named[:files] == ["lib/greeting.ex"]
+    refute Keyword.has_key?(named, :omit)
+    assert named[:budget] == Trailblazer.Config.get(:trail_tokens)
 
-    script([reply(@fix), reply("PASS")])
-    Loop.run(task(repo, %{files: []}), opts)
-    assert_received {:trail_opts, unnamed}
-    assert unnamed[:budget] == Trailblazer.Config.get(:trail_tokens)
+    assert_received {:asked, [_system, %{content: user}], _}
+    assert user =~ "lib/greeting.ex: 3 lines"
+    refute user =~ "def hello(name)"
+    drain_asked()
   end
 
   defp drain_asked do

@@ -22,7 +22,8 @@ defmodule Trailblazer.Loop.Prompts do
   def reviewer_system, do: @reviewer
 
   @doc """
-  Messages for one attempt. `files` are `{path, text}` given in full;
+  Messages for one attempt. `files` are the named files as `{path, lines}`
+  (or `{path, :missing}`), listed by name only: their chunks are in the trail;
   `feedback` is what failed last time (the edit misses, the check's output
   tail or the review's findings), nil on the first attempt.
 
@@ -33,14 +34,15 @@ defmodule Trailblazer.Loop.Prompts do
   and what failed is appended last, so the model server's prompt cache
   spares a retry the re-read (E25).
   """
-  @spec coder(map(), String.t(), [{String.t(), String.t()}], String.t() | nil, map()) :: [map()]
+  @spec coder(map(), String.t(), [{String.t(), non_neg_integer() | :missing}], String.t() | nil, map()) ::
+          [map()]
   def coder(task, trail, files, feedback \\ nil, head \\ %{}) do
     user =
       [
         section("Request", field(task, :request)),
         section("Design", design(task)),
         section("Trail", trail),
-        section("Files", Enum.map_join(files, "\n\n", &file/1)),
+        section("Files", named(files)),
         section("Check", head[:check] && "Your change must pass: `#{head[:check]}`"),
         section("A test to follow", head[:pattern] && file(head[:pattern])),
         section("Installed dependency evidence", evidence(head[:evidence] || [])),
@@ -147,6 +149,16 @@ defmodule Trailblazer.Loop.Prompts do
   defp section(_title, nil), do: nil
   defp section(_title, ""), do: nil
   defp section(title, body), do: "## #{title}\n\n#{body}"
+
+  defp named([]), do: nil
+
+  defp named(files) do
+    Enum.map_join(files, "\n", fn
+      {path, :missing} -> "#{path}: no such file yet"
+      {path, 1} -> "#{path}: 1 line"
+      {path, n} -> "#{path}: #{n} lines"
+    end)
+  end
 
   defp file({path, text}), do: "#{path}\n" <> fenced(text, lang(path))
 

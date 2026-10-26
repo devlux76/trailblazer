@@ -32,7 +32,6 @@ defmodule Trailblazer.Loop do
 
   @attempts 3
   @tool_rounds 6
-  @files_chars 60_000
   @tally {__MODULE__, :tally}
 
   @doc """
@@ -192,15 +191,12 @@ defmodule Trailblazer.Loop do
     build = Keyword.get(st.opts, :trail, &Trail.build/3)
     files = st.task.files
 
-    # files given in full are not repeated in the trail, and a task that names
-    # its files needs a short trail (T1 of L9: 72% of the prompt, mostly noise)
+    # the named files seed the trail, and their chunks reach the model through
+    # it like any other: a file is never sent whole, the model reads the rest
     opts =
       query_opts(st)
-      |> Keyword.merge(files: files, omit: files)
-      |> Keyword.put_new(
-        :budget,
-        if(files == [], do: Config.get(:trail_tokens), else: Config.get(:loop_trail_tokens))
-      )
+      |> Keyword.merge(files: files)
+      |> Keyword.put_new(:budget, Config.get(:trail_tokens))
 
     case build.(st.task.repo, st.task.request, opts) do
       %{text: text} = trail ->
@@ -213,20 +209,19 @@ defmodule Trailblazer.Loop do
     end
   end
 
-  # The files the caller named, from the worktree, in full while they fit
-  # (H1: a huge file does not crowd out the trail; `read` gives the rest).
+  # The files the caller named, by name and size only: their chunks are in the
+  # trail, and `read` (or `search`) gives the model whatever else it needs.
   defp files(st) do
-    {files, _left} =
-      Enum.flat_map_reduce(st.task.files, @files_chars, fn path, left ->
-        case Files.read(st.ws.path, path) do
-          {:ok, text} when byte_size(text) <= left -> {[{path, text}], left - byte_size(text)}
-          {:ok, _big} -> {[{path, "(too long to show in full: use the read tool)\n"}], left}
-          {:error, _} -> {[{path, "(no such file in the repository)\n"}], left}
-        end
-      end)
-
-    files
+    Enum.map(st.task.files, fn path ->
+      case Files.read(st.ws.path, path) do
+        {:ok, text} -> {path, lines(text)}
+        {:error, _} -> {path, :missing}
+      end
+    end)
   end
+
+  defp lines(""), do: 0
+  defp lines(text), do: length(String.split(String.trim_trailing(text, "\n"), "\n"))
 
   # The head start's test to follow (design §6.5): when the request asks for
   # a test and no file the caller named is one, the test of a named file, or
