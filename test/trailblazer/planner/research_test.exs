@@ -268,14 +268,14 @@ defmodule Trailblazer.Planner.ResearchTest do
         "title" => "child one",
         "repo" => @repo_name,
         "files" => ["lib/a.ex"],
-        "acceptance" => "make test",
+        "plan" => ["Change the named file and assert the requested behavior in its test"], "acceptance" => "make test",
         "priority" => "p1"
       },
       %{
         "title" => "child two",
         "repo" => @repo_name,
         "files" => ["lib/b.ex"],
-        "acceptance" => "make test"
+        "plan" => ["Change the named file and assert the requested behavior in its test"], "acceptance" => "make test"
       }
     ]
 
@@ -298,6 +298,7 @@ defmodule Trailblazer.Planner.ResearchTest do
     assert ["child one", plan_one, "p1"] = Enum.at(plans, 0)
     assert plan_one =~ "Files: lib/a.ex"
     assert plan_one =~ "Acceptance: make test"
+    assert plan_one =~ "Implementation plan: 1. Change the named file"
     assert plan_one =~ "trailblazer:rr11aa"
     assert ["child two", plan_two, "p2"] = Enum.at(plans, 1)
     assert plan_two =~ "Files: lib/b.ex"
@@ -316,6 +317,17 @@ defmodule Trailblazer.Planner.ResearchTest do
     assert note_text =~ "children"
   end
 
+  test "a files-and-acceptance reply without a plan is blocked before child creation", ctx do
+    start_research(ctx)
+    assert :ok = Research.dispatch(ctx.config, card())
+    reply("conf-1", Jason.encode!(%{"parent" => "trailblazer:rr11aa", "children" => [
+      %{"title" => "unplanned", "repo" => @repo_name, "files" => ["lib/a.ex"], "acceptance" => "make test"}
+    ]}))
+    eventually(fn -> match?(%{state: "blocked"}, Research.row("trailblazer:rr11aa")) end)
+    assert Research.row("trailblazer:rr11aa").reason =~ "no implementation plan"
+    refute Enum.any?(logged(ctx.log, :run), fn {_, args} -> "add" in args end)
+  end
+
   test "children off the contract drop with a reason and none valid blocks the parent", ctx do
     start_research(ctx)
     assert :ok = Research.dispatch(ctx.config, card())
@@ -324,10 +336,10 @@ defmodule Trailblazer.Planner.ResearchTest do
       Jason.encode!(%{
         "parent" => "trailblazer:rr11aa",
         "children" => [
-          %{"title" => "off-piste", "repo" => "somewhere-else", "files" => ["a.ex"], "acceptance" => "t"},
-          %{"title" => "too thin", "repo" => @repo_name, "files" => [], "acceptance" => "t"},
+          %{"title" => "off-piste", "repo" => "somewhere-else", "files" => ["a.ex"], "plan" => ["Change the named file and assert the requested behavior in its test"], "acceptance" => "t"},
+          %{"title" => "too thin", "repo" => @repo_name, "files" => [], "plan" => ["Change the named file and assert the requested behavior in its test"], "acceptance" => "t"},
           %{"title" => "researchy again", "repo" => @repo_name, "files" => ["lib/c.ex"],
-           "acceptance" => "", "labels" => ["dispatch:research"]}
+           "plan" => ["Change the named file and assert the requested behavior in its test"], "acceptance" => "", "labels" => ["dispatch:research"]}
         ]
       })
     )
@@ -353,9 +365,9 @@ defmodule Trailblazer.Planner.ResearchTest do
       Jason.encode!(%{
         "parent" => "trailblazer:rr11aa",
         "children" => [
-          %{"title" => "keep me", "repo" => @repo_name, "files" => ["lib/a.ex"], "acceptance" => "make"},
+          %{"title" => "keep me", "repo" => @repo_name, "files" => ["lib/a.ex"], "plan" => ["Change the named file and assert the requested behavior in its test"], "acceptance" => "make"},
           %{"title" => "meaningless", "repo" => @repo_name, "files" => ["../ escape.ex"],
-           "acceptance" => "t"}
+           "plan" => ["Change the named file and assert the requested behavior in its test"], "acceptance" => "t"}
         ]
       })
     )
@@ -377,7 +389,7 @@ defmodule Trailblazer.Planner.ResearchTest do
     reply("conf-1",
       Jason.encode!(%{
         "parent" => "trailblazer:other00",
-        "children" => [%{"title" => "keep", "repo" => @repo_name, "files" => ["a.ex"], "acceptance" => "t"}]
+        "children" => [%{"title" => "keep", "repo" => @repo_name, "files" => ["a.ex"], "plan" => ["Change the named file and assert the requested behavior in its test"], "acceptance" => "t"}]
       })
     )
 

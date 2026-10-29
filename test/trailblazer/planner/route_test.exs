@@ -11,6 +11,7 @@ defmodule Trailblazer.Planner.RouteTest do
 
   Files: lib/parser.ex, test/parser_test.exs
   Acceptance: make test passes with the reset helper added
+  Implementation plan: 1. Extract reset in lib/parser.ex; 2. Test the reset helper.
   """
 
   test "a labelled research card stays research even with full markers" do
@@ -22,12 +23,17 @@ defmodule Trailblazer.Planner.RouteTest do
     assert Route.classify(%{"labels" => ["dispatch:ready"], "body" => @body}) == :trailblazer
   end
 
+  test "files and acceptance without an implementation plan need research" do
+    assert Route.classify(%{"body" => "Files: lib/a.ex\nAcceptance: make test"}) == :research
+    assert Route.classify(%{"body" => "Files: lib/a.ex\nAcceptance: make test\nImplementation plan:   "}) == :research
+  end
+
   test "files without acceptance is the model's tie" do
-    assert Route.classify(%{"labels" => [], "body" => "Files: lib/a.ex"}) == :tie
+    assert Route.classify(%{"labels" => [], "body" => "Files: lib/a.ex\nImplementation plan: Change a.ex and test the reset."}) == :tie
   end
 
   test "acceptance without files is the model's tie" do
-    assert Route.classify(%{"labels" => [], "body" => "Acceptance: make test"}) == :tie
+    assert Route.classify(%{"labels" => [], "body" => "Acceptance: make test\nImplementation plan: Change a.ex and test the reset."}) == :tie
   end
 
   test "a body with neither marker is research" do
@@ -40,7 +46,7 @@ defmodule Trailblazer.Planner.RouteTest do
   end
 
   test "an empty files list is no files" do
-    assert Route.classify(%{"labels" => [], "body" => "Files:  \nAcceptance: make test"}) == :tie
+    assert Route.classify(%{"labels" => [], "body" => "Files:  \nAcceptance: make test\nImplementation plan: Change a.ex and test reset."}) == :tie
   end
 
   test "the first markers of each kind win" do

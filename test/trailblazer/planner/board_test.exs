@@ -100,6 +100,7 @@ defmodule Trailblazer.Planner.BoardTest do
 
       Files: lib/parser.ex test/parser_test.exs
       Acceptance: make test passes
+      Implementation plan: Extract parser reset and assert its behavior in parser_test.exs.
       """)
 
     config = config(ctx, %{ctx.repo => ["make check"]})
@@ -116,7 +117,7 @@ defmodule Trailblazer.Planner.BoardTest do
     assert research.context["route"] == "research"
     assert research.context["files"] == []
 
-    body_ref = card(ctx, "half specified", @ready, "Files: lib/only.ex")
+    body_ref = card(ctx, "half specified", @ready, "Files: lib/only.ex\nImplementation plan: Extract helper and test its behavior.")
     assert {:ok, %{cards: cards}} = read(config)
     tie = Enum.find(cards, &(&1.ref == body_ref))
     assert tie.context["route"] == "tie"

@@ -178,8 +178,8 @@ defmodule Trailblazer.Planner.Research do
     contract =
       """
       Reply in this conference with exactly one JSON object:
-      {"parent": "<this card's ref>", "children": [{"title": "<short and concrete>", "repo": "<one name from repos>", "files": ["<relative path>"], "acceptance": "<a test or check to pass>", "priority": "p0" | "p1" | "p2" | "p3"}]}
-      The files list becomes a "Files:" line and the acceptance string an "Acceptance:" line on the child card. Children that fail the check's rules are dropped.
+      {"parent": "<this card's ref>", "children": [{"title": "<short and concrete>", "repo": "<one name from repos>", "files": ["<relative path>"], "acceptance": "<a test or check to pass>", "plan": ["<ordered step naming the exact file, interface or assertion>"], "priority": "p0" | "p1" | "p2" | "p3"}]}
+      The files list becomes a "Files:" line and the acceptance string an "Acceptance:" line on the child card. The plan must resolve implementation choices and external interfaces, state the starting code available to the worker, and specify test assertions. It becomes an "Implementation plan:" line; requirements alone are not a plan. Split work that needs more exploration into smaller children. Children without a plan or failing the check's rules are dropped.
       """
       |> String.trim_trailing()
 
@@ -369,12 +369,13 @@ defmodule Trailblazer.Planner.Research do
 
   # One child must satisfy the route's own rules: not a research label again, a
   # non-empty title, an admitted repository, and a body that names files and
-  # states acceptance. The card's own planned check will prove the rest.
+  # states acceptance and ordered implementation steps. The card's check proves the result.
   defp analyze_child(child, names) when is_map(child) do
     title = value(child, "title")
     repo = value(child, "repo")
     files = List.wrap(value(child, "files") || [])
     acceptance = value(child, "acceptance")
+    plan = value(child, "plan")
 
     cond do
       "dispatch:research" in List.wrap(value(child, "labels") || []) ->
@@ -389,11 +390,14 @@ defmodule Trailblazer.Planner.Research do
       not (is_binary(acceptance) and String.trim(acceptance) != "") ->
         {:error, "no acceptance criteria"}
 
+      not (is_list(plan) and plan != [] and Enum.all?(plan, &(is_binary(&1) and String.trim(&1) != ""))) ->
+        {:error, "no implementation plan"}
+
       not (files != [] and Enum.all?(files, &is_binary/1)) ->
         {:error, "the files do not parse as relative paths"}
 
       true ->
-        body = compose(files, acceptance)
+        body = compose(files, acceptance, plan)
 
         if Route.classify(%{"labels" => [], "body" => body}) == :trailblazer,
           do:
@@ -403,6 +407,7 @@ defmodule Trailblazer.Planner.Research do
                "repo" => repo,
                "files" => files,
                "acceptance" => String.trim(acceptance),
+               "plan" => plan,
                "priority" => priority_of(child)
              }},
           else: {:error, "the files do not parse as relative paths"}
@@ -416,8 +421,14 @@ defmodule Trailblazer.Planner.Research do
   defp names_of(%{config: %{repos: repos}}), do: Enum.map(Map.keys(repos), &Path.basename/1)
   defp names_of(_), do: []
 
-  defp compose(files, acceptance),
-    do: "Files: " <> Enum.join(files, " ") <> "\nAcceptance: " <> acceptance
+  defp compose(files, acceptance, plan) do
+    steps = Enum.map_join(Enum.with_index(plan, 1), "; ", fn {step, n} ->
+      "#{n}. #{String.replace(step, "\n", " ")}"
+    end)
+
+    "Files: " <> Enum.join(files, " ") <> "\nAcceptance: " <> acceptance <>
+      "\nImplementation plan: " <> steps
+  end
 
   defp priority_of(%{"priority" => p}) when p in @priorities, do: p
   defp priority_of(_), do: "p2"
@@ -456,7 +467,7 @@ defmodule Trailblazer.Planner.Research do
   end
 
   defp compose_plan(child, parent) do
-    compose(child["files"], child["acceptance"]) <>
+    compose(child["files"], child["acceptance"], child["plan"]) <>
       "\nChild of the research route for " <> parent <> "."
   end
 

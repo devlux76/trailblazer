@@ -2,11 +2,14 @@ defmodule Trailblazer.Planner.Route do
   @moduledoc """
   The deterministic part of the routing decision (trailblazer:4cc63df): a card
   goes to a supervised coder when its body names the files to change and states
-  acceptance criteria (a test or check to pass), and it is not labelled
+  acceptance criteria (a test or check to pass) plus an Implementation plan, and it is not labelled
   `dispatch:research`. A body with neither marker is a research card; exactly
   one marker is the tie only the model decides.
 
-  The markers are two lines, `Files:` with the repo-relative paths (separated
+  Without an implementation plan it always goes to research, even if the model
+  selected the coding target. A marker proves presence, not plan quality.
+
+  The file and acceptance markers are two lines, `Files:` with the repo-relative paths (separated
   by commas or spaces) and `Acceptance:` with the criteria on that line. The
   parse never reads the filesystem: naming is a writing convention, verified
   by the card's own check later, not here.
@@ -23,6 +26,7 @@ defmodule Trailblazer.Planner.Route do
       acceptance? = ok_acceptance?(body)
 
       cond do
+        not ok_plan?(body) -> :research
         files? and acceptance? -> :trailblazer
         files? or acceptance? -> :tie
         true -> :research
@@ -31,6 +35,8 @@ defmodule Trailblazer.Planner.Route do
   end
 
   def classify(_), do: :research
+
+  defp ok_plan?(body), do: is_binary(body) and marker(body, "Implementation plan:") not in [nil, ""]
 
   defp ok_files?(body), do: match?({:ok, [_ | _]}, parse_files(body))
   defp ok_acceptance?(body), do: match?({:ok, text} when text != "", parse_acceptance(body))

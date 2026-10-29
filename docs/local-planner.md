@@ -52,7 +52,12 @@ trailblazer:1beebca. Source issue: trailblazer:cf1c78a.
 
 ## The research route
 
-A ready card goes to the research route when its body lacks the `Files:` and
+A ready card without a nonempty `Implementation plan:` line always goes to research.
+The plan must resolve the starting code, ordered changes, interfaces, and test
+assertions; files and acceptance criteria alone are insufficient. The research
+reply must include a nonempty `plan` array of concrete steps for each child.
+
+A planned card goes to the research route when its body lacks the `Files:` and
 `Acceptance:` markers, or when it carries `dispatch:research`; the local
 model only breaks ties and validates research targets. Research dispatches
 to the research server in the planner group, which claims the card for the

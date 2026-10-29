@@ -53,14 +53,14 @@ defmodule Trailblazer.Planner.BrainTest do
         "title" => "t",
         "priority" => "p1",
         # both markers: the deterministic routing check says trailblazer
-        "body" => "Files: lib/x.ex\nAcceptance: make test",
+        "body" => "Files: lib/x.ex\nAcceptance: make test\nImplementation plan: Change x.ex and assert its new behavior.",
         "recent" => []
       }
     }
   end
 
   defp research_card(ref \\ "probe:aaaa11"), do: card(ref) |> put_body("needs investigation")
-  defp tie_card(ref \\ "probe:aaaa11"), do: card(ref) |> put_body("Files: lib/x.ex")
+  defp tie_card(ref \\ "probe:aaaa11"), do: card(ref) |> put_body("Files: lib/x.ex\nImplementation plan: Change x.ex and assert the new behavior.")
 
   defp put_body(%{context: context} = card, body),
     do: %{card | context: Map.put(context, "body", body)}
