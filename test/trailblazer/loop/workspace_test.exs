@@ -82,6 +82,59 @@ defmodule Trailblazer.Loop.WorkspaceTest do
     assert {:error, _} = Workspace.reset(%{ws | path: ctx.repo})
   end
 
+  test "monorepo dependency links resolve candidate workspace code and survive reset", ctx do
+    for package <- ["app", "lib"] do
+      File.mkdir_p!(Path.join([ctx.repo, "packages", package]))
+      File.write!(Path.join([ctx.repo, "packages", package, "package.json"]), "{}")
+    end
+
+    File.write!(
+      Path.join(ctx.repo, "package.json"),
+      ~s({"workspaces":{"packages":["packages/*"]}})
+    )
+
+    File.write!(Path.join(ctx.repo, "packages/lib/package.json"), ~s({"name":"@demo/lib"}))
+    File.write!(Path.join([ctx.repo, "packages/lib/value.js"]), "base")
+    ctx.git.(["add", "packages", "package.json"])
+    ctx.git.(["commit", "-qm", "workspace fixture"])
+    File.write!(Path.join(ctx.repo, ".git/info/exclude"), "node_modules/\n")
+    File.mkdir_p!(Path.join(ctx.repo, "node_modules/external"))
+    File.write!(Path.join(ctx.repo, "node_modules/external/index.js"), "external")
+    File.mkdir_p!(Path.join(ctx.repo, "node_modules/@demo"))
+    File.ln_s!(Path.join(ctx.repo, "packages/lib"), Path.join(ctx.repo, "node_modules/@demo/lib"))
+    File.mkdir_p!(Path.join(ctx.repo, "packages/app/node_modules"))
+
+    File.ln_s!(
+      "../../../node_modules/external",
+      Path.join(ctx.repo, "packages/app/node_modules/external")
+    )
+
+    File.ln_s!("../../lib", Path.join(ctx.repo, "packages/app/node_modules/local"))
+
+    cache = Path.join(Path.dirname(ctx.repo), "dependency cache")
+    File.rename!(Path.join(ctx.repo, "node_modules"), cache)
+    File.ln_s!(cache, Path.join(ctx.repo, "node_modules"))
+    {:ok, ws} = Workspace.open(ctx.repo, ctx.case_id)
+    assert :ok = Workspace.provision(ws, ctx.repo)
+    File.write!(Path.join(ws.path, "packages/lib/value.js"), "candidate")
+
+    assert File.read!(Path.join(ws.path, "packages/app/node_modules/local/value.js")) ==
+             "candidate"
+
+    assert File.read!(Path.join(ws.path, "node_modules/@demo/lib/value.js")) == "candidate"
+    assert File.read!(Path.join(ctx.repo, "packages/lib/value.js")) == "base"
+    assert File.read!(Path.join(ctx.repo, "node_modules/@demo/lib/value.js")) == "base"
+
+    assert File.read!(Path.join(ws.path, "packages/app/node_modules/external/index.js")) ==
+             "external"
+
+    assert :ok = Workspace.reset(ws)
+    assert File.read!(Path.join(ws.path, "packages/app/node_modules/local/value.js")) == "base"
+
+    assert File.read!(Path.join(ws.path, "packages/app/node_modules/external/index.js")) ==
+             "external"
+  end
+
   test "provisioned dependencies survive resets and build outputs are isolated copies", ctx do
     for name <- ~w(node_modules deps _build target) do
       File.mkdir_p!(Path.join(ctx.repo, name))
@@ -96,8 +149,8 @@ defmodule Trailblazer.Loop.WorkspaceTest do
     {:ok, ws} = Workspace.open(ctx.repo, ctx.case_id)
     assert :ok = Workspace.provision(ws, ctx.repo)
 
-    for name <- ~w(node_modules deps),
-        do: assert(match?({:ok, _}, File.read_link(Path.join(ws.path, name))))
+    assert {:ok, %{type: :directory}} = File.lstat(Path.join(ws.path, "node_modules"))
+    assert {:ok, _} = File.read_link(Path.join(ws.path, "deps"))
 
     File.write!(Path.join([ws.path, "_build", "probe"]), "changed")
     assert File.read!(Path.join([ctx.repo, "_build", "probe"])) == "original"

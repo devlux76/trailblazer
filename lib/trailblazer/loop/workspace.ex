@@ -21,7 +21,8 @@ defmodule Trailblazer.Loop.Workspace do
                 {roots, 0} -> String.split(roots)
                 _ -> []
               end)
-  @shared ~w(node_modules deps)
+  @shared ~w(deps)
+  @linked ~w(node_modules)
   @copied ~w(_build target)
 
   @doc "Whether a path belongs to Trailblazer's own repository, including clones and worktrees."
@@ -118,42 +119,118 @@ defmodule Trailblazer.Loop.Workspace do
     with :ok <- validate(ws),
          {:ok, _} <- git(ws.path, ["reset", "--hard", ws.base]),
          {:ok, _} <-
-           git(ws.path, ["clean", "-fdx"] ++ Enum.flat_map(@shared ++ @copied, &["-e", &1])),
+           git(
+             ws.path,
+             ["clean", "-fdx"] ++ Enum.flat_map(@shared ++ @linked ++ @copied, &["-e", &1])
+           ),
          do: :ok
   end
 
-  @doc "Shares dependency trees and copies writable build outputs from the same repository."
+  @doc "Shares dependency contents, preserves private workspace link layouts, and copies build outputs."
+  # Bun monorepos install node_modules beside each package manifest. Copy their
+  # directory/symlink layout so relative workspace aliases resolve this candidate,
+  # not the original checkout. Immutable dependency files remain shared by hardlink.
   def provision(ws, repo) do
     with :ok <- validate(ws),
          {:ok, common} <-
            git(ws.path, ["rev-parse", "--path-format=absolute", "--git-common-dir"]),
-         {:ok, ^common} <- git(repo, ["rev-parse", "--path-format=absolute", "--git-common-dir"]) do
-      Enum.reduce_while(@shared ++ @copied, :ok, fn name, :ok ->
-        source = Path.join(Path.expand(repo), name)
-        dest = Path.join(ws.path, name)
+         {:ok, ^common} <- git(repo, ["rev-parse", "--path-format=absolute", "--git-common-dir"]),
+         {:ok, manifests} <-
+           git(repo, ["ls-files", "-z", "--", "package.json", "**/package.json"]) do
+      modules =
+        manifests
+        |> String.split("\0", trim: true)
+        |> Enum.map(&Path.join(Path.dirname(&1), "node_modules"))
 
-        if File.dir?(source) and File.lstat(dest) == {:error, :enoent} do
-          result =
-            if name in @shared do
-              File.ln_s(source, dest)
-            else
-              case System.cmd("cp", ["-a", "--reflink=auto", "--", source, dest],
-                     stderr_to_stdout: true
-                   ) do
-                {_, 0} -> :ok
-                {out, code} -> {:error, {:copy, code, out}}
-              end
-            end
+      names = Enum.uniq(@shared ++ @linked ++ @copied ++ modules)
 
-          if result == :ok, do: {:cont, :ok}, else: {:halt, result}
-        else
-          {:cont, :ok}
-        end
-      end)
+      with :ok <- copy_dependencies(ws, repo, names) do
+        rebase_workspace_links(ws, names)
+      end
     else
       {:ok, _} -> {:error, :different_repo}
       error -> error
     end
+  end
+
+  defp copy_dependencies(ws, repo, names) do
+    Enum.reduce_while(names, :ok, fn name, :ok ->
+      source = Path.join(Path.expand(repo), name)
+      dest = Path.join(ws.path, name)
+
+      if File.dir?(source) and File.lstat(dest) == {:error, :enoent} do
+        result =
+          if name in @shared do
+            File.ln_s(source, dest)
+          else
+            flags =
+              if Path.basename(name) == "node_modules",
+                do: ["-alH"],
+                else: ["-a", "--reflink=auto"]
+
+            case System.cmd("cp", flags ++ ["--", source, dest], stderr_to_stdout: true) do
+              {_, 0} -> :ok
+              {out, code} -> {:error, {:copy, code, out}}
+            end
+          end
+
+        if result == :ok, do: {:cont, :ok}, else: {:halt, result}
+      else
+        {:cont, :ok}
+      end
+    end)
+  end
+
+  defp rebase_workspace_links(ws, names) do
+    {:ok, root} = Files.canonical_path(ws.path)
+
+    patterns =
+      case manifest(Path.join(ws.path, "package.json"))["workspaces"] do
+        %{"packages" => paths} when is_list(paths) -> paths
+        paths when is_list(paths) -> paths
+        _ -> []
+      end
+
+    packages =
+      for pattern <- patterns,
+          is_binary(pattern),
+          Path.type(pattern) == :relative,
+          ".." not in Path.split(pattern),
+          file <- Path.wildcard(Path.join([ws.path, pattern, "package.json"])),
+          {:ok, canonical} <- [Files.canonical_path(file)],
+          String.starts_with?(canonical, root <> "/"),
+          name = manifest(canonical)["name"],
+          is_binary(name),
+          name not in [".", ".."],
+          Regex.match?(~r/\A(?:@[A-Za-z0-9_.-]+\/)?[A-Za-z0-9_.-]+\z/, name),
+          do: {name, Path.dirname(canonical)}
+
+    links =
+      for directory <- names,
+          Path.basename(directory) == "node_modules",
+          {name, target} <- packages,
+          link = Path.join([ws.path, directory, name]),
+          {:ok, _} <- [File.read_link(link)],
+          do: {link, target}
+
+    Enum.reduce_while(links, :ok, fn {link, target}, :ok ->
+      with {:ok, parent} <- Files.canonical_path(Path.dirname(link)),
+           true <- String.starts_with?(parent, root <> "/"),
+           :ok <- File.rm(link),
+           :ok <- File.ln_s(target, link) do
+        {:cont, :ok}
+      else
+        false -> {:halt, {:error, :dependency_alias_outside_worktree}}
+        error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp manifest(path) do
+    with {:ok, text} <- File.read(path),
+         {:ok, value} when is_map(value) <- Jason.decode(text),
+         do: value,
+         else: (_ -> %{})
   end
 
   def close(ws) do
