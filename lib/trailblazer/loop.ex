@@ -326,7 +326,8 @@ defmodule Trailblazer.Loop do
     messages = Prompts.coder(st.task, trail, files, feedback, Map.get(st, :head, %{}))
     record(st, :attempt, %{stage: :prompt_size, bytes: prompt_sizes(messages)})
 
-    with {:ok, reply} <- converse(st, messages, Tools.definitions(), :coder),
+    with {:ok, reply} <-
+           converse(st, messages, Tools.definitions() ++ [Tools.edit_definition()], :coder),
          {:ok, blocks} <- blocks(st, reply),
          :ok <- apply_edits(st, blocks),
          :ok <- run_check(st, check),
@@ -338,7 +339,7 @@ defmodule Trailblazer.Loop do
   ## The model
 
   # One exchange: the model may call tools for up to @tool_rounds rounds,
-  # then must answer without them.
+  # then must submit edits through the remaining edit tool.
   defp converse(st, messages, tools, role, round \\ 1) do
     {tools_now, messages} =
       cond do
@@ -349,29 +350,48 @@ defmodule Trailblazer.Loop do
           {tools, messages}
 
         true ->
-          {nil,
+          {[Tools.edit_definition()],
            messages ++
              [
                %{
                  role: "user",
-                 content: "No more tool calls. Answer now with your SEARCH/REPLACE blocks."
+                 content:
+                   "Reading is complete. Call submit_edits now with all path/search/replace blocks. No more read or search calls."
                }
              ]}
       end
 
     case chat(st, messages, tools_now, role) do
       {:ok, %{tool_calls: [_ | _] = calls} = reply} when tools_now != nil ->
-        assistant = %{
-          role: "assistant",
-          content: reply.content,
-          tool_calls:
-            Enum.map(calls, fn c ->
-              %{id: c.id, type: "function", function: %{name: c.name, arguments: c.arguments}}
-            end)
-        }
+        submissions = Enum.filter(calls, &(&1.name == "submit_edits"))
 
-        answers = Enum.map(calls, &answer_tool(st, &1))
-        converse(st, messages ++ [assistant | answers], tools, role, round + 1)
+        cond do
+          length(submissions) == 1 and length(calls) == 1 ->
+            case Tools.edit_blocks(hd(submissions).arguments) do
+              {:ok, blocks} -> {:ok, Map.put(reply, :edit_blocks, blocks)}
+              {:error, reason} -> {:retry, :unparsed, reason}
+            end
+
+          submissions != [] ->
+            {:retry, :unparsed,
+             "Call submit_edits alone, without read/search calls, with all changes."}
+
+          round > @tool_rounds ->
+            {:retry, :no_blocks, "Reading budget exhausted. Call submit_edits with the changes."}
+
+          true ->
+            assistant = %{
+              role: "assistant",
+              content: reply.content,
+              tool_calls:
+                Enum.map(calls, fn c ->
+                  %{id: c.id, type: "function", function: %{name: c.name, arguments: c.arguments}}
+                end)
+            }
+
+            answers = Enum.map(calls, &answer_tool(st, &1))
+            converse(st, messages ++ [assistant | answers], tools, role, round + 1)
+        end
 
       other ->
         other
@@ -410,6 +430,12 @@ defmodule Trailblazer.Loop do
     ]
 
     opts = opts ++ if(tools, do: [tools: tools], else: [])
+
+    opts =
+      if tools == [Tools.edit_definition()],
+        do: opts ++ [tool_choice: %{type: "function", function: %{name: "submit_edits"}}],
+        else: opts
+
     opts = opts ++ Keyword.get(st.opts, :model_opts, [])
 
     case with_gate(st, fn -> mod(st, :model, Model).chat(messages, opts) end) do
@@ -434,7 +460,7 @@ defmodule Trailblazer.Loop do
         record(st, :error, %{stage: role, reason: reason})
 
         {:retry, {:model, reason},
-         "Your last reply was not usable (#{describe(reason)}). Answer more briefly: a sentence, then the blocks."}
+         "Your last reply was not usable (#{describe(reason)}). Answer more briefly and submit the changes with submit_edits."}
     end
   end
 
@@ -460,8 +486,10 @@ defmodule Trailblazer.Loop do
     record(st, :edit, %{status: :cut_off})
 
     {:retry, :cut_off,
-     "Your reply was cut off before it ended. Send fewer, shorter SEARCH/REPLACE blocks."}
+     "Your reply was cut off before it ended. Submit fewer, shorter edits with submit_edits."}
   end
+
+  defp blocks(_st, %{edit_blocks: blocks}), do: {:ok, blocks}
 
   defp blocks(st, reply) do
     case Edits.parse(reply.content) do
@@ -469,7 +497,7 @@ defmodule Trailblazer.Loop do
         record(st, :edit, %{status: :no_blocks})
 
         {:retry, :no_blocks,
-         "Your reply had no SEARCH/REPLACE blocks. Make the change with blocks in the format given."}
+         "Your reply had no edits. Call submit_edits with the path/search/replace blocks."}
 
       {:ok, blocks} ->
         {:ok, blocks}
@@ -600,7 +628,6 @@ defmodule Trailblazer.Loop do
         )
 
       true ->
-
         evidence = tally(:check)
         current_tree = Lifecycle.tree(st.ws, tally(:changed))
 

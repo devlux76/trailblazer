@@ -103,6 +103,67 @@ defmodule Trailblazer.LoopTest do
     end
   end
 
+  defp submitted(blocks) do
+    reply("", %{
+      tool_calls: [
+        %{id: "edit1", name: "submit_edits", arguments: Jason.encode!(%{blocks: blocks})}
+      ]
+    })
+  end
+
+  defp greeting_block do
+    %{
+      path: "lib/greeting.ex",
+      search: ~s|  def hello(name), do: "Hello " <> name\n|,
+      replace: ~s|  def hello(name), do: "Hello, " <> name\n|
+    }
+  end
+
+  test "native edit submission follows the same check review and candidate path", %{
+    repo: repo,
+    opts: opts
+  } do
+    script([submitted([greeting_block()]), reply("PASS")])
+    report = Loop.run(task(repo), opts)
+    assert report.status == :fixed
+    assert report.attempts == 1
+    assert git(repo, ["show", "#{report.commit}:lib/greeting.ex"]) =~ "Hello, "
+    assert File.read!(Path.join(repo, "lib/greeting.ex")) == @greeting
+  end
+
+  test "reading budget ends with a forced native edit tool, never removes the edit interface", %{
+    repo: repo,
+    opts: opts
+  } do
+    read =
+      reply("", %{
+        tool_calls: [%{id: "read1", name: "read", arguments: ~s({"path":"lib/greeting.ex"})}]
+      })
+
+    final = fn _messages, options ->
+      assert Enum.map(options[:tools], & &1.function.name) == ["submit_edits"]
+      assert options[:tool_choice] == %{type: "function", function: %{name: "submit_edits"}}
+      submitted([greeting_block()])
+    end
+
+    script(List.duplicate(read, 6) ++ [final, reply("PASS")])
+    assert Loop.run(task(repo), opts).status == :fixed
+  end
+
+  test "a mixed read and edit batch is rejected without applying any edit", %{
+    repo: repo,
+    opts: opts
+  } do
+    {:ok, submission} = submitted([greeting_block()])
+    read = %{id: "read1", name: "read", arguments: ~s({"path":"lib/greeting.ex"})}
+    invalid = reply("", %{tool_calls: submission.tool_calls ++ [read]})
+    script(List.duplicate(invalid, 3))
+    report = Loop.run(task(repo), opts)
+    assert report.status == :failed
+    assert report.files == []
+    assert File.read!(Path.join(report.worktree, "lib/greeting.ex")) == @greeting
+  end
+
   test "a check or review cannot change the checked candidate tree", %{repo: repo, opts: opts} do
     script([reply(@fix), reply("PASS")])
     report = Loop.run(task(repo), Keyword.put(opts, :check, MutatingCheck))
@@ -144,7 +205,8 @@ defmodule Trailblazer.LoopTest do
     assert git(repo, ["rev-parse", "--abbrev-ref", "HEAD"]) == "main\n"
 
     # the request's first line is the whole message (trailblazer:6cccd98)
-    assert git(repo, ["log", "-1", "--format=%B", report.branch]) |> String.trim() == "Greet with a comma"
+    assert git(repo, ["log", "-1", "--format=%B", report.branch]) |> String.trim() ==
+             "Greet with a comma"
 
     # the tool call was answered and its answer sent back
     assert_received {:asked, _first, first_opts}
@@ -478,7 +540,9 @@ defmodule Trailblazer.LoopTest do
     script([reply(blocks_only), reply("PASS")])
     report = Loop.run(task(repo), opts)
     assert report.summary == "Changed lib/greeting.ex."
-    assert git(repo, ["log", "-1", "--format=%B", report.branch]) |> String.trim() == "Greet with a comma"
+
+    assert git(repo, ["log", "-1", "--format=%B", report.branch]) |> String.trim() ==
+             "Greet with a comma"
   end
 
   test "an over-long request line is never truncated into a commit; the work stays uncommitted",

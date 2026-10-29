@@ -75,3 +75,20 @@ retries when the peer resurfaces, the board changes, or any other planner
 event wakes the brain. Children completing wake nothing; the parent is
 marked done by the planner mirror only once every child is done. Source
 issue: trailblazer:4cc63df.
+
+## Coding and verification contract
+
+The coding worker exposes `submit_edits` alongside its read/search tools. It
+accepts a nonempty array of repository-relative `path`, exact `search`, and
+`replace` strings; an empty search creates a file. At the reading budget, only
+this edit tool remains and the request explicitly selects it. Legacy Aider text
+blocks remain accepted, but are not the required native editing interface.
+Both formats use the same atomic edit application, project check, fresh review,
+and independently checked candidate path. Tool submission alone is not success.
+
+Spark requests explicitly use its supported low reasoning effort for bounded
+coding and review calls; callers can pass `reasoning_effort: "high"` in model
+options for a task that needs it. This changes the request, not the shared model
+preset. Regression tests must cover native edits, the final forced submission,
+malformed arguments, mixed read/edit batches, and transport options. A live
+planner-to-candidate trial is required before claiming a protocol repair works.

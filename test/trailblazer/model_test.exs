@@ -25,7 +25,12 @@ defmodule Trailblazer.ModelTest do
       assert body["top_k"] == 0
       assert body["min_p"] == 0
       assert body["presence_penalty"] == 0
-      assert body["chat_template_kwargs"] == %{"preserve_thinking" => false}
+
+      assert body["chat_template_kwargs"] == %{
+               "preserve_thinking" => false,
+               "reasoning_effort" => "low"
+             }
+
       assert body["stream"] == true
       assert body["max_tokens"] == 16_384
       assert body["messages"] == [%{"role" => "assistant", "content" => "prior"}]
@@ -291,6 +296,32 @@ defmodule Trailblazer.ModelTest do
 
     assert frames == [{:data, json}]
     assert parser.input_buffer == "data: {"
+  end
+
+  test "native edit tool choice and explicit reasoning effort reach the server" do
+    Req.Test.stub(:model_edit_choice, fn conn ->
+      {:ok, body, conn} = Plug.Conn.read_body(conn)
+      body = Jason.decode!(body)
+
+      assert body["tool_choice"] == %{
+               "type" => "function",
+               "function" => %{"name" => "submit_edits"}
+             }
+
+      assert body["chat_template_kwargs"]["reasoning_effort"] == "high"
+      stream(conn, [event(%{content: "done"}, "stop")])
+    end)
+
+    assert {:ok, _} =
+             Model.chat(
+               [],
+               options(:model_edit_choice) ++
+                 [
+                   tools: [Trailblazer.Loop.Tools.edit_definition()],
+                   tool_choice: %{type: "function", function: %{name: "submit_edits"}},
+                   reasoning_effort: "high"
+                 ]
+             )
   end
 
   @tag :live

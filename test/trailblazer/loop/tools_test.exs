@@ -76,6 +76,20 @@ defmodule Trailblazer.Loop.ToolsTest do
     %{dir: dir, opts: [indexer: Fresh, embed: DownEmbed]}
   end
 
+  test "native edits validate complete strings without interpreting code or losing newlines" do
+    blocks = [%{path: "lib/new.ex", search: "", replace: "def x(), do: \"a,b<c>\"\n"}]
+    assert {:ok, ^blocks} = Tools.edit_blocks(Jason.encode!(%{blocks: blocks}))
+
+    for invalid <- [
+          %{blocks: []},
+          %{blocks: [%{path: "x", search: nil, replace: "x"}]},
+          %{blocks: blocks, command: "untrusted"},
+          %{blocks: [42]}
+        ] do
+      assert {:error, _} = Tools.edit_blocks(Jason.encode!(invalid))
+    end
+  end
+
   test "five tools, each an OpenAI function with a JSON schema" do
     defs = Tools.definitions()
     assert Enum.map(defs, & &1.function.name) == ~w(where uses impact read search)

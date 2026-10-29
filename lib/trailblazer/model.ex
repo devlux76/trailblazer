@@ -118,10 +118,14 @@ defmodule Trailblazer.Model do
       top_k: 0,
       min_p: 0,
       presence_penalty: 0,
-      chat_template_kwargs: %{preserve_thinking: false}
+      chat_template_kwargs: %{
+        preserve_thinking: false,
+        reasoning_effort: Keyword.get(opts, :reasoning_effort, "low")
+      }
     }
 
     body = if opts[:tools], do: Map.put(body, :tools, opts[:tools]), else: body
+    body = if opts[:tool_choice], do: Map.put(body, :tool_choice, opts[:tool_choice]), else: body
     request(body, opts, started, partials)
   end
 

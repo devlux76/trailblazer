@@ -84,6 +84,55 @@ defmodule Trailblazer.Loop.Tools do
     ]
   end
 
+  @doc "Native submission of Aider-style edits; applying them remains the loop's responsibility."
+  def edit_definition do
+    tool(
+      "submit_edits",
+      "Submit all code changes for checking and review. Use empty search for a new file. Do not call read/search in the same response.",
+      %{
+        blocks: %{
+          type: "array",
+          minItems: 1,
+          items: %{
+            type: "object",
+            additionalProperties: false,
+            properties: %{
+              path: string("Repository-relative file path"),
+              search: string("Exact existing text including whitespace; empty for a new file"),
+              replace: string("Replacement text, or entire contents of a new file")
+            },
+            required: ["path", "search", "replace"]
+          }
+        }
+      },
+      [:blocks]
+    )
+  end
+
+  @doc "Validates model arguments before the existing all-or-nothing edit application."
+  def edit_blocks(arguments) when is_binary(arguments) do
+    with {:ok, %{"blocks" => [_ | _] = blocks} = args} when map_size(args) == 1 <-
+           Jason.decode(arguments),
+         true <-
+           Enum.all?(blocks, fn
+             %{"path" => path, "search" => search, "replace" => replace} = block ->
+               map_size(block) == 3 and is_binary(path) and path != "" and
+                 is_binary(search) and is_binary(replace)
+
+             _ ->
+               false
+           end) do
+      {:ok,
+       Enum.map(blocks, fn b -> %{path: b["path"], search: b["search"], replace: b["replace"]} end)}
+    else
+      _ ->
+        {:error,
+         "submit_edits requires a nonempty blocks array of path, search and replace strings"}
+    end
+  end
+
+  def edit_blocks(_), do: {:error, "submit_edits arguments must be JSON"}
+
   defp tool(name, description, properties, required) do
     %{
       type: "function",
