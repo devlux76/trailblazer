@@ -109,7 +109,7 @@ defmodule Trailblazer.Model do
           messages,
           &Map.drop(&1, [:reasoning, :reasoning_content, "reasoning", "reasoning_content"])
         ),
-      max_tokens: Config.get(:code_model_max_tokens),
+      max_tokens: Keyword.get(opts, :max_tokens, Config.get(:code_model_max_tokens)),
       stream: true,
       stream_options: %{include_usage: true},
       return_progress: true,
@@ -118,9 +118,11 @@ defmodule Trailblazer.Model do
       top_k: 0,
       min_p: 0,
       presence_penalty: 0,
+      frequency_penalty: 0,
+      repeat_penalty: 1.0,
       chat_template_kwargs: %{
-        preserve_thinking: false,
-        reasoning_effort: Keyword.get(opts, :reasoning_effort, "low")
+        enable_thinking: true,
+        reasoning_effort: Keyword.get(opts, :reasoning_effort, "high")
       }
     }
 

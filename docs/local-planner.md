@@ -86,9 +86,13 @@ blocks remain accepted, but are not the required native editing interface.
 Both formats use the same atomic edit application, project check, fresh review,
 and independently checked candidate path. Tool submission alone is not success.
 
-Spark requests explicitly use its supported low reasoning effort for bounded
-coding and review calls; callers can pass `reasoning_effort: "high"` in model
-options for a task that needs it. This changes the request, not the shared model
-preset. Regression tests must cover native edits, the final forced submission,
+Spark requests follow its model card: thinking enabled with `high` (its highest
+supported effort), temperature 1.0, top-p 0.95, top-k disabled, repeat penalty 1.0,
+and presence/frequency penalties 0. Effort is not a hard budget. Callers can set
+`max_tokens` in model options to give each bounded task an explicit output cap,
+independently of reasoning effort; a cutoff remains a failed attempt and cannot
+apply partial edits. Wall-clock backstops remain separate. These are request
+settings, not changes to the shared model preset. Do not tune an active run or
+claim performance from sampler settings alone. Regression tests must cover native edits, the final forced submission,
 malformed arguments, mixed read/edit batches, and transport options. A live
 planner-to-candidate trial is required before claiming a protocol repair works.

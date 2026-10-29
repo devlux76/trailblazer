@@ -25,10 +25,12 @@ defmodule Trailblazer.ModelTest do
       assert body["top_k"] == 0
       assert body["min_p"] == 0
       assert body["presence_penalty"] == 0
+      assert body["frequency_penalty"] == 0
+      assert body["repeat_penalty"] == 1.0
 
       assert body["chat_template_kwargs"] == %{
-               "preserve_thinking" => false,
-               "reasoning_effort" => "low"
+               "enable_thinking" => true,
+               "reasoning_effort" => "high"
              }
 
       assert body["stream"] == true
@@ -308,7 +310,8 @@ defmodule Trailblazer.ModelTest do
                "function" => %{"name" => "submit_edits"}
              }
 
-      assert body["chat_template_kwargs"]["reasoning_effort"] == "high"
+      assert body["chat_template_kwargs"]["reasoning_effort"] == "low"
+      assert body["max_tokens"] == 512
       stream(conn, [event(%{content: "done"}, "stop")])
     end)
 
@@ -319,7 +322,8 @@ defmodule Trailblazer.ModelTest do
                  [
                    tools: [Trailblazer.Loop.Tools.edit_definition()],
                    tool_choice: %{type: "function", function: %{name: "submit_edits"}},
-                   reasoning_effort: "high"
+                   reasoning_effort: "low",
+                   max_tokens: 512
                  ]
              )
   end
