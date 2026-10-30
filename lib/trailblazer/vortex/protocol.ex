@@ -60,7 +60,7 @@ defmodule Trailblazer.Vortex.Protocol do
     with true <-
            Enum.all?(
              Map.keys(payload),
-             &(&1 in ~w(repo request check files design planner read_rounds))
+             &(&1 in ~w(repo request check files design planner read_rounds reasoning_budget_tokens))
            ),
          repo when is_binary(repo) <- payload["repo"],
          {:ok, repo} <- Files.canonical_path(repo),
@@ -74,6 +74,9 @@ defmodule Trailblazer.Vortex.Protocol do
          true <- is_list(design) and Enum.all?(design, &is_binary/1),
          read_rounds <- Map.get(payload, "read_rounds", 6),
          true <- is_integer(read_rounds) and read_rounds in 0..6,
+         true <-
+           not Map.has_key?(payload, "reasoning_budget_tokens") or
+             Trailblazer.Model.valid_reasoning_budget?(payload["reasoning_budget_tokens"]),
          false <- Workspace.own_repo?(repo),
          {:ok, planner} <- planner(payload["planner"], repo) do
       task = %{
@@ -88,6 +91,11 @@ defmodule Trailblazer.Vortex.Protocol do
       task =
         if Map.has_key?(payload, "read_rounds"),
           do: Map.put(task, :read_rounds, read_rounds),
+          else: task
+
+      task =
+        if Map.has_key?(payload, "reasoning_budget_tokens"),
+          do: Map.put(task, :reasoning_budget_tokens, payload["reasoning_budget_tokens"]),
           else: task
 
       {:ok, if(planner, do: Map.put(task, :planner, planner), else: task)}

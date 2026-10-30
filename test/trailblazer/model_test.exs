@@ -35,6 +35,7 @@ defmodule Trailblazer.ModelTest do
 
       assert body["stream"] == true
       assert body["max_tokens"] == 16_384
+      refute Map.has_key?(body, "reasoning_budget_tokens")
       assert body["messages"] == [%{"role" => "assistant", "content" => "prior"}]
       assert body["tools"] == [%{"type" => "function"}]
 
@@ -280,6 +281,61 @@ defmodule Trailblazer.ModelTest do
     Req.Test.stub(:model_length, fn conn -> stream(conn, [event(%{content: "cut"}, "length")]) end)
 
     assert {:ok, %{finish_reason: "length"}} = Model.chat([], options(:model_length))
+  end
+
+  test "reasoning-only length exhaustion preserves evidence and has an explicit outcome" do
+    Req.Test.stub(:reasoning_length, fn conn ->
+      stream(conn, [event(%{reasoning_content: "unfinished plan"}, "length")])
+    end)
+
+    parent = self()
+
+    assert {:error, :output_limit} =
+             Model.chat(
+               [],
+               options(:reasoning_length) ++
+                 [on_partial: fn reply -> send(parent, {:partial_limit, reply}) end]
+             )
+
+    assert_receive {:partial_limit,
+                    %{reasoning: "unfinished plan", content: "", finish_reason: "length"}}
+  end
+
+  test "explicit thinking budget reserves answer space while retaining high effort" do
+    Req.Test.stub(:thinking_budget, fn conn ->
+      {:ok, body, conn} = Plug.Conn.read_body(conn)
+      body = Jason.decode!(body)
+      assert body["reasoning_budget_tokens"] == 1024
+      assert body["max_tokens"] == 4096
+
+      assert body["chat_template_kwargs"] == %{
+               "enable_thinking" => true,
+               "reasoning_effort" => "high"
+             }
+
+      stream(conn, [event(%{content: "answer"}, "stop")])
+    end)
+
+    assert {:ok, _} =
+             Model.chat(
+               [],
+               options(:thinking_budget) ++
+                 [reasoning_budget_tokens: 1024, max_tokens: 4096]
+             )
+  end
+
+  test "invalid thinking budgets fail before any HTTP request" do
+    Req.Test.stub(:invalid_thinking_budget, fn _ -> raise "invalid budget reached HTTP" end)
+
+    for invalid <- [-1, 4096, 4097, true, false, "1024", 1.5] do
+      assert_raise ArgumentError, ~r/reasoning_budget_tokens/, fn ->
+        Model.chat(
+          [],
+          options(:invalid_thinking_budget) ++
+            [reasoning_budget_tokens: invalid, max_tokens: 4096]
+        )
+      end
+    end
   end
 
   test "a client exception stays catchable by the calling loop" do

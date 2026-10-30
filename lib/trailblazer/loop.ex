@@ -436,6 +436,11 @@ defmodule Trailblazer.Loop do
         do: opts ++ [tool_choice: %{type: "function", function: %{name: "submit_edits"}}],
         else: opts
 
+    opts =
+      if is_nil(st.task.reasoning_budget_tokens),
+        do: opts,
+        else: opts ++ [reasoning_budget_tokens: st.task.reasoning_budget_tokens]
+
     opts = opts ++ Keyword.get(st.opts, :model_opts, [])
 
     case with_gate(st, fn -> mod(st, :model, Model).chat(messages, opts) end) do
@@ -450,6 +455,17 @@ defmodule Trailblazer.Loop do
       {:error, :model_down} ->
         record(st, :error, %{stage: role, reason: :model_down})
         {:stop, report(st, :failed, "The code model is not running.")}
+
+      {:error, :output_limit} ->
+        tally(:model_calls, tally(:model_calls) + 1)
+        record(st, :error, %{stage: role, reason: :output_limit})
+
+        {:stop,
+         report(
+           st,
+           :failed,
+           "The #{role} exhausted its output budget before submitting an answer. Replan the budget before another attempt."
+         )}
 
       {:error, {:http, status}} ->
         record(st, :error, %{stage: role, reason: {:http, status}})
@@ -865,8 +881,14 @@ defmodule Trailblazer.Loop do
     get = fn key -> task[key] || task[to_string(key)] end
     read_rounds = Map.get(task, :read_rounds, Map.get(task, "read_rounds", @tool_rounds))
 
+    reasoning_budget =
+      Map.get(task, :reasoning_budget_tokens, Map.get(task, "reasoning_budget_tokens"))
+
     unless is_integer(read_rounds) and read_rounds in 0..@tool_rounds,
       do: raise(ArgumentError, "read_rounds must be an integer from 0 to #{@tool_rounds}")
+
+    unless is_nil(reasoning_budget) or Model.valid_reasoning_budget?(reasoning_budget),
+      do: raise(ArgumentError, "invalid reasoning_budget_tokens")
 
     %{
       repo: get.(:repo),
@@ -876,6 +898,7 @@ defmodule Trailblazer.Loop do
       check: get.(:check),
       primary: get.(:primary),
       read_rounds: read_rounds,
+      reasoning_budget_tokens: reasoning_budget,
       from: get.(:from) || "cli"
     }
   end

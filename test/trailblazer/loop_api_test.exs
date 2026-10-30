@@ -106,6 +106,7 @@ defmodule Trailblazer.LoopAPITest do
         request: "fix",
         files: ["a.ex"],
         read_rounds: 0,
+        reasoning_budget_tokens: 1024,
         design: ["Keep the API"],
         check: "mix test"
       })
@@ -115,6 +116,7 @@ defmodule Trailblazer.LoopAPITest do
     assert_receive {:started, task, worker, ^id}
     assert task.files == ["a.ex"]
     assert task.read_rounds == 0
+    assert task.reasoning_budget_tokens == 1024
     assert task.design == ["Keep the API"]
     state = request(opts, "case", %{case: id})
     assert state.status == 200
@@ -139,6 +141,18 @@ defmodule Trailblazer.LoopAPITest do
     for invalid <- [-1, 7, true, false, nil, "0", 0.5] do
       assert request(opts, "run", %{repo: "/fixture", request: "fix", read_rounds: invalid}).status ==
                400
+    end
+
+    refute_received {:started, _, _, _}
+  end
+
+  test "invalid reasoning budgets are rejected before opening a case", %{opts: opts} do
+    for invalid <- [-1, true, false, nil, "1024", 1.5, 1_000_000] do
+      assert request(opts, "run", %{
+               repo: "/fixture",
+               request: "fix",
+               reasoning_budget_tokens: invalid
+             }).status == 400
     end
 
     refute_received {:started, _, _, _}

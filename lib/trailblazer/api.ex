@@ -88,6 +88,11 @@ defmodule Trailblazer.API do
           from: "cli"
         }
 
+        task =
+          if Map.has_key?(params, "reasoning_budget_tokens"),
+            do: Map.put(task, :reasoning_budget_tokens, params["reasoning_budget_tokens"]),
+            else: task
+
         case Runner.submit(task, Keyword.get(opts, :runner, Runner)) do
           {:ok, id} -> json(conn, 202, %{case: id})
           {:error, _} = error -> respond(conn, error)
@@ -322,6 +327,8 @@ defmodule Trailblazer.API do
     read_rounds = Map.get(p, "read_rounds", 6)
 
     is_integer(read_rounds) and read_rounds in 0..6 and
+      (not Map.has_key?(p, "reasoning_budget_tokens") or
+         Trailblazer.Model.valid_reasoning_budget?(p["reasoning_budget_tokens"])) and
       is_binary(p["request"]) and String.trim(p["request"]) != "" and
       is_list(Map.get(p, "files", [])) and Enum.all?(Map.get(p, "files", []), &is_binary/1) and
       (is_nil(p["check"]) or is_binary(p["check"])) and

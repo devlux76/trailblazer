@@ -486,7 +486,7 @@ defmodule Trailblazer.Vortex.Bridge do
     with {:ok, policy} <- Protocol.peer(%{peer: request.peer, room: request.room}, state.peers),
          message <- %{
            "type" => "task",
-           "payload" => Map.take(request.task, ~w(repo request check files design read_rounds))
+           "payload" => Map.take(request.task, ~w(repo request check files design read_rounds reasoning_budget_tokens))
          },
          {:ok, _} <- Protocol.task(message, policy, request.peer) do
       true

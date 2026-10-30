@@ -158,11 +158,17 @@ defmodule Trailblazer.LoopTest do
     first = fn _messages, options ->
       assert Enum.map(options[:tools], & &1.function.name) == ["submit_edits"]
       assert options[:tool_choice] == %{type: "function", function: %{name: "submit_edits"}}
+      assert options[:reasoning_budget_tokens] == 1024
       submitted([greeting_block()])
     end
 
     script([first, reply("PASS")])
-    persisted = task(repo, %{read_rounds: 0}) |> Jason.encode!() |> Jason.decode!()
+
+    persisted =
+      task(repo, %{read_rounds: 0, reasoning_budget_tokens: 1024})
+      |> Jason.encode!()
+      |> Jason.decode!()
+
     report = Loop.run(persisted, opts)
     assert report.status == :fixed
     assert report.cost.model_calls == 2
@@ -197,6 +203,19 @@ defmodule Trailblazer.LoopTest do
     end
 
     refute_received {:asked, _, _}
+  end
+
+  test "output exhaustion stops after one call without applying edits or retrying", %{
+    repo: repo,
+    opts: opts
+  } do
+    script([{:error, :output_limit}])
+    report = Loop.run(task(repo), opts)
+    assert report.status == :failed
+    assert report.summary =~ "output budget"
+    assert report.cost.model_calls == 1
+    assert report.commit == nil
+    assert report.files == []
   end
 
   test "a mixed read and edit batch is rejected without applying any edit", %{

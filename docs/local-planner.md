@@ -94,6 +94,14 @@ tasks can retain a small read budget. Repeating an existing assignment with a
 different budget is refused; reconcile it before starting a fresh task. Reading,
 output and wall-clock budgets are separate controls.
 
+`--reasoning-tokens N` supplies an optional per-task thinking limit to the
+backend's native `reasoning_budget_tokens` field. It must be nonnegative and
+below the total response cap, reserving room for an answer or edit submission.
+Omitting it preserves the backend default. It leaves high reasoning effort and
+model-card samplers intact. A reasoning-only response cut off at the total token
+limit is recorded as output exhaustion and stops the case without repeating the
+same budget; partial reasoning remains available for diagnosis.
+
 Spark requests follow its model card: thinking enabled with `high` (its highest
 supported effort), temperature 1.0, top-p 0.95, top-k disabled, repeat penalty 1.0,
 and presence/frequency penalties 0. Effort is not a hard budget. Callers can set

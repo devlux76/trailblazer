@@ -21,7 +21,17 @@ defmodule Trailblazer.Model do
   alias Trailblazer.{Backstop, Config}
   alias Trailblazer.Model.{SSEParser, NativeToolCalls}
 
+  @doc "A thinking budget must leave tokens for the final answer or tool submission."
+  def valid_reasoning_budget?(budget, total \\ Config.get(:code_model_max_tokens)),
+    do: is_integer(budget) and budget >= 0 and budget < total
+
   def chat(messages, opts \\ []) do
+    budget = opts[:reasoning_budget_tokens]
+    total = Keyword.get(opts, :max_tokens, Config.get(:code_model_max_tokens))
+
+    unless is_nil(budget) or valid_reasoning_budget?(budget, total),
+      do: raise(ArgumentError, "reasoning_budget_tokens must be nonnegative and below max_tokens")
+
     started = now()
     partials = :ets.new(__MODULE__, [:public])
 
@@ -128,6 +138,12 @@ defmodule Trailblazer.Model do
 
     body = if opts[:tools], do: Map.put(body, :tools, opts[:tools]), else: body
     body = if opts[:tool_choice], do: Map.put(body, :tool_choice, opts[:tool_choice]), else: body
+
+    body =
+      if is_nil(opts[:reasoning_budget_tokens]),
+        do: body,
+        else: Map.put(body, :reasoning_budget_tokens, opts[:reasoning_budget_tokens])
+
     request(body, opts, started, partials)
   end
 
@@ -331,6 +347,9 @@ defmodule Trailblazer.Model do
     {content, calls} = native(s.content, s.calls |> Enum.sort() |> Enum.map(&elem(&1, 1)))
 
     cond do
+      s.finish_reason == "length" and content == "" and calls == [] ->
+        {:error, :output_limit}
+
       content == "" and calls == [] ->
         {:error, {:bad_response, :no_message}}
 

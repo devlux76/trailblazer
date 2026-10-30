@@ -64,4 +64,15 @@ defmodule Trailblazer.Vortex.ProtocolTest do
       assert {:error, :unauthorized_task} = Protocol.task(message, @policy, "caller")
     end
   end
+
+  test "task admission preserves a reasoning budget and rejects invalid values" do
+    message = %{@envelope | "payload" => Map.put(@task, "reasoning_budget_tokens", 1024)}
+    assert {:ok, task} = Protocol.task(message, @policy, "caller")
+    assert task.reasoning_budget_tokens == 1024
+
+    for invalid <- [-1, true, false, nil, "1024", 1.5, 1_000_000] do
+      message = %{@envelope | "payload" => Map.put(@task, "reasoning_budget_tokens", invalid)}
+      assert {:error, :unauthorized_task} = Protocol.task(message, @policy, "caller")
+    end
+  end
 end
