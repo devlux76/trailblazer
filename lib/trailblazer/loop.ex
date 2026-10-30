@@ -283,12 +283,25 @@ defmodule Trailblazer.Loop do
   defp attempts(st, trail, files, check, n, feedback) do
     record(st, :attempt, %{stage: :attempt, n: n})
     tally(:changed, [])
+    tally(:previous_edits, nil)
 
     case attempt(st, trail, files, check, feedback) do
       {:ok, reply} ->
         succeeded(st, n, reply, check)
 
       {:retry, why, next_feedback} ->
+        next_feedback =
+          case tally(:previous_edits) do
+            [_ | _] = edits ->
+              next_feedback <>
+                "\n\nPrevious applied edits (reference only, captured before the check). " <>
+                "Use their exact code to diagnose the failure; still submit corrected edits with submit_edits.\n\n```json\n" <>
+                Jason.encode!(edits, pretty: true) <> "\n```"
+
+            _ ->
+              next_feedback
+          end
+
         failure = %{n: n, why: why, feedback: next_feedback, changed: tally(:changed)}
         st = %{st | failures: st.failures ++ [failure]}
 
@@ -532,6 +545,7 @@ defmodule Trailblazer.Loop do
       {:ok, paths} ->
         record(st, :edit, %{status: :applied, blocks: blocks, paths: paths})
         tally(:changed, paths)
+        tally(:previous_edits, blocks)
         :ok
 
       {:error, failures} ->

@@ -109,6 +109,12 @@ independent verification when the case closes. It never stops the worker.
 The local checked launcher uses this mode and a cleanup-only native observer;
 30 minutes is the coordinator's review interval, not an automatic runtime cap.
 
+After a failed check or review, the next coder prompt includes the exact latest
+applied edit blocks as reference, captured before the check ran. The worktree
+still resets to its original base, so the worker must submit the whole corrected
+change. Check-induced mutations and earlier stale edits are excluded. This lets
+the worker correct its actual code instead of guessing from compiler lines alone.
+
 Spark requests follow its model card: thinking enabled with `high` (its highest
 supported effort), temperature 1.0, top-p 0.95, top-k disabled, repeat penalty 1.0,
 and presence/frequency penalties 0. Effort is not a hard budget. Callers can set

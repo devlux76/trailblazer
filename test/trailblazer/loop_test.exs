@@ -335,6 +335,8 @@ defmodule Trailblazer.LoopTest do
     assert_received {:asked, _, _}
     assert_received {:asked, [_, %{content: second_user}], _}
     assert second_user =~ "the greeting has no comma"
+    assert second_user =~ "Previous applied edits"
+    assert second_user =~ "Hello; "
     # the second attempt's SEARCH matched, so the first attempt's edit was undone
     assert git(repo, ["show", "#{report.branch}:lib/greeting.ex"]) =~ ~s("Hello, ")
   end
@@ -359,7 +361,10 @@ defmodule Trailblazer.LoopTest do
       fn [_, %{content: user}], _ ->
         assert user =~ "previous edits were discarded"
         assert user =~ "original files"
-        refute user =~ "Hello; "
+        assert user =~ "Previous applied edits"
+        assert user =~ "Hello; "
+        assert user =~ "test/greeting.txt"
+        assert user =~ "Hello, Ada"
 
         worktree =
           git(repo, ["worktree", "list", "--porcelain"])
@@ -385,6 +390,46 @@ defmodule Trailblazer.LoopTest do
     assert_received {:asked, [system, %{content: first}], _}
     assert_received {:asked, [^system, %{content: second}], _}
     assert String.starts_with?(second, first <> "\n\n## The last attempt failed")
+  end
+
+  defmodule PoisoningFailedCheck do
+    def run(path, command, opts) do
+      if Process.get(:poisoned_check) do
+        Trailblazer.Loop.Check.run(path, command, opts)
+      else
+        Process.put(:poisoned_check, true)
+        File.write!(Path.join(path, "lib/greeting.ex"), "CHECK_MUTATION_MUST_NOT_BE_CONTEXT\n")
+        %{status: :fail, exit: 1, output_tail: "candidate has no comma"}
+      end
+    end
+  end
+
+  test "correction context keeps model edits before check mutations and clears them after a missed edit",
+       %{repo: repo, opts: opts} do
+    wrong = String.replace(@fix, ~s("Hello, " <> name), ~s("Hello; " <> name))
+    miss = String.replace(@fix, ~s("Hello " <> name), ~s("Hi " <> name), global: false)
+
+    script([
+      reply(wrong),
+      fn [_, %{content: user}], _ ->
+        assert user =~ "candidate has no comma"
+        assert user =~ "Previous applied edits"
+        assert user =~ "Hello; "
+        refute user =~ "CHECK_MUTATION_MUST_NOT_BE_CONTEXT"
+        reply(miss)
+      end,
+      fn [_, %{content: user}], _ ->
+        refute user =~ "Previous applied edits"
+        refute user =~ "Hello; "
+        reply(@fix)
+      end,
+      reply("PASS")
+    ])
+
+    report = Loop.run(task(repo), Keyword.put(opts, :check, PoisoningFailedCheck))
+    assert report.status == :fixed
+    assert report.attempts == 3
+    assert File.read!(Path.join(repo, "lib/greeting.ex")) == @greeting
   end
 
   test "dependency evidence is prepared once and shared with retries and review", %{
