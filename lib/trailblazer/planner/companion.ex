@@ -54,6 +54,28 @@ defmodule Trailblazer.Planner.Companion do
   def reverify(id, server \\ __MODULE__),
     do: GenServer.call(server, {:reverify, id}, :infinity)
 
+  @doc "Observe an assignment through completion without a result deadline; never stops the worker."
+  def observe(id, server \\ __MODULE__),
+    do: GenServer.call(server, {:observe, id}, :infinity)
+
+  @impl true
+  def handle_call({:observe, id}, _from, state) do
+    if Enum.any?(list(), &(&1.case_id == id)) do
+      CaseStore.transaction(fn conn ->
+        query(
+          conn,
+          :planner_observe,
+          "UPDATE planner_assignment SET deadline_at = 0 WHERE case_id = ?",
+          [id]
+        )
+      end)
+
+      {:reply, :ok, disarm(state, id)}
+    else
+      {:reply, {:error, :no_assignment}, state}
+    end
+  end
+
   @impl true
   def handle_call({:reverify, id}, _from, state) do
     row = Enum.find(list(), &(&1.case_id == id))
@@ -155,17 +177,22 @@ defmodule Trailblazer.Planner.Companion do
 
   defp deadline(id, state) do
     with_row(id, "open", state, fn row, state ->
-      if case_status(id) == "open" do
-        at = row.deadline_at |> DateTime.from_unix!(:millisecond) |> DateTime.to_iso8601()
-
-        finish(
-          row,
-          "block",
-          "No result by the deadline #{at}; investigate case #{id}. Not retried or cancelled.",
+      cond do
+        row.deadline_at == 0 ->
           state
-        )
-      else
-        closed(row, state)
+
+        case_status(id) == "open" ->
+          at = row.deadline_at |> DateTime.from_unix!(:millisecond) |> DateTime.to_iso8601()
+
+          finish(
+            row,
+            "block",
+            "No result by the deadline #{at}; investigate case #{id}. Not retried or cancelled.",
+            state
+          )
+
+        true ->
+          closed(row, state)
       end
     end)
   end
@@ -185,7 +212,7 @@ defmodule Trailblazer.Planner.Companion do
     if case_status(row.case_id) == "open" do
       delay = max(row.deadline_at - System.os_time(:millisecond), 1)
 
-      if Map.has_key?(state.deadlines, row.case_id) do
+      if row.deadline_at == 0 or Map.has_key?(state.deadlines, row.case_id) do
         state
       else
         ref =

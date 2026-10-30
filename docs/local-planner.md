@@ -102,6 +102,13 @@ model-card samplers intact. A reasoning-only response cut off at the total token
 limit is recorded as output exhaustion and stops the case without repeating the
 same budget; partial reasoning remains available for diagnosis.
 
+For supervised work that should continue while progressing, call
+`Trailblazer.Planner.Companion.observe(case_id)`. It persistently disables the
+assignment's result deadline, including across recovery, and preserves automatic
+independent verification when the case closes. It never stops the worker.
+The local checked launcher uses this mode and a cleanup-only native observer;
+30 minutes is the coordinator's review interval, not an automatic runtime cap.
+
 Spark requests follow its model card: thinking enabled with `high` (its highest
 supported effort), temperature 1.0, top-p 0.95, top-k disabled, repeat penalty 1.0,
 and presence/frequency penalties 0. Effort is not a hard budget. Callers can set

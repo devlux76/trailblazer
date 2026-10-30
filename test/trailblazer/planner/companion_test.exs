@@ -102,6 +102,33 @@ defmodule Trailblazer.Planner.CompanionTest do
     assert calls(ctx.dir) =~ "check failed twice"
   end
 
+  test "observation disables the persisted deadline and preserves later verification after recovery",
+       ctx do
+    {repo, git} = repo(ctx.dir)
+    id = admit(repo, %{ref: "vortex:abcdef1", deadline_ms: 10_000})
+    server = start(ctx)
+    assert :ok = Companion.observe(id, server)
+    assert row(id).deadline_at == 0
+    {:ok, supervisor} = ExUnit.fetch_test_supervisor()
+
+    {child, _, _, _} =
+      Enum.find(Supervisor.which_children(supervisor), fn {_, pid, _, _} -> pid == server end)
+
+    stop_supervised!(child)
+    recovered = start(ctx)
+    Process.sleep(100)
+    assert row(id).state == "open"
+    assert CaseRecord.get(id).status == "open"
+    refute calls(ctx.dir) =~ "block"
+    assert {:error, :no_assignment} = Companion.observe("missing", recovered)
+    git.(["branch", "trailblazer/" <> id])
+    {sha, 0} = System.cmd("git", ["rev-parse", "trailblazer/" <> id], cd: repo)
+    CaseRecord.close(id, %{case: id, status: :fixed, commit: String.trim(sha), summary: "ok"})
+    Trailblazer.Events.publish({:case, id}, %{closed: true})
+    eventually(fn -> row(id).state == "done" end)
+    assert calls(ctx.dir) =~ "Independent verification passed"
+  end
+
   test "a fixed candidate is verified independently in a fresh worktree, then marked done", ctx do
     {repo, git} = repo(ctx.dir)
     id = admit(repo, %{ref: "vortex:abcdef1", deadline_ms: nil})
