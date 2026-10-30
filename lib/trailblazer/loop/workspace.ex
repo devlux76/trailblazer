@@ -131,12 +131,22 @@ defmodule Trailblazer.Loop.Workspace do
   # directory/symlink layout so relative workspace aliases resolve this candidate,
   # not the original checkout. Immutable dependency files remain shared by hardlink.
   def provision(ws, repo) do
-    with :ok <- validate(ws),
-         {:ok, common} <-
-           git(ws.path, ["rev-parse", "--path-format=absolute", "--git-common-dir"]),
+    with :ok <- validate(ws), do: provision_checkout(ws.path, repo)
+  end
+
+  @doc "Provisions a separate linked checkout, including detached verification worktrees."
+  def provision_checkout(path, repo) do
+    with {:ok, path} <- Files.canonical_path(path),
+         {:ok, ^path} <- git(path, ["rev-parse", "--show-toplevel"]),
+         {:ok, repo} <- Files.canonical_path(repo),
+         {:ok, ^repo} <- git(repo, ["rev-parse", "--show-toplevel"]),
+         false <- path == repo,
+         {:ok, common} <- git(path, ["rev-parse", "--path-format=absolute", "--git-common-dir"]),
          {:ok, ^common} <- git(repo, ["rev-parse", "--path-format=absolute", "--git-common-dir"]),
          {:ok, manifests} <-
-           git(repo, ["ls-files", "-z", "--", "package.json", "**/package.json"]) do
+           git(path, ["ls-files", "-z", "--", "package.json", "**/package.json"]) do
+      ws = %{path: path}
+
       modules =
         manifests
         |> String.split("\0", trim: true)
@@ -148,6 +158,7 @@ defmodule Trailblazer.Loop.Workspace do
         rebase_workspace_links(ws, names)
       end
     else
+      true -> {:error, :same_checkout}
       {:ok, _} -> {:error, :different_repo}
       error -> error
     end

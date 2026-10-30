@@ -96,3 +96,23 @@ settings, not changes to the shared model preset. Do not tune an active run or
 claim performance from sampler settings alone. Regression tests must cover native edits, the final forced submission,
 malformed arguments, mixed read/edit batches, and transport options. A live
 planner-to-candidate trial is required before claiming a protocol repair works.
+
+## Verification-only recovery
+
+Worker and detached verification worktrees use the same dependency provisioning
+implementation, including package-level node_modules and candidate-local workspace
+aliases. The verifier still pins the reported commit to its candidate branch,
+runs the admitted check independently, rejects tracked mutations, and cleans up.
+
+After fixing an infrastructure-only verification failure, explicitly recheck the
+existing candidate from the release RPC console:
+
+```elixir
+Trailblazer.Planner.Companion.reverify("<case-id>")
+```
+
+This accepts only an existing fixed candidate whose planner verification is
+blocked. It is idempotent while verifying or already verified, refuses open or
+failed coding cases, and does not dispatch a coder, replay a model, merge, or
+push. Verification evidence and the planner result follow the normal durable
+companion path. Do not edit the assignment database to force completion.

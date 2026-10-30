@@ -120,6 +120,81 @@ defmodule Trailblazer.Planner.CompanionTest do
     assert length(String.split(list, "\n", trim: true)) == 1
   end
 
+  test "independent verification provisions nested dependencies and candidate-local aliases",
+       ctx do
+    {repo, git} = repo(ctx.dir)
+    File.mkdir_p!(Path.join(repo, "packages/app"))
+    File.mkdir_p!(Path.join(repo, "packages/lib"))
+    File.write!(Path.join(repo, "package.json"), ~s({"workspaces":["packages/*"]}))
+    File.write!(Path.join(repo, "packages/app/package.json"), "{}")
+    File.write!(Path.join(repo, "packages/lib/package.json"), ~s({"name":"@demo/lib"}))
+    File.write!(Path.join(repo, "packages/lib/value.txt"), "base")
+    git.(["add", "."])
+    git.(["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "workspace fixture"])
+    File.write!(Path.join(repo, ".git/info/exclude"), "node_modules/\n")
+    File.mkdir_p!(Path.join(repo, "node_modules/external"))
+    File.write!(Path.join(repo, "node_modules/external/installed"), "dependency")
+    File.mkdir_p!(Path.join(repo, "node_modules/@demo"))
+    File.ln_s!(Path.join(repo, "packages/lib"), Path.join(repo, "node_modules/@demo/lib"))
+    File.mkdir_p!(Path.join(repo, "packages/app/node_modules"))
+
+    File.ln_s!(
+      "../../../node_modules/external",
+      Path.join(repo, "packages/app/node_modules/external")
+    )
+
+    check =
+      ~s|test "$(cat packages/app/node_modules/external/installed)" = dependency && test "$(cat node_modules/@demo/lib/value.txt)" = candidate|
+
+    id = admit(repo, %{ref: "vortex:abcdef1", deadline_ms: nil}, check)
+    git.(["checkout", "-qb", "trailblazer/" <> id])
+    File.write!(Path.join(repo, "packages/lib/value.txt"), "candidate")
+    git.(["add", "."])
+    git.(["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "candidate"])
+    {sha, 0} = System.cmd("git", ["rev-parse", "HEAD"], cd: repo)
+    git.(["checkout", "-q", "main"])
+    start(ctx)
+    CaseRecord.close(id, %{case: id, status: :fixed, commit: String.trim(sha), summary: "ok"})
+    eventually(fn -> row(id).state in ["done", "block"] end)
+    assert row(id).state == "done", row(id).note
+    assert File.read!(Path.join(repo, "node_modules/@demo/lib/value.txt")) == "base"
+    {worktrees, 0} = System.cmd("git", ["worktree", "list"], cd: repo)
+    assert length(String.split(worktrees, "\n", trim: true)) == 1
+  end
+
+  test "explicit reverify retries only verification of a fixed blocked candidate", ctx do
+    {repo, git} = repo(ctx.dir)
+    gate = Path.join(ctx.dir, "verification-ready")
+    id = admit(repo, %{ref: "vortex:abcdef1", deadline_ms: nil}, "test -f " <> gate)
+    git.(["branch", "trailblazer/" <> id])
+    {sha, 0} = System.cmd("git", ["rev-parse", "HEAD"], cd: repo)
+    pid = start(ctx)
+    CaseRecord.close(id, %{case: id, status: :fixed, commit: String.trim(sha), summary: "ok"})
+    eventually(fn -> row(id).state == "block" end)
+    File.write!(gate, "ready")
+    assert {:ok, :verifying} = Companion.reverify(id, pid)
+    assert Companion.reverify(id, pid) in [{:ok, :verifying}, {:ok, :already_verified}]
+    eventually(fn -> row(id).state == "done" end)
+    assert {:ok, :already_verified} = Companion.reverify(id, pid)
+    assert CaseRecord.get(id).report["commit"] == String.trim(sha)
+
+    assert Enum.count(
+             String.split(calls(ctx.dir), "\n"),
+             &String.contains?(&1, "done vortex:abcdef1")
+           ) == 1
+  end
+
+  test "reverify refuses unknown, open and failed cases", ctx do
+    {repo, _} = repo(ctx.dir)
+    id = admit(repo, %{ref: "vortex:abcdef1", deadline_ms: nil})
+    pid = start(ctx)
+    assert {:error, :no_assignment} = Companion.reverify("missing", pid)
+    assert {:error, :no_fixed_candidate} = Companion.reverify(id, pid)
+    CaseRecord.close(id, %{case: id, status: :failed, summary: "failed"})
+    eventually(fn -> row(id).state == "block" end)
+    assert {:error, :no_fixed_candidate} = Companion.reverify(id, pid)
+  end
+
   test "the deadline blocks an open case without retrying or cancelling it", ctx do
     {repo, _} = repo(ctx.dir)
     id = admit(repo, %{ref: "vortex:abcdef1", deadline_ms: 100})
@@ -160,7 +235,9 @@ defmodule Trailblazer.Planner.CompanionTest do
       Exqlite.query!(
         conn,
         "UPDATE planner_assignment SET state = 'verifying' WHERE case_id = ?",
-        [id], timeout: :infinity)
+        [id],
+        timeout: :infinity
+      )
     end)
 
     start(ctx)

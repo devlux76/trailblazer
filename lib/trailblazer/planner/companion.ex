@@ -20,7 +20,7 @@ defmodule Trailblazer.Planner.Companion do
   use GenServer
   require Logger
   alias Trailblazer.{Backstop, CaseStore, Config, Events}
-  alias Trailblazer.Loop.{CaseRecord, Check}
+  alias Trailblazer.Loop.{CaseRecord, Check, Workspace}
   alias Trailblazer.Vortex.Store
 
   @default_deadline_ms 4 * 60 * 60 * 1000
@@ -48,6 +48,36 @@ defmodule Trailblazer.Planner.Companion do
     )
 
     :ok
+  end
+
+  @doc "Rechecks an existing fixed candidate after a verification-only blocker; never reruns the coder."
+  def reverify(id, server \\ __MODULE__),
+    do: GenServer.call(server, {:reverify, id}, :infinity)
+
+  @impl true
+  def handle_call({:reverify, id}, _from, state) do
+    row = Enum.find(list(), &(&1.case_id == id))
+    record = CaseRecord.get(id, inline: false)
+
+    cond do
+      row == nil ->
+        {:reply, {:error, :no_assignment}, state}
+
+      record == nil or record.status != "fixed" or not is_binary(field(record.report, :commit)) ->
+        {:reply, {:error, :no_fixed_candidate}, state}
+
+      row.state == "done" ->
+        {:reply, {:ok, :already_verified}, state}
+
+      Enum.any?(state.running, fn {_, running} -> running.case_id == id end) ->
+        {:reply, {:ok, :verifying}, state}
+
+      row.state == "block" ->
+        {:reply, {:ok, :verifying}, verify(row, state)}
+
+      true ->
+        {:reply, {:error, :verification_not_blocked}, state}
+    end
   end
 
   @impl true
@@ -219,11 +249,8 @@ defmodule Trailblazer.Planner.Companion do
       try do
         with :ok <- File.mkdir_p(Path.dirname(root)),
              :ok <- remove_interrupted_worktree(repo, root),
-             {:ok, _} <- git(repo, ["worktree", "add", "--detach", root, commit]) do
-          for dir <- ~w(node_modules deps),
-              File.dir?(Path.join(repo, dir)),
-              do: File.ln_s(Path.join(repo, dir), Path.join(root, dir))
-
+             {:ok, _} <- git(repo, ["worktree", "add", "--detach", root, commit]),
+             :ok <- Workspace.provision_checkout(root, repo) do
           result = Check.run(root, command, timeout: limit)
 
           tail =
@@ -250,6 +277,15 @@ defmodule Trailblazer.Planner.Companion do
                    "Independent verification status failed: #{String.slice(reason, -300, 300)}"}
               end
           end
+        else
+          {:error, reason} ->
+            detail =
+              inspect(reason)
+              |> String.replace(root, "<verification-worktree>")
+              |> String.replace(repo, "<repository>")
+              |> String.slice(-900, 900)
+
+            {:error, "Independent verification setup failed: #{detail}"}
         end
       after
         git(repo, ["worktree", "remove", "--force", root])

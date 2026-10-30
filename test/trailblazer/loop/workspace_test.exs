@@ -82,6 +82,15 @@ defmodule Trailblazer.Loop.WorkspaceTest do
     assert {:error, _} = Workspace.reset(%{ws | path: ctx.repo})
   end
 
+  test "shared checkout provisioning refuses the original checkout and unrelated repositories",
+       ctx do
+    assert {:error, :same_checkout} = Workspace.provision_checkout(ctx.repo, ctx.repo)
+    other = Path.join(Path.dirname(ctx.repo), "unrelated")
+    File.mkdir_p!(other)
+    {_, 0} = System.cmd("git", ["init", "-q"], cd: other)
+    assert {:error, :different_repo} = Workspace.provision_checkout(other, ctx.repo)
+  end
+
   test "monorepo dependency links resolve candidate workspace code and survive reset", ctx do
     for package <- ["app", "lib"] do
       File.mkdir_p!(Path.join([ctx.repo, "packages", package]))
