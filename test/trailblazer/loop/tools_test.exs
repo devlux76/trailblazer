@@ -102,6 +102,25 @@ defmodule Trailblazer.Loop.ToolsTest do
     end
   end
 
+  test "structured replies accept only whole schema-valid JSON without changing code bytes" do
+    blocks = [%{path: "new.ts", search: "", replace: "const x = \\\"literal\\\\n\\\"\n"}]
+    array = Jason.encode!(blocks)
+
+    for text <- [array, Jason.encode!(%{blocks: blocks}), "```json\n#{array}\n```"] do
+      assert {:ok, ^blocks} = Tools.text_edit_blocks(text)
+    end
+
+    for text <- [
+          "Here are edits:\n```json\n#{array}\n```",
+          array <> " trailing",
+          Jason.encode!(%{blocks: blocks, command: "untrusted"}),
+          "[]",
+          ~s([{"path":"x","search":null,"replace":"x"}])
+        ] do
+      refute match?({:ok, _}, Tools.text_edit_blocks(text))
+    end
+  end
+
   test "where: one compact line per definition, with its place", %{dir: dir, opts: opts} do
     text = Tools.call(dir, "where", ~s({"name": "put"}), opts)
     assert text =~ "Mini.Store.put/2"

@@ -60,7 +60,7 @@ defmodule Trailblazer.Vortex.Protocol do
     with true <-
            Enum.all?(
              Map.keys(payload),
-             &(&1 in ~w(repo request check files design planner read_rounds reasoning_budget_tokens))
+             &(&1 in ~w(repo request check files design planner read_rounds reasoning_budget_tokens replay_reply_from))
            ),
          repo when is_binary(repo) <- payload["repo"],
          {:ok, repo} <- Files.canonical_path(repo),
@@ -77,6 +77,8 @@ defmodule Trailblazer.Vortex.Protocol do
          true <-
            not Map.has_key?(payload, "reasoning_budget_tokens") or
              Trailblazer.Model.valid_reasoning_budget?(payload["reasoning_budget_tokens"]),
+         true <-
+           not Map.has_key?(payload, "replay_reply_from") or id?(payload["replay_reply_from"]),
          false <- Workspace.own_repo?(repo),
          {:ok, planner} <- planner(payload["planner"], repo) do
       task = %{
@@ -96,6 +98,11 @@ defmodule Trailblazer.Vortex.Protocol do
       task =
         if Map.has_key?(payload, "reasoning_budget_tokens"),
           do: Map.put(task, :reasoning_budget_tokens, payload["reasoning_budget_tokens"]),
+          else: task
+
+      task =
+        if Map.has_key?(payload, "replay_reply_from"),
+          do: Map.put(task, :replay_reply_from, payload["replay_reply_from"]),
           else: task
 
       {:ok, if(planner, do: Map.put(task, :planner, planner), else: task)}

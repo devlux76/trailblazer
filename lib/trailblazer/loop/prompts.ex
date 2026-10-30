@@ -86,8 +86,12 @@ defmodule Trailblazer.Loop.Prompts do
       |> String.split("\n")
       |> Enum.drop_while(&(String.trim(&1) == ""))
       |> case do
-        [] -> {"", []}
-        [first | rest] -> {first |> String.trim() |> String.trim("*") |> String.trim("`"), rest}
+        [] ->
+          {"", []}
+
+        [first | rest] ->
+          first = Regex.replace(~r/\A\#{1,6}\s+/, String.trim(first), "")
+          {first |> String.trim("*") |> String.trim("`"), rest}
       end
 
     cond do

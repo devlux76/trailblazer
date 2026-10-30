@@ -119,6 +119,103 @@ defmodule Trailblazer.LoopTest do
     }
   end
 
+  test "a complete fenced JSON edit array uses the same check review and commit path", %{
+    repo: repo,
+    opts: opts
+  } do
+    text = "```json\n" <> Jason.encode!([greeting_block()]) <> "\n```"
+    script([reply(text), reply("## PASS")])
+    report = Loop.run(task(repo), opts)
+    assert report.status == :fixed
+    assert git(repo, ["show", "#{report.commit}:lib/greeting.ex"]) =~ "Hello, "
+  end
+
+  defp saved_reply(repo, overrides \\ %{}, close? \\ true) do
+    {:ok, id} = CaseRecord.open(task(repo, %{from: "cli"}))
+
+    :ok =
+      CaseRecord.event(id, :attempt, %{
+        stage: :workspace,
+        base: String.trim(git(repo, ["rev-parse", "HEAD"]))
+      })
+
+    {:ok, data} = reply("```json\n" <> Jason.encode!([greeting_block()]) <> "\n```")
+    :ok = CaseRecord.event(id, :reply, Map.merge(data, %{role: :coder}) |> Map.merge(overrides))
+    :ok = CaseRecord.event(id, :edit, %{status: :no_blocks})
+    if close?, do: CaseRecord.close(id, %{case: id, status: :failed, summary: "format rejected"})
+
+    on_exit(fn ->
+      if CaseRecord.get(id).status == "open",
+        do: CaseRecord.close(id, %{case: id, status: :failed})
+    end)
+
+    id
+  end
+
+  test "saved reply recovery performs no coding inference and records immutable provenance", %{
+    repo: repo,
+    opts: opts
+  } do
+    source = saved_reply(repo)
+    script([reply("PASS")])
+    report = Loop.run(task(repo, %{replay_reply_from: source}), opts)
+    assert report.status == :fixed
+    assert report.cost.model_calls == 1
+    assert report.cost.completion_tokens == 10
+    assert CaseRecord.get(source).status == "failed"
+    assert Enum.any?(CaseRecord.get(report.case).events, &(&1.data["replayed_from"] == source))
+    assert git(repo, ["show", "#{report.commit}:lib/greeting.ex"]) =~ "Hello, "
+  end
+
+  test "recovery refuses partial replies and different base peer or check without model calls", %{
+    repo: repo,
+    opts: opts
+  } do
+    source = saved_reply(repo)
+    partial = saved_reply(repo, %{finish_reason: "length"})
+    open = saved_reply(repo, %{}, false)
+
+    for extra <- [
+          %{replay_reply_from: partial},
+          %{replay_reply_from: open},
+          %{replay_reply_from: "missing"},
+          %{replay_reply_from: source, from: "other-peer"},
+          %{replay_reply_from: source, check: "false"}
+        ] do
+      report = Loop.run(task(repo, extra), opts)
+      assert report.status == :failed
+      assert report.cost.model_calls == 0
+      assert report.files == []
+    end
+
+    other = repo <> "-other"
+    {_, 0} = System.cmd("git", ["clone", "-q", repo, other])
+    on_exit(fn -> File.rm_rf!(other) end)
+    report = Loop.run(task(other, %{replay_reply_from: source}), opts)
+    assert report.status == :failed
+    assert report.cost.model_calls == 0
+    File.write!(Path.join(repo, "new.txt"), "new base")
+    git(repo, ["add", "."])
+    git(repo, ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "new base"])
+    report = Loop.run(task(repo, %{replay_reply_from: source}), opts)
+    assert report.status == :failed
+    assert report.cost.model_calls == 0
+    refute_received {:asked, _, _}
+  end
+
+  test "a failed recovery review preserves the applied artifact and never regenerates code", %{
+    repo: repo,
+    opts: opts
+  } do
+    source = saved_reply(repo)
+    script([reply("FAIL: preserve evidence")])
+    report = Loop.run(task(repo, %{replay_reply_from: source}), opts)
+    assert report.status == :failed
+    assert report.attempts == 1
+    assert report.cost.model_calls == 1
+    assert File.read!(Path.join(report.worktree, "lib/greeting.ex")) =~ "Hello, "
+  end
+
   test "native edit submission follows the same check review and candidate path", %{
     repo: repo,
     opts: opts

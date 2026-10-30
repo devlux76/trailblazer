@@ -85,6 +85,13 @@ defmodule Trailblazer.Loop.PromptsTest do
   test "D4: a review is read by its first line; anything else is unclear, not a pass" do
     assert Prompts.review_verdict("PASS") == :pass
     assert Prompts.review_verdict("\n**PASS**\n") == :pass
+    assert Prompts.review_verdict("## PASS") == :pass
+
+    assert Prompts.review_verdict("## FAIL:\nwrong metadata cast") ==
+             {:fail, "wrong metadata cast"}
+
+    assert {:unclear, _} = Prompts.review_verdict("Analysis first\n## PASS")
+    assert {:unclear, _} = Prompts.review_verdict("## PASSED? not sure")
 
     assert Prompts.review_verdict("FAIL: lib/a.ex:3 renames x\nlib/b.ex:9 stray IO.inspect") ==
              {:fail, "lib/a.ex:3 renames x\nlib/b.ex:9 stray IO.inspect"}

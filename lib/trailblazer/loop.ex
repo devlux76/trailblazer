@@ -280,6 +280,9 @@ defmodule Trailblazer.Loop do
 
   defp attempts(st, _trail, _files, _check, n, _feedback) when n > @attempts, do: exhausted(st)
 
+  defp attempts(%{task: %{replay_reply_from: source}} = st, _trail, _files, _check, n, _feedback)
+       when is_binary(source) and n > 1, do: exhausted(st)
+
   defp attempts(st, trail, files, check, n, feedback) do
     record(st, :attempt, %{stage: :attempt, n: n})
     tally(:changed, [])
@@ -306,10 +309,12 @@ defmodule Trailblazer.Loop do
         st = %{st | failures: st.failures ++ [failure]}
 
         # the last attempt's edits stay in the worktree for inspection
-        case if(n < @attempts, do: mod(st, :workspace, Workspace).reset(st.ws), else: :ok) do
+        retry? = n < @attempts and is_nil(st.task.replay_reply_from)
+
+        case if(retry?, do: mod(st, :workspace, Workspace).reset(st.ws), else: :ok) do
           :ok ->
             next_feedback =
-              if n < @attempts do
+              if retry? do
                 next_feedback <>
                   "\n\nThe worktree was reset to its original files; all previous edits were discarded. " <>
                   "Apply your complete corrected change to the original files shown above."
@@ -336,17 +341,66 @@ defmodule Trailblazer.Loop do
   end
 
   defp attempt(st, trail, files, check, feedback) do
-    messages = Prompts.coder(st.task, trail, files, feedback, Map.get(st, :head, %{}))
-    record(st, :attempt, %{stage: :prompt_size, bytes: prompt_sizes(messages)})
-
-    with {:ok, reply} <-
-           converse(st, messages, Tools.definitions() ++ [Tools.edit_definition()], :coder),
+    with {:ok, reply} <- coder_reply(st, trail, files, feedback),
          {:ok, blocks} <- blocks(st, reply),
          :ok <- apply_edits(st, blocks),
          :ok <- run_check(st, check),
          :ok <- review(st) do
       {:ok, reply}
     end
+  end
+
+  defp coder_reply(%{task: %{replay_reply_from: id}} = st, _trail, _files, _feedback)
+       when is_binary(id) do
+    with %{status: "failed"} = source <- CaseRecord.get(id),
+         true <- source.repo == st.task.repo and source.task["check"] == st.task.check,
+         true <- (source.task["from"] || "cli") == st.task.from,
+         %{} = ws <-
+           Enum.find(source.events, &(&1.kind == "attempt" and &1.data["stage"] == "workspace")),
+         true <- ws.data["base"] == st.ws.base,
+         %{} = edit <- Enum.find(Enum.reverse(source.events), &(&1.kind == "edit")),
+         true <- edit.data["status"] in ["no_blocks", "unparsed"],
+         %{} = event <-
+           Enum.find(
+             Enum.reverse(source.events),
+             &(&1.kind == "reply" and &1.data["role"] == "coder")
+           ),
+         true <- event.data["finish_reason"] == "stop" and event.data["partial"] != true,
+         true <- Map.get(event.data, "tool_calls", []) == [],
+         {:ok, edits} <- Tools.text_edit_blocks(event.data["content"]) do
+      reply = %{
+        content: event.data["content"],
+        reasoning: "",
+        tool_calls: [],
+        edit_blocks: edits,
+        finish_reason: "stop",
+        usage: %{prompt_tokens: 0, completion_tokens: 0},
+        ms: 0,
+        replayed_from: id,
+        source_reply_seq: event.seq,
+        source_reply_sha256:
+          :crypto.hash(:sha256, event.data["content"]) |> Base.encode16(case: :lower)
+      }
+
+      record(st, :reply, Map.put(reply, :role, :coder))
+      {:ok, reply}
+    else
+      _ ->
+        record(st, :error, %{stage: :replay_reply, source: id, reason: :incompatible_source})
+
+        {:stop,
+         report(
+           st,
+           :failed,
+           "The recorded reply cannot be replayed for this peer, repository, check, base or response format."
+         )}
+    end
+  end
+
+  defp coder_reply(st, trail, files, feedback) do
+    messages = Prompts.coder(st.task, trail, files, feedback, Map.get(st, :head, %{}))
+    record(st, :attempt, %{stage: :prompt_size, bytes: prompt_sizes(messages)})
+    converse(st, messages, Tools.definitions() ++ [Tools.edit_definition()], :coder)
   end
 
   ## The model
@@ -521,6 +575,20 @@ defmodule Trailblazer.Loop do
   defp blocks(_st, %{edit_blocks: blocks}), do: {:ok, blocks}
 
   defp blocks(st, reply) do
+    case Tools.text_edit_blocks(reply.content) do
+      {:ok, edits} ->
+        {:ok, edits}
+
+      {:error, message} ->
+        record(st, :edit, %{status: :unparsed, error: message})
+        {:retry, :unparsed, message}
+
+      :none ->
+        legacy_blocks(st, reply)
+    end
+  end
+
+  defp legacy_blocks(st, reply) do
     case Edits.parse(reply.content) do
       {:ok, []} ->
         record(st, :edit, %{status: :no_blocks})
@@ -736,6 +804,8 @@ defmodule Trailblazer.Loop do
   end
 
   defp exhausted(st) do
+    attempts = length(st.failures)
+
     diagnosis =
       st.failures
       |> Enum.map(&describe(&1.why))
@@ -755,7 +825,7 @@ defmodule Trailblazer.Loop do
           Enum.map(st.failures, fn f ->
             %{n: f.n, summary: changed_summary(f.changed), failure: f.feedback}
           end),
-        diagnosis: "All #{@attempts} attempts failed: #{diagnosis}."
+        diagnosis: "All #{attempts} attempts failed: #{diagnosis}."
       })
 
     record(st, :dossier, %{text: dossier})
@@ -763,9 +833,9 @@ defmodule Trailblazer.Loop do
     report(
       st,
       :failed,
-      "#{@attempts} attempts failed: #{diagnosis}. The dossier says what was tried.",
+      "#{attempts} attempts failed: #{diagnosis}. The dossier says what was tried.",
       %{
-        attempts: @attempts,
+        attempts: attempts,
         dossier: dossier,
         files: tally(:changed)
       }
@@ -898,6 +968,13 @@ defmodule Trailblazer.Loop do
     reasoning_budget =
       Map.get(task, :reasoning_budget_tokens, Map.get(task, "reasoning_budget_tokens"))
 
+    replay = Map.get(task, :replay_reply_from, Map.get(task, "replay_reply_from"))
+
+    unless is_nil(replay) or
+             (is_binary(replay) and
+                Regex.match?(~r/\A[A-Za-z0-9][A-Za-z0-9:._-]{0,127}\z/, replay)),
+           do: raise(ArgumentError, "invalid replay_reply_from")
+
     unless is_integer(read_rounds) and read_rounds in 0..@tool_rounds,
       do: raise(ArgumentError, "read_rounds must be an integer from 0 to #{@tool_rounds}")
 
@@ -913,6 +990,7 @@ defmodule Trailblazer.Loop do
       primary: get.(:primary),
       read_rounds: read_rounds,
       reasoning_budget_tokens: reasoning_budget,
+      replay_reply_from: replay,
       from: get.(:from) || "cli"
     }
   end

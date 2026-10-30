@@ -86,6 +86,20 @@ blocks remain accepted, but are not the required native editing interface.
 Both formats use the same atomic edit application, project check, fresh review,
 and independently checked candidate path. Tool submission alone is not success.
 
+A complete whole-message JSON edit array or `{ "blocks": [...] }` object,
+optionally inside one `json` fence, also uses that exact validator and pipeline.
+Extra fields, malformed/partial JSON and surrounding prose are rejected; code
+strings are never unescaped or repaired heuristically.
+
+`planner assign ... --replay-reply-from CASE` explicitly recovers the last
+complete structured coder reply of a closed failed case. Source peer,
+repository, check and original Git base must match. The source remains failed;
+a new case records its reply sequence and SHA-256, applies the unchanged bytes,
+then runs the normal check, fresh review, commit and independent verification.
+It performs no coding inference and makes only one recovery attempt; failed
+review keeps the artifact for inspection instead of regenerating or resetting.
+Unambiguous Markdown verdict headings use the existing exact PASS/FAIL rules.
+
 An explicit assignment can set `planner assign ... --read-rounds N` (0 through
 6, default 6). The validated task field survives admission and persisted case
 recovery. Zero exposes and forces only `submit_edits` from the first coder call;

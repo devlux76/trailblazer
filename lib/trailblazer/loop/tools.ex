@@ -133,6 +133,28 @@ defmodule Trailblazer.Loop.Tools do
 
   def edit_blocks(_), do: {:error, "submit_edits arguments must be JSON"}
 
+  @doc "Strict whole-message JSON fallback; code bytes and edit validation stay unchanged."
+  def text_edit_blocks(text) when is_binary(text) do
+    text = String.trim(text)
+    structured? = String.starts_with?(text, ["[", "{", "```json", "```JSON"])
+
+    payload =
+      case Regex.run(~r/\A```json[ \t]*\R([\s\S]*)\R```\z/i, text) do
+        [_, json] -> json
+        _ -> text
+      end
+
+    if structured? do
+      case Jason.decode(payload) do
+        {:ok, blocks} when is_list(blocks) -> edit_blocks(Jason.encode!(%{blocks: blocks}))
+        {:ok, args} when is_map(args) -> edit_blocks(Jason.encode!(args))
+        _ -> {:error, "structured edits must be one complete JSON array or blocks object"}
+      end
+    else
+      :none
+    end
+  end
+
   defp tool(name, description, properties, required) do
     %{
       type: "function",

@@ -52,6 +52,14 @@ defmodule Trailblazer.Vortex.ProtocolTest do
              Protocol.encode(Map.put(@envelope, "payload", String.duplicate("x", 17_000)))
   end
 
+  test "an explicit replay source is preserved and must be a case identifier" do
+    message = %{@envelope | "payload" => Map.put(@task, "replay_reply_from", "fixture-case")}
+    assert {:ok, task} = Protocol.task(message, @policy, "caller")
+    assert task.replay_reply_from == "fixture-case"
+    message = %{@envelope | "payload" => Map.put(@task, "replay_reply_from", "../file")}
+    assert {:error, _} = Protocol.task(message, @policy, "caller")
+  end
+
   test "task admission preserves bounded read rounds and rejects invalid budgets" do
     for rounds <- [0, 1, 6] do
       message = %{@envelope | "payload" => Map.put(@task, "read_rounds", rounds)}
