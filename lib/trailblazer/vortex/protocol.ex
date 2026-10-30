@@ -57,7 +57,11 @@ defmodule Trailblazer.Vortex.Protocol do
 
   def task(%{"type" => "task", "payload" => payload}, %{role: role, repos: repos}, peer)
       when role in [:caller, :collaborator] do
-    with true <- Enum.all?(Map.keys(payload), &(&1 in ~w(repo request check files design planner))),
+    with true <-
+           Enum.all?(
+             Map.keys(payload),
+             &(&1 in ~w(repo request check files design planner read_rounds))
+           ),
          repo when is_binary(repo) <- payload["repo"],
          {:ok, repo} <- Files.canonical_path(repo),
          checks when is_list(checks) <- repos[repo],
@@ -68,6 +72,8 @@ defmodule Trailblazer.Vortex.Protocol do
          true <- is_list(files) and Enum.all?(files, &relative?/1),
          design <- Map.get(payload, "design", []),
          true <- is_list(design) and Enum.all?(design, &is_binary/1),
+         read_rounds <- Map.get(payload, "read_rounds", 6),
+         true <- is_integer(read_rounds) and read_rounds in 0..6,
          false <- Workspace.own_repo?(repo),
          {:ok, planner} <- planner(payload["planner"], repo) do
       task = %{
@@ -78,6 +84,11 @@ defmodule Trailblazer.Vortex.Protocol do
         design: design,
         from: "vortex:#{peer}"
       }
+
+      task =
+        if Map.has_key?(payload, "read_rounds"),
+          do: Map.put(task, :read_rounds, read_rounds),
+          else: task
 
       {:ok, if(planner, do: Map.put(task, :planner, planner), else: task)}
     else

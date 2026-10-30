@@ -86,6 +86,14 @@ blocks remain accepted, but are not the required native editing interface.
 Both formats use the same atomic edit application, project check, fresh review,
 and independently checked candidate path. Tool submission alone is not success.
 
+An explicit assignment can set `planner assign ... --read-rounds N` (0 through
+6, default 6). The validated task field survives admission and persisted case
+recovery. Zero exposes and forces only `submit_edits` from the first coder call;
+use it when the supplied implementation plan resolves every needed edit. Other
+tasks can retain a small read budget. Repeating an existing assignment with a
+different budget is refused; reconcile it before starting a fresh task. Reading,
+output and wall-clock budgets are separate controls.
+
 Spark requests follow its model card: thinking enabled with `high` (its highest
 supported effort), temperature 1.0, top-p 0.95, top-k disabled, repeat penalty 1.0,
 and presence/frequency penalties 0. Effort is not a hard budget. Callers can set

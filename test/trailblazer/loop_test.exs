@@ -150,6 +150,55 @@ defmodule Trailblazer.LoopTest do
     assert Loop.run(task(repo), opts).status == :fixed
   end
 
+  test "zero read rounds forces native edits on the first call, including persisted string keys",
+       %{
+         repo: repo,
+         opts: opts
+       } do
+    first = fn _messages, options ->
+      assert Enum.map(options[:tools], & &1.function.name) == ["submit_edits"]
+      assert options[:tool_choice] == %{type: "function", function: %{name: "submit_edits"}}
+      submitted([greeting_block()])
+    end
+
+    script([first, reply("PASS")])
+    persisted = task(repo, %{read_rounds: 0}) |> Jason.encode!() |> Jason.decode!()
+    report = Loop.run(persisted, opts)
+    assert report.status == :fixed
+    assert report.cost.model_calls == 2
+    assert git(repo, ["show", "#{report.commit}:lib/greeting.ex"]) =~ "Hello, "
+  end
+
+  test "one read round allows one exchange then forces edits", %{repo: repo, opts: opts} do
+    first = fn _messages, options ->
+      assert Enum.any?(options[:tools], &(&1.function.name == "read"))
+      refute options[:tool_choice]
+
+      reply("", %{
+        tool_calls: [%{id: "r", name: "read", arguments: ~s({"path":"lib/greeting.ex"})}]
+      })
+    end
+
+    second = fn _messages, options ->
+      assert Enum.map(options[:tools], & &1.function.name) == ["submit_edits"]
+      assert options[:tool_choice] == %{type: "function", function: %{name: "submit_edits"}}
+      submitted([greeting_block()])
+    end
+
+    script([first, second, reply("PASS")])
+    assert Loop.run(task(repo, %{read_rounds: 1}), opts).status == :fixed
+  end
+
+  test "invalid read budgets fail before any model call", %{repo: repo, opts: opts} do
+    for invalid <- [-1, 7, true, false, nil, "0", 0.5] do
+      assert_raise ArgumentError, ~r/read_rounds/, fn ->
+        Loop.run(task(repo, %{read_rounds: invalid}), opts)
+      end
+    end
+
+    refute_received {:asked, _, _}
+  end
+
   test "a mixed read and edit batch is rejected without applying any edit", %{
     repo: repo,
     opts: opts

@@ -105,6 +105,7 @@ defmodule Trailblazer.LoopAPITest do
         repo: "/fixture",
         request: "fix",
         files: ["a.ex"],
+        read_rounds: 0,
         design: ["Keep the API"],
         check: "mix test"
       })
@@ -113,6 +114,7 @@ defmodule Trailblazer.LoopAPITest do
     assert %{"case" => id} = Jason.decode!(response.resp_body)
     assert_receive {:started, task, worker, ^id}
     assert task.files == ["a.ex"]
+    assert task.read_rounds == 0
     assert task.design == ["Keep the API"]
     state = request(opts, "case", %{case: id})
     assert state.status == 200
@@ -131,6 +133,15 @@ defmodule Trailblazer.LoopAPITest do
              request(opts, "case", %{case: id}).resp_body |> Jason.decode!()
 
     assert request(opts, "case", %{case: "unknown"}).status == 404
+  end
+
+  test "invalid read budgets are rejected before opening a case", %{opts: opts} do
+    for invalid <- [-1, 7, true, false, nil, "0", 0.5] do
+      assert request(opts, "run", %{repo: "/fixture", request: "fix", read_rounds: invalid}).status ==
+               400
+    end
+
+    refute_received {:started, _, _, _}
   end
 
   test "bad tasks are rejected before creating cases", %{opts: opts} do

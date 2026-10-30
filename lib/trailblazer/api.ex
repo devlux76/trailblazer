@@ -82,6 +82,7 @@ defmodule Trailblazer.API do
           repo: Path.expand(params["repo"]),
           request: params["request"],
           files: Map.get(params, "files", []),
+          read_rounds: Map.get(params, "read_rounds", 6),
           design: params["design"],
           check: params["check"],
           from: "cli"
@@ -318,7 +319,10 @@ defmodule Trailblazer.API do
         is_list(Map.get(p, "files", [])) and Enum.all?(Map.get(p, "files", []), &is_binary/1)
 
   defp valid_args?("run", p) do
-    is_binary(p["request"]) and String.trim(p["request"]) != "" and
+    read_rounds = Map.get(p, "read_rounds", 6)
+
+    is_integer(read_rounds) and read_rounds in 0..6 and
+      is_binary(p["request"]) and String.trim(p["request"]) != "" and
       is_list(Map.get(p, "files", [])) and Enum.all?(Map.get(p, "files", []), &is_binary/1) and
       (is_nil(p["check"]) or is_binary(p["check"])) and
       (is_nil(p["design"]) or is_binary(p["design"]) or

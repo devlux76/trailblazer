@@ -36,7 +36,7 @@ defmodule Trailblazer.Loop do
 
   @doc """
   Runs `task` (design §7.1: `repo`, `request`, and optionally `files`,
-  `design`, `check`, `from`) and gives the report (§7.6). `opts[:case_id]`
+  `design`, `check`, `from`, `read_rounds` from 0 to 6) and gives the report (§7.6). `opts[:case_id]`
   is a case already opened for the task (the API opens it before queueing).
   """
   @spec run(map(), keyword()) :: map()
@@ -338,7 +338,7 @@ defmodule Trailblazer.Loop do
 
   ## The model
 
-  # One exchange: the model may call tools for up to @tool_rounds rounds,
+  # One exchange: the task may reduce the default reading budget,
   # then must submit edits through the remaining edit tool.
   defp converse(st, messages, tools, role, round \\ 1) do
     {tools_now, messages} =
@@ -346,7 +346,7 @@ defmodule Trailblazer.Loop do
         tools == nil ->
           {nil, messages}
 
-        round <= @tool_rounds ->
+        round <= st.task.read_rounds ->
           {tools, messages}
 
         true ->
@@ -376,7 +376,7 @@ defmodule Trailblazer.Loop do
             {:retry, :unparsed,
              "Call submit_edits alone, without read/search calls, with all changes."}
 
-          round > @tool_rounds ->
+          round > st.task.read_rounds ->
             {:retry, :no_blocks, "Reading budget exhausted. Call submit_edits with the changes."}
 
           true ->
@@ -863,6 +863,10 @@ defmodule Trailblazer.Loop do
 
   defp normalize(task) do
     get = fn key -> task[key] || task[to_string(key)] end
+    read_rounds = Map.get(task, :read_rounds, Map.get(task, "read_rounds", @tool_rounds))
+
+    unless is_integer(read_rounds) and read_rounds in 0..@tool_rounds,
+      do: raise(ArgumentError, "read_rounds must be an integer from 0 to #{@tool_rounds}")
 
     %{
       repo: get.(:repo),
@@ -871,6 +875,7 @@ defmodule Trailblazer.Loop do
       design: get.(:design),
       check: get.(:check),
       primary: get.(:primary),
+      read_rounds: read_rounds,
       from: get.(:from) || "cli"
     }
   end

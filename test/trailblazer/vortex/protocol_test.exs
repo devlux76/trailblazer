@@ -51,4 +51,17 @@ defmodule Trailblazer.Vortex.ProtocolTest do
     assert {:error, :too_large} =
              Protocol.encode(Map.put(@envelope, "payload", String.duplicate("x", 17_000)))
   end
+
+  test "task admission preserves bounded read rounds and rejects invalid budgets" do
+    for rounds <- [0, 1, 6] do
+      message = %{@envelope | "payload" => Map.put(@task, "read_rounds", rounds)}
+      assert {:ok, task} = Protocol.task(message, @policy, "caller")
+      assert task.read_rounds == rounds
+    end
+
+    for invalid <- [-1, 7, true, false, nil, "0", 0.5] do
+      message = %{@envelope | "payload" => Map.put(@task, "read_rounds", invalid)}
+      assert {:error, :unauthorized_task} = Protocol.task(message, @policy, "caller")
+    end
+  end
 end
