@@ -128,7 +128,10 @@ defmodule Trailblazer.Planner.SupervisorTest do
   test "a research card dispatches through the real research server, no injected fun", ctx do
     start_supervised!({
       Research,
-      config: ctx.config, transport: transport_fun(), run: run_fun(ctx.log)
+      config: ctx.config,
+      transport: transport_fun(),
+      run: run_fun(ctx.log),
+      peer_busy: fn _ -> :idle end
     })
 
     acquire = fn lease -> push(ctx.log, {:acquire, lease}) && {:ok, lease} end
@@ -176,7 +179,9 @@ defmodule Trailblazer.Planner.SupervisorTest do
   test "without an injected transport the configured vortex endpoint serves the ops", ctx do
     Application.put_env(:trailblazer, :vortex, %{endpoint: "/tmp/opencode/missing-endpoint-file"})
 
-    start_supervised!({Research, config: ctx.config, run: run_fun(ctx.log)})
+    start_supervised!(
+      {Research, config: ctx.config, run: run_fun(ctx.log), peer_busy: fn _ -> :idle end}
+    )
 
     assert {:error, {:create, :transport_unavailable}} =
              Research.dispatch(ctx.config, research_card())

@@ -14,6 +14,7 @@ defmodule Trailblazer.Planner.Research do
   """
 
   use GenServer
+  require Logger
   alias Trailblazer.{Backstop, CaseStore, Events}
   alias Trailblazer.Planner.{Board, Route}
 
@@ -23,6 +24,9 @@ defmodule Trailblazer.Planner.Research do
   @label "dispatch:ready"
   @subscription_ttl 86_400
   @reply_limit_ms 3 * 60 * 60 * 1000
+  @opencode_url "http://127.0.0.1:4096"
+  # Planner actors OpenCode works under, besides the configured research actor.
+  @opencode_actors ["opencode"]
 
   def start_link(opts),
     do: GenServer.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__))
@@ -77,6 +81,9 @@ defmodule Trailblazer.Planner.Research do
       run: opts[:run],
       label: opts[:label],
       reply_limit_ms: opts[:reply_limit_ms] || @reply_limit_ms,
+      # OpenCode is strictly serial (free tier, ban risk): research waits
+      # while it has any running session or holds an assignment elsewhere.
+      peer_busy: opts[:peer_busy] || (&peer_busy(&1, opts)),
       busy: false,
       backstops: %{}
     }
@@ -105,7 +112,49 @@ defmodule Trailblazer.Planner.Research do
         {{:error, {:researched, journal_state(ref)}}, state}
 
       true ->
-        begin_dispatch(state, config, ref, card)
+        case state.peer_busy.(config) do
+          :idle ->
+            begin_dispatch(state, config, ref, card)
+
+          {:busy, why} ->
+            # The brain journals `busy` as unavailable and retries on the next
+            # event; nothing is claimed or announced.
+            Logger.info("trailblazer: research holds #{ref}: #{why}")
+            {{:error, :busy}, state}
+        end
+    end
+  end
+
+  # :idle only when OpenCode answers with no running session and no card is
+  # in progress under its actors. An unknown answer holds: the research peer
+  # is OpenCode, so a job it cannot be asked about cannot be safely sent.
+  defp peer_busy(config, opts) do
+    url = (opts[:opencode_url] || @opencode_url) <> "/api/session/active"
+    actors = Enum.uniq([research_of(config).actor | @opencode_actors])
+
+    with :idle <- opencode_sessions(url),
+         {:ok, []} <- Board.held_by(config, actors, Keyword.take(opts, [:run])) do
+      :idle
+    else
+      {:busy, _} = busy -> busy
+      {:ok, refs} -> {:busy, "OpenCode holds " <> Enum.join(refs, ", ")}
+      {:error, reason} -> {:busy, "the board could not be read: " <> format(reason)}
+    end
+  end
+
+  defp opencode_sessions(url) do
+    case Req.get(url, receive_timeout: 3_000, connect_options: [timeout: 2_000], retry: false) do
+      {:ok, %Req.Response{status: 200, body: %{"data" => data}}} when data == %{} or data == [] ->
+        :idle
+
+      {:ok, %Req.Response{status: 200, body: %{"data" => data}}} when is_map(data) or is_list(data) ->
+        {:busy, "OpenCode has #{Enum.count(data)} running session(s)"}
+
+      {:ok, %Req.Response{status: status}} ->
+        {:busy, "OpenCode's activity is unknown (HTTP #{status})"}
+
+      {:error, reason} ->
+        {:busy, "OpenCode's activity is unknown (#{format(reason)})"}
     end
   end
 
