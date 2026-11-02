@@ -1,8 +1,8 @@
 # Trailblazer: design
 
 Written 2026-10-17 by Claude, from a design conversation with the
-operator. It replaces the "coder" draft in `docs/coder/`, which is kept
-for reference and whose parts are reused here (§9). Where this
+operator. It replaces an earlier "coder" draft, no longer in the repository,
+whose parts are reused here (§9). Where this
 document says *the operator decided*, that is the operator's call;
 where it says *builder's call* or *Claude's call*, it is a default that
 can be changed without asking.
@@ -100,7 +100,7 @@ and the caller does not watch the run.
 - **Toolchain:** Erlang/OTP and Elixir as mirai-agent pins them;
   dependencies at latest while developing, pinned at release.
 - **Licence:** the Aider-derived parts are Apache-2.0 and carry the
-  attribution in `docs/coder/NOTICE`.
+  attribution in `NOTICE` at the repository root.
 
 ## 5. The path of one task
 
@@ -471,7 +471,7 @@ its own product; Claude's call):
   `endpoint.json` on every call
 - `Memory.Embedder` and the Qdrant client in `Memory.Index`
 
-From Aider (Apache-2.0, ported as `docs/coder/design.md` describes):
+From Aider (Apache-2.0; attribution in the root `NOTICE`):
 
 - SEARCH/REPLACE edit blocks: the parser, the tolerant matcher (exact,
   then whitespace-tolerant, then `...` elision), and "did you mean these

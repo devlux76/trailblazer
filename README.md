@@ -5,11 +5,12 @@ the land knows it — definitions, references, design sections and how they use
 each other — so that a code model is given the trail of the task instead of
 being sent to find it.
 
-This repository is being built in phases. Phase 1 is the core: parsing, the
-graph, vectors, design-document nodes, the questions the core answers without a
-model, and the indexer that keeps them current. The design is
-[`docs/design.md`](docs/design.md) and the plan being followed is
-[`docs/2026-10-17-phase1-core-plan.md`](docs/2026-10-17-phase1-core-plan.md).
+It was built in phases: the core (parsing, the graph, vectors, design-document
+nodes, the questions answered without a model, and the indexer that keeps them
+current), the coding loop, its events, and much of the VORTEX integration are
+in. The design is [`docs/design.md`](docs/design.md); the work still open is
+tracked by [`docs/2026-10-23-design-review.md`](docs/2026-10-23-design-review.md)
+and the repository's git-bug issues. The dated plans in `docs/` are historical.
 
 ## Requirements
 

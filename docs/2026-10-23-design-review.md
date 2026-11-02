@@ -9,7 +9,8 @@ measured by accepted fixes per hour rather than inference price alone.
 ## Corrections and evidence
 
 - F1 is partly implemented: `Loop.succeeded/4` calls `workspace.close/1` after
-  a checked commit (`lib/trailblazer/loop.ex`, Endings). Its return is ignored;
+  a checked commit (`lib/trailblazer/loop.ex`, Endings). Its return was ignored
+  (since fixed: `:ok <- workspace.close(st.ws)`);
   `Workspace.close/1` force-removes the worktree and retains its branch.
   `prune/2` has no production caller. Unchecked reviewed changes remain dirty.
   No integration into the primary branch is implemented.
