@@ -312,4 +312,70 @@ defmodule Trailblazer.Loop.CoordinatorIntegrationTest do
     assert git(c.repo, ["rev-parse", "main"]) == old
     assert File.read!(Path.join(c.repo, "file.txt")) == "base\n"
   end
+
+  test "(peer review) cleanup retry cannot erase changes made after its archive", c do
+    {id, ws, sha} = candidate(c)
+    old = git(c.repo, ["rev-parse", "main"])
+    git(c.repo, ["checkout", "-qb", "review-recovery"])
+    {:ok, _} = Lifecycle.prepare_integration(id, old, sha, %{status: :pass, sha: sha})
+    git(c.repo, ["update-ref", "refs/heads/main", sha, old])
+    {:ok, %{"stage" => "integrated"}} = Lifecycle.reconcile(id)
+
+    dir =
+      Path.join(System.tmp_dir!(), "review-stale-archive-#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(dir)
+    {patch, 0} = System.cmd("git", ["diff", "--binary", old, sha], cd: c.repo)
+    File.write!(Path.join(dir, "changes.patch"), patch)
+
+    archive = %{
+      "path" => dir,
+      "branch_sha" => sha,
+      "files" => %{"changes.patch" => Lifecycle.sha256(patch)}
+    }
+
+    {:ok, _} = Lifecycle.prepare_removal(id, archive)
+    note = Path.join(ws.path, "after-archive.txt")
+    File.write!(note, "new evidence after interrupted cleanup\n")
+
+    case Coordinator.accept(id) do
+      {:ok, r} ->
+        saved = File.read!(Path.join(r["archive"]["path"], "changes.patch"))
+        assert saved =~ "new evidence after interrupted cleanup"
+
+      {:error, _} ->
+        assert File.read!(note) == "new evidence after interrupted cleanup\n"
+        assert branch?(c, ws.branch)
+    end
+  end
+
+  test "a stale but intact archive is replaced by a journalled snapshot and the old one is kept",
+       c do
+    {id, ws, sha} = candidate(c)
+    old = git(c.repo, ["rev-parse", "main"])
+    git(c.repo, ["checkout", "-qb", "feature"])
+    {:ok, _} = Lifecycle.prepare_integration(id, old, sha, %{status: :pass, sha: sha})
+    git(c.repo, ["update-ref", "refs/heads/main", sha, old])
+    {:ok, %{"stage" => "integrated"}} = Lifecycle.reconcile(id)
+    dir = Path.join(System.tmp_dir!(), "stale-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+    {patch, 0} = System.cmd("git", ["diff", "--binary", old, sha], cd: c.repo)
+    File.write!(Path.join(dir, "changes.patch"), patch)
+
+    stale = %{
+      "path" => dir,
+      "branch_sha" => sha,
+      "files" => %{"changes.patch" => Lifecycle.sha256(patch)}
+    }
+
+    {:ok, _} = Lifecycle.prepare_removal(id, stale)
+    File.write!(Path.join(ws.path, "file.txt"), "edited after archive\n")
+
+    assert {:ok, r} = Coordinator.accept(id)
+    assert r["archive"]["path"] != dir
+    assert File.read!(Path.join(r["archive"]["path"], "changes.patch")) =~ "+edited after archive"
+    assert Enum.any?(r["history"], &(&1["event"] == "archive_refreshed"))
+    assert Lifecycle.archive_intact?(stale)
+    assert_cleaned(c, ws, r)
+  end
 end

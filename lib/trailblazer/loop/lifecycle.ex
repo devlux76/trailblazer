@@ -195,6 +195,19 @@ defmodule Trailblazer.Loop.Lifecycle do
     end)
   end
 
+  # A pending removal or discard whose checkout changed after its archive
+  # records the newer verified snapshot before anything is removed.
+  def refresh_archive(id, archive) do
+    transition(id, fn r ->
+      cond do
+        r["stage"] not in ~w(removal_pending discard_pending) -> {:error, :no_pending_removal}
+        not archive_intact?(archive) -> {:error, :archive_missing}
+        r["archive"] == archive -> {:ok, r}
+        true -> {:ok, Map.put(r, "archive", archive), "archive_refreshed"}
+      end
+    end)
+  end
+
   @doc "Whether every archived file is present with its recorded SHA-256."
   def archive_intact?(%{"path" => dir, "files" => files}) when is_binary(dir) and is_map(files) do
     map_size(files) > 0 and

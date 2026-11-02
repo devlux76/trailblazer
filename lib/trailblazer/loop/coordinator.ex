@@ -485,6 +485,7 @@ defmodule Trailblazer.Loop.Coordinator do
 
   defp cleanup(id, r) do
     with {:ok, r} <- ensure_removal(id, r),
+         {:ok, r} <- current_archive(id, r),
          :ok <- remove_checkout(r),
          :ok <- delete_branch(r, r["candidate"]),
          {:ok, %{"stage" => "cleanup_complete"} = r} <- Lifecycle.reconcile(id) do
@@ -497,12 +498,39 @@ defmodule Trailblazer.Loop.Coordinator do
 
   defp ensure_removal(_id, %{"stage" => "removal_pending"} = r), do: {:ok, r}
 
+  # Intact is not current: an interrupted cleanup's checkout may have gained
+  # changes after its archive. Immediately before removal the checkout's
+  # present content and branch are compared with the archived snapshot; a
+  # difference is archived anew and journalled before anything goes.
+  defp current_archive(id, r) do
+    with {:ok, branch_sha} <- branch_sha(r),
+         {:ok, patch} <- changes(r, branch_sha) do
+      archived = r["archive"] || %{}
+
+      cond do
+        # a damaged archive means the evidence store itself is suspect: block
+        not Lifecycle.archive_intact?(archived) ->
+          {:error, :archive_missing}
+
+        branch_sha == archived["branch_sha"] and
+            Lifecycle.sha256(patch) == get_in(archived, ["files", "changes.patch"]) ->
+          {:ok, r}
+
+        true ->
+          with {:ok, archive} <- archive(id, r), do: Lifecycle.refresh_archive(id, archive)
+      end
+    else
+      {:error, reason} -> {:error, {:archive_failed, reason}}
+    end
+  end
+
   defp ensure_removal(id, r) do
     with {:ok, archive} <- archive(id, r), do: Lifecycle.prepare_removal(id, archive)
   end
 
   defp discard(id, r) do
-    with :ok <- remove_checkout(r),
+    with {:ok, r} <- current_archive(id, r),
+         :ok <- remove_checkout(r),
          :ok <- delete_branch(r, r["archive"]["branch_sha"]),
          {:ok, %{"stage" => "discarded"} = r} <- Lifecycle.reconcile(id) do
       {:ok, r}
@@ -577,11 +605,18 @@ defmodule Trailblazer.Loop.Coordinator do
 
   # Written outside any worktree, atomically, then read back against its
   # SHA-256 before anything is removed (Lifecycle.archive_intact?/1).
+  # Each snapshot gets its own content-addressed directory, so replacing a
+  # stale archive never disturbs the one the journal still names.
   defp archive(id, r) do
-    dir = Path.join([Config.get(:state_dir), "archive", id])
-
     with {:ok, branch_sha} <- branch_sha(r),
          {:ok, patch} <- changes(r, branch_sha),
+         dir =
+           Path.join([
+             Config.get(:state_dir),
+             "archive",
+             id,
+             String.slice(Lifecycle.sha256(patch), 0, 16)
+           ]),
          journal = Jason.encode!(r, pretty: true),
          :ok <- File.mkdir_p(dir),
          :ok <- put(dir, "journal.json", journal),
