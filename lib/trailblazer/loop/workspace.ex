@@ -1,8 +1,9 @@
 defmodule Trailblazer.Loop.Workspace do
   @moduledoc """
   A task's private Git worktree, forked from HEAD, never the caller's dirty
-  checkout. Cleanup is explicit and retains branches. `prune/2` takes a Unix
-  timestamp cutoff and removes only this repo's older managed worktrees.
+  checkout. Cleanup is explicit and retains branches; removing a case's branch
+  and archiving its evidence belong to `Trailblazer.Loop.Coordinator`, driven
+  by the case journal, never by age.
   """
   alias Trailblazer.{Config, Files}
   @source_repo Path.expand("../../..", __DIR__)
@@ -252,46 +253,6 @@ defmodule Trailblazer.Loop.Workspace do
          do: :ok
   end
 
-  def prune(repo, older_than) when is_integer(older_than) do
-    with {:ok, common} <- git(repo, ["rev-parse", "--path-format=absolute", "--git-common-dir"]),
-         {:ok, roots} <- git(repo, ["rev-list", "--max-parents=0", "HEAD"]),
-         false <- own?(repo, common, roots),
-         {:ok, text} <- git(repo, ["worktree", "list", "--porcelain", "-z"]) do
-      text
-      |> String.split("\0\0", trim: true)
-      |> Enum.reduce_while(:ok, fn record, :ok ->
-        fields = String.split(record, "\0", trim: true)
-
-        path =
-          fields
-          |> Enum.find_value(
-            &(String.starts_with?(&1, "worktree ") && String.replace_prefix(&1, "worktree ", ""))
-          )
-
-        branch =
-          fields
-          |> Enum.find_value(
-            &(String.starts_with?(&1, "branch ") &&
-                String.replace_prefix(&1, "branch refs/heads/", ""))
-          )
-
-        locked = Enum.any?(fields, &String.starts_with?(&1, "locked"))
-
-        if path && branch && managed?(path, branch) && not locked && old?(path, older_than) do
-          case remove(common, path) do
-            {:ok, _} -> {:cont, :ok}
-            error -> {:halt, error}
-          end
-        else
-          {:cont, :ok}
-        end
-      end)
-    else
-      true -> {:error, :own_repo}
-      error -> error
-    end
-  end
-
   # The root-commit check is fixed at compile time and a history rewrite defeats it
   # (trailblazer:d5e9070), so identity also comes from the checked-out project:
   # any HEAD whose mix.exs declares the :trailblazer application is this repository.
@@ -325,13 +286,6 @@ defmodule Trailblazer.Loop.Workspace do
   defp managed?(_, _), do: false
   defp safe_id?(id), do: is_binary(id) and Regex.match?(~r/\A[A-Za-z0-9][A-Za-z0-9_-]*\z/, id)
   defp root, do: Path.join(Config.get(:state_dir), "worktrees")
-
-  defp old?(path, cutoff) do
-    case File.stat(path, time: :posix) do
-      {:ok, stat} -> stat.mtime < cutoff
-      _ -> false
-    end
-  end
 
   defp remove(common, path),
     do: git(File.cwd!(), ["--git-dir", common, "worktree", "remove", "--force", "--", path])

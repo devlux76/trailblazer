@@ -120,7 +120,8 @@ defmodule Trailblazer.Planner.ResearchTest do
           config: ctx.config,
           transport: transport_fun(ctx.log),
           run: run_fun(ctx.log),
-          label: label_fun(ctx.log)
+          label: label_fun(ctx.log),
+          peer_busy: fn _config -> :idle end
         ],
         extra
       )
@@ -206,6 +207,83 @@ defmodule Trailblazer.Planner.ResearchTest do
 
     # the serial slot is held by the waiting row: a second dispatch refuses
     assert {:error, :busy} = Research.dispatch(ctx.config, other_card("trailblazer:zz22bb"))
+  end
+
+  ## OpenCode busy elsewhere (trailblazer:4657430)
+
+  defmodule FakeOpenCode do
+    import Plug.Conn
+    def init(body), do: body
+
+    def call(conn, body),
+      do: conn |> put_resp_content_type("application/json") |> send_resp(200, body)
+  end
+
+  defp fake_opencode(body) do
+    pid = start_supervised!({Bandit, plug: {FakeOpenCode, body}, port: 0, ip: :loopback})
+    {:ok, {_ip, port}} = ThousandIsland.listener_info(pid)
+    "http://127.0.0.1:#{port}"
+  end
+
+  # The real check, with the board's doing column answered by `rows`.
+  defp board_run_fun(log, rows) do
+    fn args ->
+      if List.first(args) == "board" do
+        push(log, {:board, args})
+        %{status: :pass, output_tail: Jason.encode!(%{"cards" => rows})}
+      else
+        run_fun(log).(args)
+      end
+    end
+  end
+
+  defp start_with_opencode(ctx, url, rows) do
+    start_research(ctx,
+      run: board_run_fun(ctx.log, rows),
+      peer_busy: nil,
+      opencode_url: url
+    )
+  end
+
+  test "an injected busy peer holds the card: nothing is claimed or announced", ctx do
+    start_research(ctx, peer_busy: fn _ -> {:busy, "OpenCode has 1 running session(s)"} end)
+
+    assert {:error, :busy} = Research.dispatch(ctx.config, card())
+    assert logged(ctx.log, :run) == []
+    assert logged(ctx.log, :create) == []
+    assert Research.row(card().ref) == nil
+  end
+
+  test "an OpenCode with a running session holds research", ctx do
+    url = fake_opencode(~s({"data":{"ses_1":{"status":"busy"}}}))
+    start_with_opencode(ctx, url, [])
+
+    assert {:error, :busy} = Research.dispatch(ctx.config, card())
+    assert logged(ctx.log, :create) == []
+  end
+
+  test "a card in progress under OpenCode's actor holds research", ctx do
+    url = fake_opencode(~s({"data":{}}))
+    start_with_opencode(ctx, url, [["vortex:abc1234", "opencode", "p1"]])
+
+    assert {:error, :busy} = Research.dispatch(ctx.config, card())
+    assert logged(ctx.log, :create) == []
+  end
+
+  test "an unreachable OpenCode holds research rather than guessing it idle", ctx do
+    start_with_opencode(ctx, "http://127.0.0.1:9", [])
+
+    assert {:error, :busy} = Research.dispatch(ctx.config, card())
+    assert logged(ctx.log, :run) == []
+  end
+
+  test "an idle OpenCode with nothing held lets research dispatch", ctx do
+    url = fake_opencode(~s({"data":{}}))
+    start_with_opencode(ctx, url, [["vortex:abc1234", "codex", "p1"]])
+
+    assert :ok = Research.dispatch(ctx.config, card())
+    assert [{:board, _}] = logged(ctx.log, :board)
+    assert length(logged(ctx.log, :create)) == 1
   end
 
   test "a claim failure journals held and starts no conference", ctx do

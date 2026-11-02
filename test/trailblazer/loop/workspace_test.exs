@@ -186,14 +186,4 @@ defmodule Trailblazer.Loop.WorkspaceTest do
 
     assert {:error, :own_repo} = result
   end
-
-  test "prune removes only this repo's old managed worktrees and preserves branches", ctx do
-    {:ok, old} = Workspace.open(ctx.repo, ctx.case_id <> "-old")
-    {:ok, fresh} = Workspace.open(ctx.repo, ctx.case_id <> "-fresh")
-    File.touch!(old.path, 1_600_000_000)
-    assert :ok = Workspace.prune(ctx.repo, 1_600_000_001)
-    refute File.exists?(old.path)
-    assert File.exists?(fresh.path)
-    assert ctx.git.(["rev-parse", old.branch]) == old.base
-  end
 end

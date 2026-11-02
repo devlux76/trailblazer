@@ -1,6 +1,8 @@
 # Incremental edge resolution after a changed sync
 
-Status: proposal for Claude's review; no implementation or commits.
+Status: implemented (`lib/trailblazer/store/resolution.ex`, `lib/trailblazer/graph/inputs.ex`,
+`priv/migrations/003_resolution.sql`; called from `Trailblazer.Store`). The text
+below is the proposal as reviewed.
 Source baseline: Trailblazer main `1cd1a9b`, inspected read-only on October 22, 2026.
 The reported 26,819-node llama.cpp graph and 20–30 second changed-sync cost are
 handoff measurements, not new measurements made for this proposal.

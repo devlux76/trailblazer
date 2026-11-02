@@ -12,6 +12,13 @@ defmodule Trailblazer.Vortex.Bridge do
   alias Trailblazer.Loop.{Runner, CaseRecord}
   alias Trailblazer.Vortex.{Protocol, Store, Transport}
 
+  alias Trailblazer.Backstop
+
+  # Unconfirmed release backoff: 5 s doubling to 5 min, retried for as long
+  # as it takes; each wait is a backstop, so a blocked release is an anomaly.
+  @release_retry_ms 5_000
+  @release_retry_max_ms 300_000
+
   def start_link(opts),
     do:
       GenServer.start_link(
@@ -40,6 +47,13 @@ defmodule Trailblazer.Vortex.Bridge do
       resource: opts[:resource] || {&__MODULE__.no_grant/1, &__MODULE__.no_release/1},
       active: nil,
       blocked_release: nil,
+      # A release the resource could not confirm (the router not up yet, a
+      # model still resident) is asked again with backoff, never parked for
+      # good: a parked release fences every later dispatch (trailblazer:ebd0381).
+      release_failures: 0,
+      release_retry: nil,
+      release_retry_ms: opts[:release_retry_ms] || @release_retry_ms,
+      release_retry_max_ms: opts[:release_retry_max_ms] || @release_retry_max_ms,
       resource_busy: false,
       jobs: %{},
       reading: false,
@@ -114,6 +128,23 @@ defmodule Trailblazer.Vortex.Bridge do
     {:noreply, flush(state)}
   end
 
+  # The backstop of a release that could not be confirmed (the one timer,
+  # design §13.5; its anomaly says the release is blocked, repeats counted on
+  # the same record). Another resource job in flight asks again after it; a
+  # lease released or replaced meanwhile is left alone.
+  def handle_info({:backstop, ref, _anomaly}, %{release_retry: {ref, id, lease}} = state) do
+    # Consume the fired record: Backstop keeps it until disarm or owner death,
+    # and this long-lived bridge would otherwise accumulate one per retry.
+    :fired = Backstop.disarm(ref)
+    state = %{state | release_retry: nil}
+
+    cond do
+      state.blocked_release != lease -> {:noreply, state}
+      state.resource_busy -> {:noreply, arm_release_retry(state, id, lease, :resource_busy)}
+      true -> {:noreply, release_resource(state, id, lease)}
+    end
+  end
+
   def handle_info({:trailblazer_event, {:case, _id}, %{closed: true}}, state) do
     {:noreply, state |> reconcile() |> flush()}
   end
@@ -124,8 +155,7 @@ defmodule Trailblazer.Vortex.Bridge do
     if state.reading do
       {:noreply, Map.put(state, :notice, true)}
     else
-      {:noreply,
-       job(%{state | reading: true}, {:read, nil}, fn -> call(state, "read", %{}) end)}
+      {:noreply, job(%{state | reading: true}, {:read, nil}, fn -> call(state, "read", %{}) end)}
     end
   end
 
@@ -227,7 +257,7 @@ defmodule Trailblazer.Vortex.Bridge do
 
       :blocked ->
         Store.released(id)
-      Events.publish(:planner, {:resource_released, id})
+        Events.publish(:planner, {:resource_released, id})
 
         if CaseRecord.get(id, inline: false).status == "open",
           do: Store.state(id, "waiting_resource")
@@ -251,9 +281,23 @@ defmodule Trailblazer.Vortex.Bridge do
     if result == :ok do
       Store.released(id)
       Events.publish(:planner, {:resource_released, id})
-      state |> Map.put(:blocked_release, nil) |> reconcile() |> flush() |> dispatch()
+
+      case Map.get(state, :release_retry) do
+        {ref, _, _} -> Backstop.disarm(ref)
+        _ -> :ok
+      end
+
+      state
+      |> Map.merge(%{blocked_release: nil, release_failures: 0, release_retry: nil})
+      |> reconcile()
+      |> flush()
+      |> dispatch()
     else
-      %{state | blocked_release: lease}
+      failures = Map.get(state, :release_failures, 0) + 1
+
+      state
+      |> Map.merge(%{blocked_release: lease, release_failures: failures})
+      |> arm_release_retry(id, lease, result)
     end
   end
 
@@ -331,7 +375,10 @@ defmodule Trailblazer.Vortex.Bridge do
   # Conference messages are the research route's reply channel (trailblazer:4cc63df):
   # they lift unaltered to the planner, and an authorized peer's message also says
   # it recovered, which wakes a held card's retry. They are not protocol intake.
-  defp process_event(%{"kind" => "conference_message", "room" => "conference:" <> id} = raw, state) do
+  defp process_event(
+         %{"kind" => "conference_message", "room" => "conference:" <> id} = raw,
+         state
+       ) do
     peer = value(raw, "peer")
 
     Events.publish(:planner, {
@@ -486,7 +533,11 @@ defmodule Trailblazer.Vortex.Bridge do
     with {:ok, policy} <- Protocol.peer(%{peer: request.peer, room: request.room}, state.peers),
          message <- %{
            "type" => "task",
-           "payload" => Map.take(request.task, ~w(repo request check files design read_rounds reasoning_budget_tokens replay_reply_from))
+           "payload" =>
+             Map.take(
+               request.task,
+               ~w(repo request check files design read_rounds reasoning_budget_tokens replay_reply_from)
+             )
          },
          {:ok, _} <- Protocol.task(message, policy, request.peer) do
       true
@@ -514,6 +565,27 @@ defmodule Trailblazer.Vortex.Bridge do
     job(%{state | resource_busy: true}, {:acquire_resource, id, lease}, fn -> acquire.(lease) end)
   end
 
+  # Backoff: release_retry_ms doubling per failure up to release_retry_max_ms,
+  # for as long as it takes.
+  defp arm_release_retry(state, id, lease, result) do
+    failures = max(Map.get(state, :release_failures, 1), 1)
+    base = Map.get(state, :release_retry_ms, @release_retry_ms)
+    cap = Map.get(state, :release_retry_max_ms, @release_retry_max_ms)
+    delay = min(base * Integer.pow(2, min(failures - 1, 20)), cap)
+
+    case Map.get(state, :release_retry) do
+      {old, _, _} -> Backstop.disarm(old)
+      _ -> :ok
+    end
+
+    ref =
+      Backstop.arm(:resource_release_blocked, id, {:ms, delay}, fn ->
+        %{lease: lease, failures: failures, result: inspect(result, limit: 10)}
+      end)
+
+    Map.put(state, :release_retry, {ref, id, lease})
+  end
+
   defp release_resource(state, id, lease) do
     {_, release} = state.resource
     job(%{state | resource_busy: true}, {:release_resource, id, lease}, fn -> release.(lease) end)
@@ -528,7 +600,11 @@ defmodule Trailblazer.Vortex.Bridge do
   # Everything awaiting a receipt when older code ran was already sent, many
   # times over (see the handle_call/handle_info guards).
   defp seed_transmitted(state) do
-    Map.put(state, :transmitted, for(m <- Store.outbox(), m.receipt, into: MapSet.new(), do: m.id))
+    Map.put(
+      state,
+      :transmitted,
+      for(m <- Store.outbox(), m.receipt, into: MapSet.new(), do: m.id)
+    )
   end
 
   defp flush(state, excluded \\ [], only_peer \\ nil) do
@@ -550,7 +626,10 @@ defmodule Trailblazer.Vortex.Bridge do
               job(state, {:send, peer, Enum.uniq(excluded ++ Enum.map(messages, & &1.id))}, fn ->
                 ok =
                   Enum.filter(messages, fn message ->
-                    match?({:ok, _}, call(state, "send", %{"room" => room, "text" => message.body}))
+                    match?(
+                      {:ok, _},
+                      call(state, "send", %{"room" => room, "text" => message.body})
+                    )
                   end)
 
                 %{

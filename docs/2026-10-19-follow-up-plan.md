@@ -1,5 +1,9 @@
 # Trailblazer acceptance follow-up implementation plan
 
+> **Historical (2026-11-01):** its unchecked boxes are stale tracking. What it left open, the deferred
+> T1–T4 live acceptance, is tracked as issue 499d881 (design review Tasks 5–6).
+> Open work is in `docs/2026-10-23-design-review.md` and the git-bug issues.
+
 > For agentic workers: use `superpowers:executing-plans` for Codex's supervision and verification. Implementation is delegated serially to the existing MiniMax M3.1 Flash OpenCode session. Do not start this plan during closeout; begin in a fresh session after reading the resumption note.
 
 **Operator reprioritization:** Tasks 1–2 were implemented at `00337fe`.

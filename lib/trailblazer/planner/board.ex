@@ -197,6 +197,21 @@ defmodule Trailblazer.Planner.Board do
   """
   def run(config, args, opts \\ []), do: runner(config, opts).(args)
 
+  @doc """
+  The refs of every card in progress (`doing`, on any board) whose actor is
+  one of `actors`: `{:ok, refs}` or `{:error, reason}`. The research route
+  asks it whether OpenCode already holds an assignment.
+  """
+  def held_by(config, actors, opts \\ []) do
+    with {:ok, %{"cards" => rows}} when is_list(rows) <-
+           json(runner(config, opts), ["board", "--column", "doing", "--limit", "500"]) do
+      {:ok, for([ref, actor | _] <- rows, actor in actors, do: ref)}
+    else
+      {:ok, other} -> {:error, {:planner, inspect(other, limit: 5)}}
+      {:error, _} = error -> error
+    end
+  end
+
   # The optional `"research"` entry: the VORTEX peer id of the research agent,
   # its planner actor and the conference session. The defaults keep to the
   # planner CLI's own actor rules; anything else is refused at load.
@@ -347,14 +362,14 @@ defmodule Trailblazer.Planner.Board do
 
   defp json(run, args) do
     case run.(args) do
-      %{status: :pass, output_tail: tail} ->
+      %{status: :pass, output_tail: tail} when is_binary(tail) ->
         case Jason.decode(tail) do
           {:ok, decoded} -> {:ok, decoded}
           {:error, _} -> {:error, {:planner, tail}}
         end
 
       result ->
-        {:error, {:planner, result.output_tail}}
+        {:error, {:planner, Map.get(result, :output_tail) || "no output"}}
     end
   end
 

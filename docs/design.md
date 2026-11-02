@@ -1,8 +1,8 @@
 # Trailblazer: design
 
 Written 2026-10-17 by Claude, from a design conversation with the
-operator. It replaces the "coder" draft in `docs/coder/`, which is kept
-for reference and whose parts are reused here (§9). Where this
+operator. It replaces an earlier "coder" draft, no longer in the repository,
+whose parts are reused here (§9). Where this
 document says *the operator decided*, that is the operator's call;
 where it says *builder's call* or *Claude's call*, it is a default that
 can be changed without asking.
@@ -100,7 +100,7 @@ and the caller does not watch the run.
 - **Toolchain:** Erlang/OTP and Elixir as mirai-agent pins them;
   dependencies at latest while developing, pinned at release.
 - **Licence:** the Aider-derived parts are Apache-2.0 and carry the
-  attribution in `docs/coder/NOTICE`.
+  attribution in `NOTICE` at the repository root.
 
 ## 5. The path of one task
 
@@ -394,14 +394,62 @@ On the CLI it is one JSON object.
   changed content needs a new check. Checks that rewrite tracked files,
   including formatters, are rejected: use a non-mutating verification command.
 - The Loop never merges or pushes and never touches the caller's checkout.
-  The coordinator owns acceptance and integration into an explicitly admitted
-  primary branch. Never infer primary from the current checkout. Until that
-  coordinator is implemented (Task 2 in the October 23 review), preserve the
-  existing cleanup of a clean, committed candidate's worktree directory, but
-  retain its candidate branch, SHA and exact check evidence. Journal this as
-  `candidate_workspace_removed`, never as integration or complete cleanup.
-  A dirty or moved candidate blocks removal; removal errors retain the path
-  in the report and the pending intent/error in the journal.
+  `Trailblazer.Loop.Coordinator` owns acceptance, integration and cleanup.
+  A primary branch admitted with the case (`primary`, never inferred from
+  the current checkout) is the trusted policy that hands the case to it when
+  the Loop reports: a `fixed` candidate is integrated (`accept`), any other
+  outcome is archived (`retire`). Without an admitted primary the candidate
+  branch is retained for the caller, as before, and the `accept`/`retire`
+  operations do the same work on request. The public status is unchanged;
+  the report adds `integration` or `archive`.
+- Integration runs under a per-repository lock and rechecks everything
+  there. A primary still at (or behind) the base advances to the candidate
+  itself, whose exact tree was checked. A moved primary gets a merge commit
+  (`merge-tree --write-tree`, then `commit-tree`) tested with the trusted
+  check in a detached checkout; a conflict or failed test returns with the
+  candidate preserved. Primary checked out nowhere advances by
+  `update-ref <new> <old>`; a clean checked-out primary is fast-forwarded
+  through its own checkout. A dirty one blocks; it is never reset or stashed.
+  A compare-and-swap lost to a moved primary is reopened and the result
+  recomputed and retested, never retried blindly.
+- Before anything is removed, the journal and a binary patch of everything
+  the case changed relative to its base (committed, uncommitted and untracked;
+  provisioned dependency and build trees excluded) are written outside any
+  worktree to `<state_dir>/archive/<case>/` and verified by SHA-256. Cleanup
+  then removes the managed checkout and deletes the branch by compare-and-swap
+  on its archived SHA, ending `cleanup_complete` (integrated) or `discarded`.
+  Errors stay in the journal (`last_error`) with the candidate intact and the
+  same call retries. Every destructive step first re-verifies the archive,
+  also when an interrupted cleanup resumes, and a failed worktree discovery
+  is an error, never "checked out nowhere". An intact archive that no longer
+  matches the checkout's present content or branch SHA is replaced, before
+  removal, by a new snapshot that the journal records (`archive_refreshed`).
+  Snapshots are immutable: each directory is named by its whole payload
+  (journal and patch bytes and branch SHA), appears by one rename and is
+  never rewritten. There is no age-based prune.
+- Cleanup precondition: a managed checkout is exclusively owned by its case
+  and quiescent with respect to other writers when cleanup runs. The
+  per-repository coordinator lock serializes cooperating operations only; it
+  does not exclude a non-cooperating process, and nothing bounds the time
+  between the final archive comparison and the removal. Content written into
+  the checkout in that interval is not protected. A shared or actively written
+  checkout must not be admitted for automatic removal; a stronger guarantee
+  would need a separate ownership and retention design.
+- Integration commit policy (explicit, not equivalent to hooks having run):
+  the merge commit is written with `commit-tree`, so the repository's commit
+  hooks do not run on it. Its author/committer identity and dates are Git's
+  own from the repository/user configuration; its subject is
+  `Merge trailblazer/<case> into <primary>` and its body is the candidate's
+  message verbatim, so the candidate's issue reference and any disclosure
+  trailers it carries are repeated and none are added. The candidate commit
+  itself went through the hooks (`Workspace.commit`). A repository whose rules
+  require hooks on every commit should not admit a primary for automatic
+  integration; a fast-forward writes no new commit.
+- `accept`/`retire` over the API answer synchronously: `accept` on a moved
+  primary runs the trusted check, so it can take as long as that check. A
+  client timeout does not cancel or corrupt the operation; it is idempotent
+  and journalled, so the caller retries the same call (or reads the case
+  journal) to learn the outcome. `409` carries the blocking reason.
 - A durable lifecycle journal in `cases.db` records ownership, base and
   primary SHAs, check evidence, candidate/result SHAs, cleanup state, errors
   and transition history, independently of the public case status. Writes use
@@ -411,9 +459,8 @@ On the CLI it is one JSON object.
   observes exact Git state and records effects already completed once; it
   never replays a model call, runs a check, advances a ref or removes a path.
   Ambiguity remains blocked with evidence. Complete cleanup, including
-  candidate branch deletion, requires an integrated result; unchecked/failed
-  evidence archival and coordinator cleanup remain
-  Task 2, so those workspaces are retained meanwhile.
+  candidate branch deletion, requires an integrated result or a verified
+  archive (`discard` intent).
 - The journal APIs provide recovery boundaries for integration/removal;
   tests of those APIs do not claim a production integration coordinator.
   See `docs/2026-10-23-design-review.md` and the durable-outcomes plan/register.
@@ -471,7 +518,7 @@ its own product; Claude's call):
   `endpoint.json` on every call
 - `Memory.Embedder` and the Qdrant client in `Memory.Index`
 
-From Aider (Apache-2.0, ported as `docs/coder/design.md` describes):
+From Aider (Apache-2.0; attribution in the root `NOTICE`):
 
 - SEARCH/REPLACE edit blocks: the parser, the tolerant matcher (exact,
   then whitespace-tolerant, then `...` elision), and "did you mean these

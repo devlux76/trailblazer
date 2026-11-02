@@ -14,6 +14,7 @@ defmodule Trailblazer.Planner.Research do
   """
 
   use GenServer
+  require Logger
   alias Trailblazer.{Backstop, CaseStore, Events}
   alias Trailblazer.Planner.{Board, Route}
 
@@ -23,6 +24,11 @@ defmodule Trailblazer.Planner.Research do
   @label "dispatch:ready"
   @subscription_ttl 86_400
   @reply_limit_ms 3 * 60 * 60 * 1000
+  @opencode_url "http://127.0.0.1:4096"
+  # How long the OpenCode activity question may take before it reads as unknown.
+  @busy_check_ms 5_000
+  # Planner actors OpenCode works under, besides the configured research actor.
+  @opencode_actors ["opencode"]
 
   def start_link(opts),
     do: GenServer.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__))
@@ -77,6 +83,9 @@ defmodule Trailblazer.Planner.Research do
       run: opts[:run],
       label: opts[:label],
       reply_limit_ms: opts[:reply_limit_ms] || @reply_limit_ms,
+      # OpenCode is strictly serial (free tier, ban risk): research waits
+      # while it has any running session or holds an assignment elsewhere.
+      peer_busy: opts[:peer_busy] || (&peer_busy(&1, opts)),
       busy: false,
       backstops: %{}
     }
@@ -105,7 +114,66 @@ defmodule Trailblazer.Planner.Research do
         {{:error, {:researched, journal_state(ref)}}, state}
 
       true ->
-        begin_dispatch(state, config, ref, card)
+        case state.peer_busy.(config) do
+          :idle ->
+            begin_dispatch(state, config, ref, card)
+
+          {:busy, why} ->
+            # The brain journals `busy` as unavailable and retries on the next
+            # event; nothing is claimed or announced.
+            Logger.info("trailblazer: research holds #{ref}: #{why}")
+            {{:error, :busy}, state}
+        end
+    end
+  end
+
+  # :idle only when OpenCode answers with no running session and no card is
+  # in progress under its actors. An unknown answer holds: the research peer
+  # is OpenCode, so a job it cannot be asked about cannot be safely sent.
+  defp peer_busy(config, opts) do
+    url = (opts[:opencode_url] || @opencode_url) <> "/api/session/active"
+    actors = Enum.uniq([research_of(config).actor | @opencode_actors])
+
+    with :idle <- opencode_sessions(url),
+         {:ok, []} <- Board.held_by(config, actors, Keyword.take(opts, [:run])) do
+      :idle
+    else
+      {:busy, _} = busy -> busy
+      {:ok, refs} -> {:busy, "OpenCode holds " <> Enum.join(refs, ", ")}
+      {:error, reason} -> {:busy, "the board could not be read: " <> format(reason)}
+    end
+  end
+
+  # One bounded question (the request has no client timeout of its own; the
+  # backstop is its one clock, design §13.5). A hang reads as unknown: hold.
+  defp opencode_sessions(url) do
+    answer =
+      case Backstop.guard(
+             :research_peer_busy,
+             url,
+             {:ms, @busy_check_ms},
+             fn -> %{url: url} end,
+             fn ->
+               Req.get(url, retry: false)
+             end
+           ) do
+        {:ok, reply} -> reply
+        {:error, reason} -> {:error, reason}
+      end
+
+    case answer do
+      {:ok, %Req.Response{status: 200, body: %{"data" => data}}} when data == %{} or data == [] ->
+        :idle
+
+      {:ok, %Req.Response{status: 200, body: %{"data" => data}}}
+      when is_map(data) or is_list(data) ->
+        {:busy, "OpenCode has #{Enum.count(data)} running session(s)"}
+
+      {:ok, %Req.Response{status: status}} ->
+        {:busy, "OpenCode's activity is unknown (HTTP #{status})"}
+
+      {:error, reason} ->
+        {:busy, "OpenCode's activity is unknown (#{format(reason)})"}
     end
   end
 
@@ -324,7 +392,14 @@ defmodule Trailblazer.Planner.Research do
 
       true ->
         record(row.ref, "researched", summarise(refs, drops), row.conference, children: refs)
-        note(state, row.ref, "researched: " <> Integer.to_string(length(refs)) <> " children: " <> Enum.join(refs, ", "))
+
+        note(
+          state,
+          row.ref,
+          "researched: " <>
+            Integer.to_string(length(refs)) <> " children: " <> Enum.join(refs, ", ")
+        )
+
         release(state, row.ref)
     end
   end
@@ -390,7 +465,8 @@ defmodule Trailblazer.Planner.Research do
       not (is_binary(acceptance) and String.trim(acceptance) != "") ->
         {:error, "no acceptance criteria"}
 
-      not (is_list(plan) and plan != [] and Enum.all?(plan, &(is_binary(&1) and String.trim(&1) != ""))) ->
+      not (is_list(plan) and plan != [] and
+               Enum.all?(plan, &(is_binary(&1) and String.trim(&1) != ""))) ->
         {:error, "no implementation plan"}
 
       not (files != [] and Enum.all?(files, &is_binary/1)) ->
@@ -422,11 +498,15 @@ defmodule Trailblazer.Planner.Research do
   defp names_of(_), do: []
 
   defp compose(files, acceptance, plan) do
-    steps = Enum.map_join(Enum.with_index(plan, 1), "; ", fn {step, n} ->
-      "#{n}. #{String.replace(step, "\n", " ")}"
-    end)
+    steps =
+      Enum.map_join(Enum.with_index(plan, 1), "; ", fn {step, n} ->
+        "#{n}. #{String.replace(step, "\n", " ")}"
+      end)
 
-    "Files: " <> Enum.join(files, " ") <> "\nAcceptance: " <> acceptance <>
+    "Files: " <>
+      Enum.join(files, " ") <>
+      "\nAcceptance: " <>
+      acceptance <>
       "\nImplementation plan: " <> steps
   end
 
@@ -523,7 +603,11 @@ defmodule Trailblazer.Planner.Research do
     total = length(kids)
     done = (row.children_done || 0) + 1
 
-    record(row.ref, row.state, "children completed " <> Integer.to_string(done) <> "/" <> Integer.to_string(total), row.conference, children_done: done)
+    record(
+      row.ref,
+      row.state,
+      "children completed " <> Integer.to_string(done) <> "/" <> Integer.to_string(total),
+      row.conference, children_done: done)
 
     if done >= total,
       do:
@@ -591,8 +675,13 @@ defmodule Trailblazer.Planner.Research do
     CaseStore.transaction(fn conn ->
       schema(conn)
       existing = rowof(conn, ref) || %{}
-      children_text = Jason.encode!(Keyword.get(extra, :children) || Map.get(existing, :children) || [])
-      done = Keyword.get(extra, :children_done) || (existing[:children_done] && Map.get(existing, :children_done)) || 0
+
+      children_text =
+        Jason.encode!(Keyword.get(extra, :children) || Map.get(existing, :children) || [])
+
+      done =
+        Keyword.get(extra, :children_done) ||
+          (existing[:children_done] && Map.get(existing, :children_done)) || 0
 
       query(
         conn,
@@ -641,6 +730,7 @@ defmodule Trailblazer.Planner.Research do
 
   defp decode_children(""), do: []
   defp decode_children(nil), do: []
+
   defp decode_children(text) do
     case Jason.decode!(text) do
       list when is_list(list) -> list

@@ -1,5 +1,8 @@
 # Trailblazer Phase 1 (the core) Implementation Plan
 
+> **Historical (2026-11-01):** implemented; its unchecked boxes are stale tracking, not open work.
+> Open work is in `docs/2026-10-23-design-review.md` and the git-bug issues.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 >
 > **This plan's execution (operator's decision):** each task is drafted by MiniMax M3.1 Flash (OpenCode, model variant `max`) and reviewed by Codex. Claude directs and verifies. The C/C++/CUDA/Go and vendored-directory follow-up is implemented and verified by Codex (VORTEX handoff, 2026-10-18).

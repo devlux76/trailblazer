@@ -134,16 +134,94 @@ defmodule Trailblazer.Loop.Lifecycle do
     end)
   end
 
-  def prepare_removal(id) do
+  def prepare_removal(id, archive \\ nil) do
     transition(id, fn r ->
       if r["stage"] == "integrated" and r["result"] != nil do
-        {:ok, Map.merge(r, %{"stage" => "removal_pending", "intent" => %{"kind" => "removal"}}),
-         "removal_intent"}
+        {:ok,
+         Map.merge(r, %{
+           "stage" => "removal_pending",
+           "archive" => archive || r["archive"],
+           "intent" => %{"kind" => "removal"}
+         }), "removal_intent"}
       else
         {:error, :not_integrated}
       end
     end)
   end
+
+  # A tested integration whose compare-and-swap lost to a moved primary is
+  # recomputed and retested from the candidate, never retried blindly.
+  def reopen_integration(id) do
+    transition(id, fn r ->
+      with %{"kind" => "integration", "old" => old, "result" => result} <- r["intent"],
+           actual = git!(r["repo"], ["rev-parse", "refs/heads/" <> r["primary"]]),
+           true <- actual not in [old, result] do
+        {:ok,
+         r
+         |> Map.merge(%{"stage" => "candidate_ready", "integration_check" => nil})
+         |> Map.delete("intent"), "integration_reopened"}
+      else
+        _ -> {:error, :integration_not_reopenable}
+      end
+    end)
+  end
+
+  # Evidence of a case that will not be integrated (failed, unverified or
+  # refused) is preserved outside Git, and verified, before its checkout and
+  # branch are removed (design review, Lifecycle).
+  def prepare_discard(id, archive) do
+    transition(id, fn r ->
+      cond do
+        match?(%{"kind" => "discard"}, r["intent"]) ->
+          {:ok, r}
+
+        r["intent"] != nil ->
+          {:error, :conflicting_intent}
+
+        r["stage"] in ~w(integration_pending integrated removal_pending cleanup_complete discarded) ->
+          {:error, :not_discardable}
+
+        not archive_intact?(archive) ->
+          {:error, :archive_missing}
+
+        true ->
+          {:ok,
+           Map.merge(r, %{
+             "stage" => "discard_pending",
+             "archive" => archive,
+             "intent" => %{"kind" => "discard"}
+           }), "discard_intent"}
+      end
+    end)
+  end
+
+  # A pending removal or discard whose checkout changed after its archive
+  # records the newer verified snapshot before anything is removed.
+  def refresh_archive(id, archive) do
+    transition(id, fn r ->
+      cond do
+        r["stage"] not in ~w(removal_pending discard_pending) -> {:error, :no_pending_removal}
+        not archive_intact?(archive) -> {:error, :archive_missing}
+        r["archive"] == archive -> {:ok, r}
+        true -> {:ok, Map.put(r, "archive", archive), "archive_refreshed"}
+      end
+    end)
+  end
+
+  @doc "Whether every archived file is present with its recorded SHA-256."
+  def archive_intact?(%{"path" => dir, "files" => files}) when is_binary(dir) and is_map(files) do
+    map_size(files) > 0 and
+      Enum.all?(files, fn {name, sha} ->
+        case File.read(Path.join(dir, name)) do
+          {:ok, data} -> sha256(data) == sha
+          _ -> false
+        end
+      end)
+  end
+
+  def archive_intact?(_), do: false
+
+  def sha256(data), do: :crypto.hash(:sha256, data) |> Base.encode16(case: :lower)
 
   # Until the coordinator lands, release a clean candidate checkout but keep
   # its branch and evidence. This is distinct from post-integration cleanup.
@@ -230,29 +308,47 @@ defmodule Trailblazer.Loop.Lifecycle do
   defp observe(%{"intent" => %{"kind" => "candidate_removal"}} = r) do
     with :ok <- repository(r),
          true <- git!(r["repo"], ["rev-parse", "refs/heads/" <> r["branch"]]) == r["candidate"] do
-      observe_removal(r, true)
+      observe_removal(r, :candidate)
     else
       _ -> {:error, :candidate_moved}
     end
   end
 
   defp observe(%{"intent" => %{"kind" => "removal"}} = r) do
-    with :ok <- repository(r) do
-      observe_removal(r, false)
+    with :ok <- repository(r),
+         true <- r["archive"] == nil or archive_intact?(r["archive"]) do
+      observe_removal(r, :integrated)
+    else
+      false -> {:error, :archive_missing}
+      error -> error
+    end
+  end
+
+  defp observe(%{"intent" => %{"kind" => "discard"}} = r) do
+    with :ok <- repository(r),
+         true <- archive_intact?(r["archive"]) do
+      observe_removal(r, :discard)
+    else
+      false -> {:error, :archive_missing}
+      error -> error
     end
   end
 
   defp observe(r), do: {:ok, r}
 
-  defp observe_removal(r, candidate_only) do
+  defp observe_removal(r, mode) do
     paths = git!(r["repo"], ["worktree", "list", "--porcelain", "-z"])
     registered = String.split(paths, "\0") |> Enum.member?("worktree " <> r["path"])
 
     cond do
       not registered and File.lstat(r["path"]) == {:error, :enoent} ->
-        if candidate_only or not branch_exists?(r) do
-          cleanup = if candidate_only, do: "candidate_workspace_removed", else: "complete"
-          stage = if candidate_only, do: "candidate_ready", else: "cleanup_complete"
+        if mode == :candidate or not branch_exists?(r) do
+          {cleanup, stage} =
+            case mode do
+              :candidate -> {"candidate_workspace_removed", "candidate_ready"}
+              :integrated -> {"complete", "cleanup_complete"}
+              :discard -> {"complete", "discarded"}
+            end
 
           {:ok, r |> Map.merge(%{"cleanup" => cleanup, "stage" => stage}) |> Map.delete("intent"),
            cleanup}
@@ -327,7 +423,7 @@ defmodule Trailblazer.Loop.Lifecycle do
       "evidence" =>
         Map.take(
           record,
-          ~w(intent check integration_check candidate result cleanup stage last_error)
+          ~w(intent check integration_check candidate result cleanup stage last_error archive)
         )
     }
 

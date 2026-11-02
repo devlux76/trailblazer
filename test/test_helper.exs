@@ -3,8 +3,34 @@
 # which need the embedder and Qdrant, are left out by default.
 # Wait for events with room for a loaded host to schedule their producers;
 # the default 100 ms failed on correct parallel worktree/case-event paths.
+#
+# Tests tagged :host_inotify start the real inotifywait. When this host cannot
+# give it an instance (the user's inotify instances are all in use, or
+# inotifywait is missing) they are left out with a notice instead of timing out.
+host_inotify? =
+  case System.find_executable("inotifywait") do
+    nil ->
+      false
+
+    exe ->
+      probe = Path.join(System.tmp_dir!(), "trailblazer-inotify-probe-#{System.pid()}")
+      File.mkdir_p!(probe)
+
+      try do
+        # -t 1 with no events exits 2; a failed setup exits 1.
+        {_out, status} = System.cmd(exe, ["-q", "-t", "1", probe], stderr_to_stdout: true)
+        status in [0, 2]
+      after
+        File.rm_rf!(probe)
+      end
+  end
+
+unless host_inotify? do
+  IO.puts("test_helper: no inotify instance available; excluding :host_inotify tests")
+end
+
 ExUnit.start(
-  exclude: [:live, :vortex_integration],
+  exclude: [:live, :vortex_integration] ++ if(host_inotify?, do: [], else: [:host_inotify]),
   capture_log: true,
   assert_receive_timeout: 5000
 )

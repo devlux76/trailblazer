@@ -4,7 +4,7 @@ defmodule Trailblazer.API do
   alias Trailblazer.{Indexer, Query, Store}
   alias Trailblazer.Loop.{CaseRecord, Runner, Workspace}
 
-  @operations ~w(watch status where uses impact read search trail stale_citations run case anomalies ack vortex vortex_status)
+  @operations ~w(watch status where uses impact read search trail stale_citations run case accept retire anomalies ack vortex vortex_status)
   plug(:authenticate)
   plug(Plug.Parsers, parsers: [:json], json_decoder: Jason)
   plug(:match)
@@ -85,6 +85,7 @@ defmodule Trailblazer.API do
           read_rounds: Map.get(params, "read_rounds", 6),
           design: params["design"],
           check: params["check"],
+          primary: params["primary"],
           from: "cli"
         }
 
@@ -96,6 +97,28 @@ defmodule Trailblazer.API do
         case Runner.submit(task, Keyword.get(opts, :runner, Runner)) do
           {:ok, id} -> json(conn, 202, %{case: id})
           {:error, _} = error -> respond(conn, error)
+        end
+
+      op in ~w(accept retire) ->
+        coordinator = Keyword.get(opts, :coordinator, Trailblazer.Loop.Coordinator)
+
+        result =
+          if op == "accept",
+            do: coordinator.accept(params["case"], []),
+            else: coordinator.retire(params["case"], [])
+
+        case result do
+          {:ok, r} ->
+            json(conn, 200, Map.take(r, ~w(stage cleanup primary result candidate archive)))
+
+          {:error, :no_lifecycle} ->
+            json(conn, 404, %{error: "no lifecycle journal for that case"})
+
+          {:error, reason} ->
+            json(conn, 409, %{
+              error: "blocked",
+              reason: reason |> inspect(limit: 5, printable_limit: 200) |> String.slice(0, 400)
+            })
         end
 
       op == "anomalies" ->
@@ -292,6 +315,9 @@ defmodule Trailblazer.API do
   defp valid?("case", p) when is_map(p),
     do: is_binary(p["case"]) and p["case"] != "" and p["follow"] in [nil, true, false]
 
+  defp valid?(op, p) when op in ~w(accept retire) and is_map(p),
+    do: is_binary(p["case"]) and p["case"] != ""
+
   defp valid?("anomalies", p) when is_map(p), do: p["all"] in [nil, true, false]
   defp valid?("ack", p) when is_map(p), do: is_integer(p["id"]) and p["id"] > 0
 
@@ -332,6 +358,7 @@ defmodule Trailblazer.API do
       is_binary(p["request"]) and String.trim(p["request"]) != "" and
       is_list(Map.get(p, "files", [])) and Enum.all?(Map.get(p, "files", []), &is_binary/1) and
       (is_nil(p["check"]) or is_binary(p["check"])) and
+      (is_nil(p["primary"]) or (is_binary(p["primary"]) and p["primary"] != "")) and
       (is_nil(p["design"]) or is_binary(p["design"]) or
          (is_list(p["design"]) and Enum.all?(p["design"], &is_binary/1)))
   end

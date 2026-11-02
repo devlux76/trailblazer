@@ -19,7 +19,7 @@ The service runs as `systemctl --user status trailblazer`; the `trailblazer` com
 5. **`trailblazer read PATH:FIRST-LAST`**: the exact lines, only inside the repository.
 6. **`trailblazer search TEXT [--limit N]`**: exact names, then vector hits, then literal text matches mapped to their definitions. Put `--` before text that starts with a dash.
 
-Also: `trailblazer watch` (start following a repository; the first sync takes a while on a large one), `trailblazer status` (files, nodes, edges, pending vectors, stale files, embedding state, and `following`: `events`, or `polling` every 15 s when no file watcher could start), `trailblazer stale_citations` (code citing design sections that no longer exist).
+Also: `trailblazer watch` (start following a repository; the first sync takes a while on a large one), `trailblazer status` (files, nodes, edges, pending vectors, stale files, embedding state, and `following`: `events`, or `on_request` when no file watcher could start: nothing is refreshed until a request reconciles from git), `trailblazer stale_citations` (code citing design sections that no longer exist).
 
 ## Reading the answers
 
