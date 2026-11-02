@@ -245,4 +245,71 @@ defmodule Trailblazer.Loop.CoordinatorIntegrationTest do
     assert File.read!(Path.join(ws.path, "file.txt")) == "work\n"
     assert branch?(c, ws.branch)
   end
+
+  test "(peer review) successful integration cannot erase unarchived untracked evidence", c do
+    {id, ws, _sha} = candidate(c)
+    note = Path.join(ws.path, "review-evidence.txt")
+    File.write!(note, "unique untracked evidence\n")
+
+    case Coordinator.accept(id) do
+      {:ok, r} ->
+        patch = File.read!(Path.join(r["archive"]["path"], "changes.patch"))
+        assert patch =~ "unique untracked evidence"
+
+      {:error, _} ->
+        assert File.read!(note) == "unique untracked evidence\n"
+        assert branch?(c, ws.branch)
+    end
+  end
+
+  test "(peer review) integrated cleanup revalidates its archive after a crash", c do
+    {id, ws, sha} = candidate(c)
+    old = git(c.repo, ["rev-parse", "main"])
+    git(c.repo, ["checkout", "-qb", "review-feature"])
+    {:ok, _} = Lifecycle.prepare_integration(id, old, sha, %{status: :pass, sha: sha})
+    git(c.repo, ["update-ref", "refs/heads/main", sha, old])
+    {:ok, %{"stage" => "integrated"}} = Lifecycle.reconcile(id)
+    dir = Path.join(System.tmp_dir!(), "review-archive-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+    patch = Path.join(dir, "changes.patch")
+    File.write!(patch, "intact")
+
+    archive = %{
+      "path" => dir,
+      "branch_sha" => sha,
+      "files" => %{"changes.patch" => Lifecycle.sha256("intact")}
+    }
+
+    {:ok, _} = Lifecycle.prepare_removal(id, archive)
+    File.write!(patch, "tampered")
+    assert {:error, _} = Coordinator.accept(id)
+    assert File.exists?(ws.path)
+    assert branch?(c, ws.branch)
+  end
+
+  test "(peer review) failed worktree discovery cannot move a checked-out primary", c do
+    {id, _ws, _sha} = candidate(c)
+    old = git(c.repo, ["rev-parse", "main"])
+    dir = Path.join(System.tmp_dir!(), "review-git-bin-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+    wrapper = Path.join(dir, "git")
+
+    File.write!(
+      wrapper,
+      "#!/bin/sh\ncase \"$*\" in *\"worktree list --porcelain\"*) exit 1;; esac\nexec /usr/bin/git \"$@\"\n"
+    )
+
+    File.chmod!(wrapper, 0o755)
+    path = System.get_env("PATH")
+
+    try do
+      System.put_env("PATH", dir <> ":" <> path)
+      Coordinator.accept(id)
+    after
+      System.put_env("PATH", path)
+    end
+
+    assert git(c.repo, ["rev-parse", "main"]) == old
+    assert File.read!(Path.join(c.repo, "file.txt")) == "base\n"
+  end
 end

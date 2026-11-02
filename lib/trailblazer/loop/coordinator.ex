@@ -54,7 +54,7 @@ defmodule Trailblazer.Loop.Coordinator do
          :ok <- validate_branch(repo, branch, candidate),
          base = record["base"],
          :ok <- validate_base(repo, base),
-         checkouts <- primary_checkouts(repo, primary),
+         {:ok, checkouts} <- primary_checkouts(repo, primary),
          :ok <- check_primary_checkouts(checkouts, record["files"] || []) do
       {:ok,
        %{
@@ -160,9 +160,12 @@ defmodule Trailblazer.Loop.Coordinator do
           end
         end)
         |> Enum.reverse()
+        |> then(&{:ok, &1})
 
-      _ ->
-        []
+      # Unknown checkouts are never treated as none: that could move a
+      # checked-out primary behind its worktree's back.
+      {:error, reason} ->
+        {:error, {:worktree_discovery_failed, reason}}
     end
   end
 
@@ -434,7 +437,7 @@ defmodule Trailblazer.Loop.Coordinator do
 
     with {:ok, ^old} <- primary_ref(repo, primary),
          {:ok, touched} <- git(repo, ["diff", "--name-only", "-z", old, result]),
-         checkouts = primary_checkouts(repo, primary),
+         {:ok, checkouts} <- primary_checkouts(repo, primary),
          :ok <- check_primary_checkouts(checkouts, String.split(touched, "\0", trim: true)),
          :ok <- swap(repo, primary, old, result, r["branch"], checkouts),
          {:ok, %{"stage" => "integrated"} = r} <- Lifecycle.reconcile(id) do
@@ -482,7 +485,7 @@ defmodule Trailblazer.Loop.Coordinator do
 
   defp cleanup(id, r) do
     with {:ok, r} <- ensure_removal(id, r),
-         :ok <- remove_checkout(r, :clean),
+         :ok <- remove_checkout(r),
          :ok <- delete_branch(r, r["candidate"]),
          {:ok, %{"stage" => "cleanup_complete"} = r} <- Lifecycle.reconcile(id) do
       {:ok, r}
@@ -499,7 +502,7 @@ defmodule Trailblazer.Loop.Coordinator do
   end
 
   defp discard(id, r) do
-    with :ok <- remove_checkout(r, :archived),
+    with :ok <- remove_checkout(r),
          :ok <- delete_branch(r, r["archive"]["branch_sha"]),
          {:ok, %{"stage" => "discarded"} = r} <- Lifecycle.reconcile(id) do
       {:ok, r}
@@ -509,21 +512,22 @@ defmodule Trailblazer.Loop.Coordinator do
     end
   end
 
-  defp registered?(r) do
+  defp registration(r) do
     case git(r["repo"], ["worktree", "list", "--porcelain", "-z"]) do
-      {:ok, text} -> text |> String.split("\0") |> Enum.member?("worktree " <> r["path"])
-      _ -> false
+      {:ok, text} -> {:ok, text |> String.split("\0") |> Enum.member?("worktree " <> r["path"])}
+      {:error, reason} -> {:error, {:worktree_discovery_failed, reason}}
     end
   end
 
-  # An integrated candidate's checkout must hold nothing beyond the candidate;
-  # a discarded one was archived first, so its leftovers may go.
-  defp remove_checkout(r, mode) do
-    cond do
-      registered?(r) ->
-        with :ok <- removable(r, mode),
-             {:ok, _} <-
-               git(r["repo"], [
+  # Nothing is removed unless the verified archive is still intact, also when
+  # an interrupted cleanup resumes: it holds everything the checkout had
+  # beyond its base (ignored and provisioned dependency/build trees aside).
+  defp remove_checkout(r) do
+    with true <- Lifecycle.archive_intact?(r["archive"]),
+         {:ok, registered} <- registration(r) do
+      cond do
+        registered ->
+          case git(r["repo"], [
                  "--git-dir",
                  r["common"],
                  "worktree",
@@ -532,23 +536,19 @@ defmodule Trailblazer.Loop.Coordinator do
                  "--",
                  r["path"]
                ]) do
+            {:ok, _} -> :ok
+            error -> error
+          end
+
+        File.lstat(r["path"]) == {:error, :enoent} ->
           :ok
-        end
 
-      File.lstat(r["path"]) == {:error, :enoent} ->
-        :ok
-
-      true ->
-        {:error, :unregistered_path_exists}
-    end
-  end
-
-  defp removable(_r, :archived), do: :ok
-
-  defp removable(r, :clean) do
-    case git(r["path"], ["status", "--porcelain", "--untracked-files=no"]) do
-      {:ok, ""} -> :ok
-      _ -> {:error, :candidate_checkout_dirty}
+        true ->
+          {:error, :unregistered_path_exists}
+      end
+    else
+      false -> {:error, :archive_missing}
+      error -> error
     end
   end
 
@@ -615,22 +615,24 @@ defmodule Trailblazer.Loop.Coordinator do
 
   # Everything the case changed relative to its base: committed candidate
   # work plus, while its checkout exists, uncommitted and untracked files
-  # (provisioned dependency and build trees excluded).
+  # (provisioned dependency and build trees excluded), at every stage.
   defp changes(r, branch_sha) do
     base = r["base"]
 
-    cond do
-      r["stage"] not in ~w(integrated removal_pending) and registered?(r) ->
-        excludes = Enum.map(@excluded, &":(exclude,glob)**/#{&1}")
+    with {:ok, registered} <- registration(r) do
+      cond do
+        registered ->
+          excludes = Enum.map(@excluded, &":(exclude,glob)**/#{&1}")
 
-        with {:ok, _} <- git(r["path"], ["add", "-A", "--", "."] ++ excludes),
-             do: git_raw(r["path"], ["diff", "--cached", "--binary", base])
+          with {:ok, _} <- git(r["path"], ["add", "-A", "--", "."] ++ excludes),
+               do: git_raw(r["path"], ["diff", "--cached", "--binary", base])
 
-      is_binary(branch_sha) ->
-        git_raw(r["repo"], ["diff", "--binary", base, branch_sha])
+        is_binary(branch_sha) ->
+          git_raw(r["repo"], ["diff", "--binary", base, branch_sha])
 
-      true ->
-        {:ok, ""}
+        true ->
+          {:ok, ""}
+      end
     end
   end
 

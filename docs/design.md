@@ -419,7 +419,24 @@ On the CLI it is one JSON object.
   then removes the managed checkout and deletes the branch by compare-and-swap
   on its archived SHA, ending `cleanup_complete` (integrated) or `discarded`.
   Errors stay in the journal (`last_error`) with the candidate intact and the
-  same call retries. There is no age-based prune.
+  same call retries. Every destructive step first re-verifies the archive,
+  also when an interrupted cleanup resumes, and a failed worktree discovery
+  is an error, never "checked out nowhere". There is no age-based prune.
+- Integration commit policy (explicit, not equivalent to hooks having run):
+  the merge commit is written with `commit-tree`, so the repository's commit
+  hooks do not run on it. Its author/committer identity and dates are Git's
+  own from the repository/user configuration; its subject is
+  `Merge trailblazer/<case> into <primary>` and its body is the candidate's
+  message verbatim, so the candidate's issue reference and any disclosure
+  trailers it carries are repeated and none are added. The candidate commit
+  itself went through the hooks (`Workspace.commit`). A repository whose rules
+  require hooks on every commit should not admit a primary for automatic
+  integration; a fast-forward writes no new commit.
+- `accept`/`retire` over the API answer synchronously: `accept` on a moved
+  primary runs the trusted check, so it can take as long as that check. A
+  client timeout does not cancel or corrupt the operation; it is idempotent
+  and journalled, so the caller retries the same call (or reads the case
+  journal) to learn the outcome. `409` carries the blocking reason.
 - A durable lifecycle journal in `cases.db` records ownership, base and
   primary SHAs, check evidence, candidate/result SHAs, cleanup state, errors
   and transition history, independently of the public case status. Writes use

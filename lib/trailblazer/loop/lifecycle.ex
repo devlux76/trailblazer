@@ -302,8 +302,12 @@ defmodule Trailblazer.Loop.Lifecycle do
   end
 
   defp observe(%{"intent" => %{"kind" => "removal"}} = r) do
-    with :ok <- repository(r) do
+    with :ok <- repository(r),
+         true <- r["archive"] == nil or archive_intact?(r["archive"]) do
       observe_removal(r, :integrated)
+    else
+      false -> {:error, :archive_missing}
+      error -> error
     end
   end
 
