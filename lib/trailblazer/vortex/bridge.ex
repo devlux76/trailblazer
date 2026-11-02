@@ -133,6 +133,9 @@ defmodule Trailblazer.Vortex.Bridge do
   # the same record). Another resource job in flight asks again after it; a
   # lease released or replaced meanwhile is left alone.
   def handle_info({:backstop, ref, _anomaly}, %{release_retry: {ref, id, lease}} = state) do
+    # Consume the fired record: Backstop keeps it until disarm or owner death,
+    # and this long-lived bridge would otherwise accumulate one per retry.
+    :fired = Backstop.disarm(ref)
     state = %{state | release_retry: nil}
 
     cond do

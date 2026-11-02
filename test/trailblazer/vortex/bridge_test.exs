@@ -842,4 +842,21 @@ defmodule Trailblazer.Vortex.BridgeTest do
 
     assert_receive {:trailblazer_event, :planner, {:research_recovered, "frontier"}}
   end
+
+  test "a consumed release retry leaves no fired backstop record behind" do
+    ref = Trailblazer.Backstop.arm(:resource_release_blocked, "review-only", {:ms, 10})
+    assert_receive {:backstop, ^ref, _}, 5000
+    assert Map.has_key?(:sys.get_state(Trailblazer.Backstop).fired, ref)
+
+    # a lease replaced meanwhile: the retry is consumed without a release
+    state = %{
+      transmitted: MapSet.new(),
+      release_retry: {ref, "closed-case", "old-lease"},
+      blocked_release: nil,
+      resource_busy: false
+    }
+
+    assert {:noreply, %{release_retry: nil}} = Bridge.handle_info({:backstop, ref, nil}, state)
+    refute Map.has_key?(:sys.get_state(Trailblazer.Backstop).fired, ref)
+  end
 end
