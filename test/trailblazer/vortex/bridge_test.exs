@@ -226,6 +226,103 @@ defmodule Trailblazer.Vortex.BridgeTest do
     assert Store.holds() == [[id, "old-residency-lease"]]
   end
 
+  # trailblazer:ebd0381 (catastrophic): a boot-time release that raced the
+  # router's start was parked in blocked_release forever, fencing all dispatch.
+  test "a blocked release is retried until it is confirmed, then dispatch resumes", ctx do
+    {:ok, id, _} =
+      Store.admit("caller", "room", ctx.request, %{
+        repo: "/tmp",
+        request: "fix",
+        check: "true",
+        files: [],
+        design: [],
+        from: "vortex:caller"
+      })
+
+    runner = start_supervised!({Runner, name: nil, recover: true})
+    :ok = Store.state(id, "running", "old-residency-lease")
+    stop_supervised!(Runner)
+    start_supervised!({Runner, name: nil, recover: true}, id: :recovered_runner)
+    assert CaseRecord.get(id).status == "failed"
+    parent = self()
+    {:ok, attempts} = Agent.start_link(fn -> 0 end)
+
+    release = fn lease ->
+      n = Agent.get_and_update(attempts, &{&1 + 1, &1 + 1})
+      send(parent, {:release_attempt, n, lease})
+      if n == 1, do: {:error, :router_not_ready}, else: :ok
+    end
+
+    bridge =
+      start_supervised!(
+        {Bridge,
+         name: nil,
+         peers: ctx.peers,
+         transport: ctx.transport,
+         runner: runner,
+         resource: {fn _ -> :blocked end, release},
+         release_retry_ms: 20}
+      )
+
+    assert_receive {:release_attempt, 1, "old-residency-lease"}
+    assert_receive {:release_attempt, 2, "old-residency-lease"}, 2_000
+
+    eventually = fn eventually, n ->
+      cond do
+        not Bridge.status(bridge).resource_release_blocked -> :ok
+        n == 0 -> flunk("release stayed blocked")
+        true -> Process.sleep(20) && eventually.(eventually, n - 1)
+      end
+    end
+
+    eventually.(eventually, 100)
+    assert Store.holds() == []
+  end
+
+  test "a release that keeps failing stays fenced and keeps retrying with backoff", ctx do
+    {:ok, id, _} =
+      Store.admit("caller", "room", ctx.request, %{
+        repo: "/tmp",
+        request: "fix",
+        check: "true",
+        files: [],
+        design: [],
+        from: "vortex:caller"
+      })
+
+    runner = start_supervised!({Runner, name: nil, recover: true})
+    :ok = Store.state(id, "running", "old-residency-lease")
+    stop_supervised!(Runner)
+    start_supervised!({Runner, name: nil, recover: true}, id: :recovered_runner)
+    parent = self()
+
+    release = fn _lease ->
+      send(parent, :release_attempt)
+      {:error, :still_resident}
+    end
+
+    bridge =
+      start_supervised!(
+        {Bridge,
+         name: nil,
+         peers: ctx.peers,
+         transport: ctx.transport,
+         runner: runner,
+         resource:
+           {fn _ ->
+              send(parent, :acquired)
+              :blocked
+            end, release},
+         release_retry_ms: 10,
+         release_retry_max_ms: 40}
+      )
+
+    for _ <- 1..4, do: assert_receive(:release_attempt, 2_000)
+    assert Bridge.status(bridge).resource_release_blocked
+    refute_received :acquired
+    assert Store.holds() == [[id, "old-residency-lease"]]
+  end
+
   test "the caller can cancel a durable waiting request without running a model", ctx do
     Agent.update(ctx.page, fn _ -> %{events: [event(ctx)], cursor: 1} end)
     bridge = start_supervised!({Bridge, name: nil, peers: ctx.peers, transport: ctx.transport})
@@ -637,6 +734,7 @@ defmodule Trailblazer.Vortex.BridgeTest do
 
     stop_supervised!(Bridge)
     start_supervised!({Bridge, name: nil, peers: ctx.peers, transport: ctx.transport})
+
     texts =
       for _ <- 1..3 do
         assert_receive {:sent, %{"text" => text}}
@@ -658,7 +756,11 @@ defmodule Trailblazer.Vortex.BridgeTest do
     :sys.replace_state(bridge, &Map.delete(&1, :transmitted))
 
     send(bridge, {:trailblazer_event, :anomaly, anomaly(2)})
-    assert_receive {:sent, %{"text" => new}}, 1000, "the new escalation is not swallowed by the seed"
+
+    assert_receive {:sent, %{"text" => new}},
+                   1000,
+                   "the new escalation is not swallowed by the seed"
+
     refute new == old
     refute_receive {:sent, _}, 100
     assert %MapSet{} = Map.get(:sys.get_state(bridge), :transmitted)
@@ -672,7 +774,10 @@ defmodule Trailblazer.Vortex.BridgeTest do
     ref = make_ref()
 
     :sys.replace_state(bridge, fn state ->
-      %{state | jobs: Map.put(state.jobs, ref, %{task: nil, kind: {:send, "frontier", [message.id]}})}
+      %{
+        state
+        | jobs: Map.put(state.jobs, ref, %{task: nil, kind: {:send, "frontier", [message.id]}})
+      }
     end)
 
     send(bridge, {ref, [message]})
@@ -684,7 +789,13 @@ defmodule Trailblazer.Vortex.BridgeTest do
   ## planner; the direct-room protocol intake above stays untouched.
 
   defp conference(peer, room, cursor, body) do
-    %{"kind" => "conference_message", "peer" => peer, "room" => room, "body" => body, "cursor" => cursor}
+    %{
+      "kind" => "conference_message",
+      "peer" => peer,
+      "room" => room,
+      "body" => body,
+      "cursor" => cursor
+    }
   end
 
   test "a conference message lifts unaltered to the planner and opens no case", ctx do
@@ -692,7 +803,9 @@ defmodule Trailblazer.Vortex.BridgeTest do
 
     Agent.update(ctx.page, fn _ ->
       %{
-        events: [conference("some-peer", "conference:xyz123", 5, ~s({"parent": "x", "children": []}))],
+        events: [
+          conference("some-peer", "conference:xyz123", 5, ~s({"parent": "x", "children": []}))
+        ],
         cursor: 5
       }
     end)
