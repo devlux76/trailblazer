@@ -904,8 +904,8 @@ defmodule Trailblazer.IndexerTest do
         {:ok, _pid} = Indexer.watch(root, opts)
       end)
 
-    assert logs =~ "polling"
-    assert Indexer.status(root).following == :polling
+    assert logs =~ "when the next request reconciles from git"
+    assert Indexer.status(root).following == :on_request
     assert Indexer.status(root).watch_error =~ ":ignore"
 
     File.write!(Path.join(root, "web/probe.ts"), "export function probeFn() { return 1; }\n")
@@ -940,10 +940,10 @@ defmodule Trailblazer.IndexerTest do
     logs =
       ExUnit.CaptureLog.capture_log(fn ->
         send(Trailblazer.Watcher, {:file_event, watcher, :stop})
-        eventually(fn -> Indexer.status(root).following == :polling end, 1000)
+        eventually(fn -> Indexer.status(root).following == :on_request end, 1000)
       end)
 
-    assert logs =~ "polling"
+    assert logs =~ "when the next request reconciles from git"
 
     File.write!(
       Path.join(root, "web/afterStop.ts"),
@@ -956,7 +956,7 @@ defmodule Trailblazer.IndexerTest do
 
     # another watcher's stop changes nothing
     send(Trailblazer.Watcher, {:file_event, spawn(fn -> :ok end), :stop})
-    assert Indexer.status(root).following == :polling
+    assert Indexer.status(root).following == :on_request
     Process.exit(watcher, :kill)
   end
 

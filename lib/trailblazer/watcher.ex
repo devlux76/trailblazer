@@ -263,10 +263,10 @@ defmodule Trailblazer.Watcher do
 
     for {pid, m} <- s.members do
       Logger.error(
-        "trailblazer: no live file watcher for #{m.path}: #{text}; polling for changes"
+        "trailblazer: no live file watcher for #{m.path}: #{text}; changes are picked up when the next request reconciles from git"
       )
 
-      send(pid, {:watcher_status, :polling, text})
+      send(pid, {:watcher_status, :on_request, text})
       Events.publish({:repo, m.path}, %{event: :watcher_down, reason: text})
 
       if report? and outcome == :ok do
@@ -281,7 +281,7 @@ defmodule Trailblazer.Watcher do
       end
     end
 
-    %{s | following: :polling, reason: text}
+    %{s | following: :on_request, reason: text}
   end
 
   defp stop(s) do

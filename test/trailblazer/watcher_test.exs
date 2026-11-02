@@ -156,7 +156,7 @@ defmodule Trailblazer.WatcherTest do
 
   # Shared fate (2026-10-23): a removed linked worktree's git directory stayed
   # in the shared watch list, inotifywait refused to start, and every
-  # repository fell back to polling.
+  # repository fell back to on-request reconciliation.
   test "a member whose git directory vanished gets no watch; the others keep theirs", ctx do
     repo = scratch_repo()
     other = scratch_repo()
@@ -208,7 +208,7 @@ defmodule Trailblazer.WatcherTest do
     assert {:starting, nil} = Watcher.add(linked, side, opts, ctx.watcher)
     assert_receive {:member, ^main, {:watcher_status, :events, nil}}, 2000
     assert File.exists?(Path.join(dir, "raced"))
-    refute_received {:member, ^main, {:watcher_status, :polling, _}}
+    refute_received {:member, ^main, {:watcher_status, :on_request, _}}
     refute Enum.any?(Trailblazer.Anomaly.list(), &(&1.subject == repo))
   end
 
@@ -268,15 +268,15 @@ defmodule Trailblazer.WatcherTest do
     parent = self()
     broken = scratch_repo()
     failure = Keyword.put(ctx.opts, :start_watcher, fn _ -> {:error, :too_many_open_files} end)
-    assert {:polling, reason} = Watcher.add(broken, self(), failure, ctx.watcher)
+    assert {:on_request, reason} = Watcher.add(broken, self(), failure, ctx.watcher)
     assert reason =~ "too_many_open_files"
-    assert_receive {:watcher_status, :polling, ^reason}
+    assert_receive {:watcher_status, :on_request, ^reason}
     assert Enum.any?(Trailblazer.Anomaly.list(), &(&1.subject == broken))
     working = scratch_repo()
     assert {:events, nil} = Watcher.add(working, parent, ctx.opts, ctx.watcher)
     assert_receive {:started, pid, _}
     send(ctx.watcher, {:file_event, pid, :stop})
-    assert_receive {:watcher_status, :polling, stopped}
+    assert_receive {:watcher_status, :on_request, stopped}
     assert stopped =~ "stopped"
   end
 
@@ -322,7 +322,7 @@ defmodule Trailblazer.WatcherTest do
 
     assert_receive {:git_state, ^git_dir}
     assert_receive {:watcher_resync, ^backend}
-    assert_receive {:watcher_status, :polling, _}
+    assert_receive {:watcher_status, :on_request, _}
   end
 
   test "native startup stderr explains why live updates are off", ctx do
@@ -335,7 +335,7 @@ defmodule Trailblazer.WatcherTest do
     assert {:starting, nil} =
              Watcher.add(repo, self(), [watcher_executable: executable], ctx.watcher)
 
-    assert_receive {:watcher_status, :polling, reason}
+    assert_receive {:watcher_status, :on_request, reason}
     assert reason =~ "Too many open files"
 
     assert_receive {:trailblazer_event, :anomaly,
@@ -349,7 +349,7 @@ defmodule Trailblazer.WatcherTest do
 
   test "subscribe failure closes the newly started worker", ctx do
     opts = Keyword.put(ctx.opts, :subscribe_watcher, fn _ -> exit(:subscribe_failed) end)
-    assert {:polling, reason} = Watcher.add(scratch_repo(), self(), opts, ctx.watcher)
+    assert {:on_request, reason} = Watcher.add(scratch_repo(), self(), opts, ctx.watcher)
     assert reason =~ "subscribe_failed"
     assert_receive {:started, pid, _}
     refute Process.alive?(pid)
@@ -377,7 +377,7 @@ defmodule Trailblazer.WatcherTest do
         {:error, :replacement_marker}
       end)
 
-    assert {:polling, _} =
+    assert {:on_request, _} =
              Watcher.add(scratch_repo(), self(), opts, ctx.watcher)
 
     assert_receive {:previous_child_alive, false}
@@ -401,7 +401,7 @@ defmodule Trailblazer.WatcherTest do
     assert {:starting, nil} =
              Watcher.add(repo, self(), [watcher_executable: executable], ctx.watcher)
 
-    assert_receive {:watcher_status, :polling, reason}, 5000
+    assert_receive {:watcher_status, :on_request, reason}, 5000
     assert reason =~ "startup_backstop"
 
     assert Enum.any?(
