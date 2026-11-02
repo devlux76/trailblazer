@@ -498,6 +498,10 @@ defmodule Trailblazer.Loop.Coordinator do
 
   defp ensure_removal(_id, %{"stage" => "removal_pending"} = r), do: {:ok, r}
 
+  defp ensure_removal(id, r) do
+    with {:ok, archive} <- archive(id, r), do: Lifecycle.prepare_removal(id, archive)
+  end
+
   # Intact is not current: an interrupted cleanup's checkout may have gained
   # changes after its archive. Immediately before removal the checkout's
   # present content and branch are compared with the archived snapshot; a
@@ -522,10 +526,6 @@ defmodule Trailblazer.Loop.Coordinator do
     else
       {:error, reason} -> {:error, {:archive_failed, reason}}
     end
-  end
-
-  defp ensure_removal(id, r) do
-    with {:ok, archive} <- archive(id, r), do: Lifecycle.prepare_removal(id, archive)
   end
 
   defp discard(id, r) do
@@ -607,32 +607,49 @@ defmodule Trailblazer.Loop.Coordinator do
   # SHA-256 before anything is removed (Lifecycle.archive_intact?/1).
   # Each snapshot gets its own content-addressed directory, so replacing a
   # stale archive never disturbs the one the journal still names.
+  #
+  # The directory is named by the whole payload (journal and patch bytes and
+  # the recorded branch SHA), is filled under a private temporary name and
+  # appears by one rename, and is never written again: an existing snapshot
+  # is either this exact payload (reused) or something else (refused).
   defp archive(id, r) do
     with {:ok, branch_sha} <- branch_sha(r),
-         {:ok, patch} <- changes(r, branch_sha),
-         dir =
-           Path.join([
-             Config.get(:state_dir),
-             "archive",
-             id,
-             String.slice(Lifecycle.sha256(patch), 0, 16)
-           ]),
-         journal = Jason.encode!(r, pretty: true),
-         :ok <- File.mkdir_p(dir),
-         :ok <- put(dir, "journal.json", journal),
-         :ok <- put(dir, "changes.patch", patch) do
-      archive = %{
-        "path" => dir,
-        "branch_sha" => branch_sha,
-        "files" => %{
-          "journal.json" => Lifecycle.sha256(journal),
-          "changes.patch" => Lifecycle.sha256(patch)
-        }
+         {:ok, patch} <- changes(r, branch_sha) do
+      journal = Jason.encode!(r, pretty: true)
+
+      files = %{
+        "journal.json" => Lifecycle.sha256(journal),
+        "changes.patch" => Lifecycle.sha256(patch)
       }
 
-      if Lifecycle.archive_intact?(archive),
-        do: {:ok, archive},
-        else: {:error, :archive_unverified}
+      identity = Lifecycle.sha256(Jason.encode!(%{"branch_sha" => branch_sha, "files" => files}))
+      root = Path.join([Config.get(:state_dir), "archive", id])
+      dir = Path.join(root, String.slice(identity, 0, 32))
+      archive = %{"path" => dir, "branch_sha" => branch_sha, "files" => files}
+
+      cond do
+        Lifecycle.archive_intact?(archive) ->
+          {:ok, archive}
+
+        File.exists?(dir) ->
+          {:error, {:archive_failed, :snapshot_exists_with_other_content}}
+
+        true ->
+          tmp = Path.join(root, ".tmp-#{System.unique_integer([:positive])}")
+
+          with :ok <- File.mkdir_p(tmp),
+               :ok <- File.write(Path.join(tmp, "journal.json"), journal),
+               :ok <- File.write(Path.join(tmp, "changes.patch"), patch),
+               :ok <- File.rename(tmp, dir) do
+            if Lifecycle.archive_intact?(archive),
+              do: {:ok, archive},
+              else: {:error, :archive_unverified}
+          else
+            {:error, reason} ->
+              File.rm_rf(tmp)
+              {:error, {:archive_failed, reason}}
+          end
+      end
     else
       {:error, reason} -> {:error, {:archive_failed, reason}}
     end
@@ -669,13 +686,6 @@ defmodule Trailblazer.Loop.Coordinator do
           {:ok, ""}
       end
     end
-  end
-
-  defp put(dir, name, data) do
-    path = Path.join(dir, name)
-    tmp = path <> ".tmp"
-
-    with :ok <- File.write(tmp, data), do: File.rename(tmp, path)
   end
 
   defp ancestor?(repo, a, b), do: match?({_, 0}, cmd(repo, ["merge-base", "--is-ancestor", a, b]))

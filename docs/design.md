@@ -421,7 +421,20 @@ On the CLI it is one JSON object.
   Errors stay in the journal (`last_error`) with the candidate intact and the
   same call retries. Every destructive step first re-verifies the archive,
   also when an interrupted cleanup resumes, and a failed worktree discovery
-  is an error, never "checked out nowhere". There is no age-based prune.
+  is an error, never "checked out nowhere". An intact archive that no longer
+  matches the checkout's present content or branch SHA is replaced, before
+  removal, by a new snapshot that the journal records (`archive_refreshed`).
+  Snapshots are immutable: each directory is named by its whole payload
+  (journal and patch bytes and branch SHA), appears by one rename and is
+  never rewritten. There is no age-based prune.
+- Cleanup precondition: a managed checkout is exclusively owned by its case
+  and quiescent with respect to other writers when cleanup runs. The
+  per-repository coordinator lock serializes cooperating operations only; it
+  does not exclude a non-cooperating process, and nothing bounds the time
+  between the final archive comparison and the removal. Content written into
+  the checkout in that interval is not protected. A shared or actively written
+  checkout must not be admitted for automatic removal; a stronger guarantee
+  would need a separate ownership and retention design.
 - Integration commit policy (explicit, not equivalent to hooks having run):
   the merge commit is written with `commit-tree`, so the repository's commit
   hooks do not run on it. Its author/committer identity and dates are Git's

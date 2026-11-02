@@ -349,6 +349,44 @@ defmodule Trailblazer.Loop.CoordinatorIntegrationTest do
     end
   end
 
+  test "(peer review) equal-patch refresh cannot overwrite the journal's current archive", c do
+    {id, ws} = open_case(c)
+    File.write!(Path.join(ws.path, "file.txt"), "same patch before and after commit\n")
+    git(ws.path, ["add", "file.txt"])
+    r = Lifecycle.get(id)
+    {patch, 0} = System.cmd("git", ["diff", "--cached", "--binary", r["base"]], cd: ws.path)
+
+    dir =
+      Path.join([
+        Trailblazer.Config.get(:state_dir),
+        "archive",
+        id,
+        String.slice(Lifecycle.sha256(patch), 0, 16)
+      ])
+
+    File.mkdir_p!(dir)
+    journal = Jason.encode!(r, pretty: true)
+    File.write!(Path.join(dir, "journal.json"), journal)
+    File.write!(Path.join(dir, "changes.patch"), patch)
+
+    archive = %{
+      "path" => dir,
+      "branch_sha" => git(c.repo, ["rev-parse", ws.branch]),
+      "files" => %{
+        "journal.json" => Lifecycle.sha256(journal),
+        "changes.patch" => Lifecycle.sha256(patch)
+      }
+    }
+
+    {:ok, _} = Lifecycle.prepare_discard(id, archive)
+    git(ws.path, ["commit", "-qm", "same patch, new branch SHA"])
+    assert {:ok, r} = Coordinator.retire(id)
+    assert Lifecycle.archive_intact?(archive)
+    assert r["archive"]["path"] != dir
+    assert r["archive"]["branch_sha"] != archive["branch_sha"]
+    assert Lifecycle.archive_intact?(r["archive"])
+  end
+
   test "a stale but intact archive is replaced by a journalled snapshot and the old one is kept",
        c do
     {id, ws, sha} = candidate(c)
