@@ -94,6 +94,7 @@ defmodule Trailblazer.WatcherTest do
     refute_receive {:started, _, _}, 20
   end
 
+  @tag :host_inotify
   test "a commit tells its member that git state moved; an unstaged edit does not", ctx do
     repo = scratch_repo()
     git_dir = Path.join(repo, ".git")
@@ -125,6 +126,7 @@ defmodule Trailblazer.WatcherTest do
     refute_receive {:git_state, _}, 100
   end
 
+  @tag :host_inotify
   test "a linked worktree watches its own git directory", ctx do
     repo = scratch_repo()
     linked = tmp_path("linked")
@@ -172,6 +174,7 @@ defmodule Trailblazer.WatcherTest do
     assert_receive {:started, _, ^expected}
   end
 
+  @tag :host_inotify
   test "a git directory that vanishes as the native watcher starts is dropped, not fatal",
        ctx do
     repo = scratch_repo()
@@ -220,6 +223,7 @@ defmodule Trailblazer.WatcherTest do
     refute_receive {:watcher_status, _, _}, 20
   end
 
+  @tag :host_inotify
   test "only git's own state files are routed", ctx do
     repo = scratch_repo()
     git_dir = Path.join(repo, ".git")
@@ -238,6 +242,7 @@ defmodule Trailblazer.WatcherTest do
     assert_receive {:git_state, ^git_dir}
   end
 
+  @tag :host_inotify
   test "one kernel watch per repository, not one per directory", ctx do
     one = scratch_repo()
     two = scratch_repo()
