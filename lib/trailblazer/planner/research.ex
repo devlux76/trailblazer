@@ -25,6 +25,8 @@ defmodule Trailblazer.Planner.Research do
   @subscription_ttl 86_400
   @reply_limit_ms 3 * 60 * 60 * 1000
   @opencode_url "http://127.0.0.1:4096"
+  # How long the OpenCode activity question may take before it reads as unknown.
+  @busy_check_ms 5_000
   # Planner actors OpenCode works under, besides the configured research actor.
   @opencode_actors ["opencode"]
 
@@ -142,12 +144,29 @@ defmodule Trailblazer.Planner.Research do
     end
   end
 
+  # One bounded question (the request has no client timeout of its own; the
+  # backstop is its one clock, design §13.5). A hang reads as unknown: hold.
   defp opencode_sessions(url) do
-    case Req.get(url, receive_timeout: 3_000, connect_options: [timeout: 2_000], retry: false) do
+    answer =
+      case Backstop.guard(
+             :research_peer_busy,
+             url,
+             {:ms, @busy_check_ms},
+             fn -> %{url: url} end,
+             fn ->
+               Req.get(url, retry: false)
+             end
+           ) do
+        {:ok, reply} -> reply
+        {:error, reason} -> {:error, reason}
+      end
+
+    case answer do
       {:ok, %Req.Response{status: 200, body: %{"data" => data}}} when data == %{} or data == [] ->
         :idle
 
-      {:ok, %Req.Response{status: 200, body: %{"data" => data}}} when is_map(data) or is_list(data) ->
+      {:ok, %Req.Response{status: 200, body: %{"data" => data}}}
+      when is_map(data) or is_list(data) ->
         {:busy, "OpenCode has #{Enum.count(data)} running session(s)"}
 
       {:ok, %Req.Response{status: status}} ->
@@ -373,7 +392,14 @@ defmodule Trailblazer.Planner.Research do
 
       true ->
         record(row.ref, "researched", summarise(refs, drops), row.conference, children: refs)
-        note(state, row.ref, "researched: " <> Integer.to_string(length(refs)) <> " children: " <> Enum.join(refs, ", "))
+
+        note(
+          state,
+          row.ref,
+          "researched: " <>
+            Integer.to_string(length(refs)) <> " children: " <> Enum.join(refs, ", ")
+        )
+
         release(state, row.ref)
     end
   end
@@ -439,7 +465,8 @@ defmodule Trailblazer.Planner.Research do
       not (is_binary(acceptance) and String.trim(acceptance) != "") ->
         {:error, "no acceptance criteria"}
 
-      not (is_list(plan) and plan != [] and Enum.all?(plan, &(is_binary(&1) and String.trim(&1) != ""))) ->
+      not (is_list(plan) and plan != [] and
+               Enum.all?(plan, &(is_binary(&1) and String.trim(&1) != ""))) ->
         {:error, "no implementation plan"}
 
       not (files != [] and Enum.all?(files, &is_binary/1)) ->
@@ -471,11 +498,15 @@ defmodule Trailblazer.Planner.Research do
   defp names_of(_), do: []
 
   defp compose(files, acceptance, plan) do
-    steps = Enum.map_join(Enum.with_index(plan, 1), "; ", fn {step, n} ->
-      "#{n}. #{String.replace(step, "\n", " ")}"
-    end)
+    steps =
+      Enum.map_join(Enum.with_index(plan, 1), "; ", fn {step, n} ->
+        "#{n}. #{String.replace(step, "\n", " ")}"
+      end)
 
-    "Files: " <> Enum.join(files, " ") <> "\nAcceptance: " <> acceptance <>
+    "Files: " <>
+      Enum.join(files, " ") <>
+      "\nAcceptance: " <>
+      acceptance <>
       "\nImplementation plan: " <> steps
   end
 
@@ -572,7 +603,11 @@ defmodule Trailblazer.Planner.Research do
     total = length(kids)
     done = (row.children_done || 0) + 1
 
-    record(row.ref, row.state, "children completed " <> Integer.to_string(done) <> "/" <> Integer.to_string(total), row.conference, children_done: done)
+    record(
+      row.ref,
+      row.state,
+      "children completed " <> Integer.to_string(done) <> "/" <> Integer.to_string(total),
+      row.conference, children_done: done)
 
     if done >= total,
       do:
@@ -640,8 +675,13 @@ defmodule Trailblazer.Planner.Research do
     CaseStore.transaction(fn conn ->
       schema(conn)
       existing = rowof(conn, ref) || %{}
-      children_text = Jason.encode!(Keyword.get(extra, :children) || Map.get(existing, :children) || [])
-      done = Keyword.get(extra, :children_done) || (existing[:children_done] && Map.get(existing, :children_done)) || 0
+
+      children_text =
+        Jason.encode!(Keyword.get(extra, :children) || Map.get(existing, :children) || [])
+
+      done =
+        Keyword.get(extra, :children_done) ||
+          (existing[:children_done] && Map.get(existing, :children_done)) || 0
 
       query(
         conn,
@@ -690,6 +730,7 @@ defmodule Trailblazer.Planner.Research do
 
   defp decode_children(""), do: []
   defp decode_children(nil), do: []
+
   defp decode_children(text) do
     case Jason.decode!(text) do
       list when is_list(list) -> list
