@@ -59,10 +59,10 @@ defmodule Trailblazer.Loop.CoordinatorTest do
     String.trim(out)
   end
 
-  test "accepts a candidate-ready case with a clean or absent primary checkout", c do
+  test "preflight accepts a candidate-ready case with a clean or absent primary checkout", c do
     sha = make_candidate(c)
     # primary checked out in repo, clean
-    assert {:ok, preflight} = Coordinator.accept(c.id)
+    assert {:ok, preflight} = Coordinator.preflight(c.id)
     assert preflight["candidate"] == sha
     assert preflight["primary"] == "main"
     assert is_binary(preflight["primary_sha"])
@@ -70,7 +70,7 @@ defmodule Trailblazer.Loop.CoordinatorTest do
 
     # primary checked out nowhere: move HEAD to a feature branch
     git(c.repo, ["checkout", "-qb", "feature"])
-    assert {:ok, preflight2} = Coordinator.accept(c.id)
+    assert {:ok, preflight2} = Coordinator.preflight(c.id)
     assert preflight2["primary_checkouts"] == []
     assert git(c.repo, ["branch", "--show-current"]) == "feature"
   end
@@ -80,7 +80,7 @@ defmodule Trailblazer.Loop.CoordinatorTest do
     # move HEAD off primary so the branch can be deleted
     git(c.repo, ["checkout", "-qb", "feature"])
     git(c.repo, ["branch", "-D", "main"])
-    assert {:error, :missing_primary} = Coordinator.accept(c.id)
+    assert {:error, :missing_primary} = Coordinator.preflight(c.id)
     _ = sha
   end
 
@@ -89,33 +89,33 @@ defmodule Trailblazer.Loop.CoordinatorTest do
     {:ok, ws2} = Workspace.open(c.repo, id2)
     on_exit(fn -> System.cmd("git", ["worktree", "remove", "--force", ws2.path], cd: c.repo, stderr_to_stdout: true) end)
     {:ok, _} = Lifecycle.admit(id2, %{repo: c.repo, primary: nil, check: "true", from: "test", files: ["file.txt"]}, ws2)
-    assert {:error, :no_primary} = Coordinator.accept(id2)
+    assert {:error, :no_primary} = Coordinator.preflight(id2)
   end
 
   test "rejects a case without a candidate", c do
     admit(c)
-    assert {:error, :no_candidate} = Coordinator.accept(c.id)
+    assert {:error, :no_candidate} = Coordinator.preflight(c.id)
   end
 
   test "rejects a candidate that has moved on its branch", c do
     make_candidate(c)
     # move branch away from candidate
     git(c.repo, ["update-ref", "refs/heads/" <> c.ws.branch, "HEAD"])
-    assert {:error, :candidate_moved} = Coordinator.accept(c.id)
+    assert {:error, :candidate_moved} = Coordinator.preflight(c.id)
   end
 
   test "rejects dirty or staged primary checkouts", c do
     make_candidate(c)
     # dirty tracked file in primary checkout
     File.write!(Path.join(c.repo, "file.txt"), "dirty\n")
-    assert {:error, :dirty_primary} = Coordinator.accept(c.id)
+    assert {:error, :dirty_primary} = Coordinator.preflight(c.id)
     # restore
     git(c.repo, ["checkout", "--", "file.txt"])
 
     # staged change
     File.write!(Path.join(c.repo, "file.txt"), "staged\n")
     git(c.repo, ["add", "file.txt"])
-    assert {:error, :dirty_primary} = Coordinator.accept(c.id)
+    assert {:error, :dirty_primary} = Coordinator.preflight(c.id)
     git(c.repo, ["reset", "-q", "HEAD"])
     git(c.repo, ["checkout", "--", "file.txt"])
   end
@@ -126,7 +126,7 @@ defmodule Trailblazer.Loop.CoordinatorTest do
     git(c.repo, ["worktree", "add", "--force", other, "main"])
     on_exit(fn -> System.cmd("git", ["worktree", "remove", "--force", other], cd: c.repo, stderr_to_stdout: true) end)
     File.write!(Path.join(other, "file.txt"), "dirty\n")
-    assert {:error, :dirty_primary} = Coordinator.accept(c.id)
+    assert {:error, :dirty_primary} = Coordinator.preflight(c.id)
   end
 
   test "distinguishes harmless from colliding untracked files", c do
@@ -134,12 +134,12 @@ defmodule Trailblazer.Loop.CoordinatorTest do
 
     # harmless untracked
     File.write!(Path.join(c.repo, "unrelated.txt"), "junk\n")
-    assert {:ok, _} = Coordinator.accept(c.id)
+    assert {:ok, _} = Coordinator.preflight(c.id)
     File.rm!(Path.join(c.repo, "unrelated.txt"))
 
     # colliding untracked
     File.write!(Path.join(c.repo, "added.txt"), "collision\n")
-    assert {:error, :colliding_untracked} = Coordinator.accept(c.id)
+    assert {:error, :colliding_untracked} = Coordinator.preflight(c.id)
     File.rm!(Path.join(c.repo, "added.txt"))
   end
 
@@ -149,7 +149,7 @@ defmodule Trailblazer.Loop.CoordinatorTest do
     before_caller = File.read!(Path.join(c.repo, "file.txt"))
     before_candidate = git(c.repo, ["rev-parse", c.ws.branch])
     File.write!(Path.join(c.repo, "file.txt"), "dirty\n")
-    assert {:error, :dirty_primary} = Coordinator.accept(c.id)
+    assert {:error, :dirty_primary} = Coordinator.preflight(c.id)
     # caller file restored? We changed it to dirty; rejection must not modify it.
     assert File.read!(Path.join(c.repo, "file.txt")) == "dirty\n"
     assert git(c.repo, ["rev-parse", c.ws.branch]) == before_candidate
@@ -180,7 +180,7 @@ defmodule Trailblazer.Loop.CoordinatorTest do
     end)
     Process.sleep(100)
 
-    task = Task.async(fn -> Coordinator.accept(id2) end)
+    task = Task.async(fn -> Coordinator.preflight(id2) end)
     Process.sleep(200)
     assert Process.alive?(task.pid)
     send(holder.pid, :release)
@@ -220,7 +220,7 @@ defmodule Trailblazer.Loop.CoordinatorTest do
     end)
     Process.sleep(50)
     # accept on second repo should not wait for first repo's lock
-    assert {:ok, _} = Coordinator.accept(id2)
+    assert {:ok, _} = Coordinator.preflight(id2)
     Task.await(holder, 5000)
   end
 end

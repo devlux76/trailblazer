@@ -130,6 +130,34 @@ defmodule Trailblazer.LoopTest do
     assert git(repo, ["show", "#{report.commit}:lib/greeting.ex"]) =~ "Hello, "
   end
 
+  test "an admitted primary hands a fixed candidate to the coordinator, which integrates and cleans up",
+       %{repo: repo, opts: opts} do
+    text = "```json\n" <> Jason.encode!([greeting_block()]) <> "\n```"
+    script([reply(text), reply("## PASS")])
+    report = Loop.run(task(repo, %{primary: "main"}), opts)
+    assert report.status == :fixed
+    assert report.integration.result == report.commit
+    assert String.trim(git(repo, ["rev-parse", "main"])) == report.commit
+    assert report.worktree == nil
+    assert report.summary =~ "Integrated into main"
+    {_, 1} = System.cmd("git", ["show-ref", "--verify", "--quiet", "refs/heads/" <> report.branch], cd: repo)
+    assert Trailblazer.Loop.Lifecycle.get(report.case)["stage"] == "cleanup_complete"
+  end
+
+  test "without an admitted primary a fixed candidate's branch is retained for the caller", %{
+    repo: repo,
+    opts: opts
+  } do
+    text = "```json\n" <> Jason.encode!([greeting_block()]) <> "\n```"
+    script([reply(text), reply("## PASS")])
+    main = String.trim(git(repo, ["rev-parse", "main"]))
+    report = Loop.run(task(repo), opts)
+    assert report.status == :fixed
+    refute Map.has_key?(report, :integration)
+    assert String.trim(git(repo, ["rev-parse", "main"])) == main
+    assert String.trim(git(repo, ["rev-parse", report.branch])) == report.commit
+  end
+
   defp saved_reply(repo, overrides \\ %{}, close? \\ true) do
     {:ok, id} = CaseRecord.open(task(repo, %{from: "cli"}))
 

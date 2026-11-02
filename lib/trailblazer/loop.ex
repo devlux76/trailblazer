@@ -76,6 +76,7 @@ defmodule Trailblazer.Loop do
       end
 
     _ = Lifecycle.reported(id, report)
+    report = coordinate(id, report, opts)
 
     case CaseRecord.close(id, report) do
       :ok -> Logger.info("trailblazer: case #{id} report #{brief(:report, report)}")
@@ -775,6 +776,68 @@ defmodule Trailblazer.Loop do
         end
     end
   end
+
+  # A primary admitted with the case is the trusted policy that hands its
+  # outcome to the coordinator: a fixed candidate is integrated, anything else
+  # is archived, and both end with the managed checkout and branch removed.
+  # Without one the candidate branch (and an unfinished worktree) stays for
+  # the caller, as before. A blocked coordinator keeps the candidate and says
+  # why; the public status stays as the Loop decided it.
+  defp coordinate(id, report, opts) do
+    coordinator = Keyword.get(opts, :coordinator, Trailblazer.Loop.Coordinator)
+
+    case Lifecycle.get(id) do
+      %{"primary" => primary} when is_binary(primary) ->
+        result =
+          if report.status == :fixed,
+            do: coordinator.accept(id, Keyword.take(opts, [:check_opts])),
+            else: coordinator.retire(id, [])
+
+        coordinated(report, result)
+
+      _ ->
+        report
+    end
+  rescue
+    e -> coordinated(report, {:error, {:coordinator_crashed, Exception.message(e)}})
+  end
+
+  defp coordinated(report, {:ok, %{"stage" => "cleanup_complete"} = r}) do
+    %{
+      report
+      | worktree: nil,
+        summary:
+          report.summary <>
+            " Integrated into #{r["primary"]} at #{r["result"]}; candidate branch and checkout removed, evidence archived at #{r["archive"]["path"]}."
+    }
+    |> Map.put(:integration, %{
+      primary: r["primary"],
+      result: r["result"],
+      archive: r["archive"]["path"]
+    })
+  end
+
+  defp coordinated(report, {:ok, %{"stage" => "discarded"} = r}) do
+    %{
+      report
+      | worktree: nil,
+        summary:
+          report.summary <>
+            " Not integrated; evidence archived at #{r["archive"]["path"]} and the checkout and branch removed."
+    }
+    |> Map.put(:archive, r["archive"]["path"])
+  end
+
+  defp coordinated(report, {:error, reason}) do
+    %{
+      report
+      | summary:
+          report.summary <>
+            " Coordinator blocked: #{inspect(reason)}; candidate and evidence retained."
+    }
+  end
+
+  defp coordinated(report, _), do: report
 
   defp lifecycle({:ok, record}), do: record
   defp lifecycle({:error, reason}), do: throw({:lifecycle_error, reason})

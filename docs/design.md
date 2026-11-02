@@ -394,14 +394,32 @@ On the CLI it is one JSON object.
   changed content needs a new check. Checks that rewrite tracked files,
   including formatters, are rejected: use a non-mutating verification command.
 - The Loop never merges or pushes and never touches the caller's checkout.
-  The coordinator owns acceptance and integration into an explicitly admitted
-  primary branch. Never infer primary from the current checkout. Until that
-  coordinator is implemented (Task 2 in the October 23 review), preserve the
-  existing cleanup of a clean, committed candidate's worktree directory, but
-  retain its candidate branch, SHA and exact check evidence. Journal this as
-  `candidate_workspace_removed`, never as integration or complete cleanup.
-  A dirty or moved candidate blocks removal; removal errors retain the path
-  in the report and the pending intent/error in the journal.
+  `Trailblazer.Loop.Coordinator` owns acceptance, integration and cleanup.
+  A primary branch admitted with the case (`primary`, never inferred from
+  the current checkout) is the trusted policy that hands the case to it when
+  the Loop reports: a `fixed` candidate is integrated (`accept`), any other
+  outcome is archived (`retire`). Without an admitted primary the candidate
+  branch is retained for the caller, as before, and the `accept`/`retire`
+  operations do the same work on request. The public status is unchanged;
+  the report adds `integration` or `archive`.
+- Integration runs under a per-repository lock and rechecks everything
+  there. A primary still at (or behind) the base advances to the candidate
+  itself, whose exact tree was checked. A moved primary gets a merge commit
+  (`merge-tree --write-tree`, then `commit-tree`) tested with the trusted
+  check in a detached checkout; a conflict or failed test returns with the
+  candidate preserved. Primary checked out nowhere advances by
+  `update-ref <new> <old>`; a clean checked-out primary is fast-forwarded
+  through its own checkout. A dirty one blocks; it is never reset or stashed.
+  A compare-and-swap lost to a moved primary is reopened and the result
+  recomputed and retested, never retried blindly.
+- Before anything is removed, the journal and a binary patch of everything
+  the case changed relative to its base (committed, uncommitted and untracked;
+  provisioned dependency and build trees excluded) are written outside any
+  worktree to `<state_dir>/archive/<case>/` and verified by SHA-256. Cleanup
+  then removes the managed checkout and deletes the branch by compare-and-swap
+  on its archived SHA, ending `cleanup_complete` (integrated) or `discarded`.
+  Errors stay in the journal (`last_error`) with the candidate intact and the
+  same call retries. There is no age-based prune.
 - A durable lifecycle journal in `cases.db` records ownership, base and
   primary SHAs, check evidence, candidate/result SHAs, cleanup state, errors
   and transition history, independently of the public case status. Writes use
@@ -411,9 +429,8 @@ On the CLI it is one JSON object.
   observes exact Git state and records effects already completed once; it
   never replays a model call, runs a check, advances a ref or removes a path.
   Ambiguity remains blocked with evidence. Complete cleanup, including
-  candidate branch deletion, requires an integrated result; unchecked/failed
-  evidence archival and coordinator cleanup remain
-  Task 2, so those workspaces are retained meanwhile.
+  candidate branch deletion, requires an integrated result or a verified
+  archive (`discard` intent).
 - The journal APIs provide recovery boundaries for integration/removal;
   tests of those APIs do not claim a production integration coordinator.
   See `docs/2026-10-23-design-review.md` and the durable-outcomes plan/register.
