@@ -416,4 +416,55 @@ defmodule Trailblazer.Loop.CoordinatorIntegrationTest do
     assert Lifecycle.archive_intact?(stale)
     assert_cleaned(c, ws, r)
   end
+
+  test "dirty generation of a merged source blocks primary advancement", c do
+    File.write!(Path.join(c.repo, "left"), "1\n")
+    File.write!(Path.join(c.repo, "right"), "1\n")
+    File.write!(Path.join(c.repo, "bundle"), "2\n")
+    git(c.repo, ["add", "."])
+    git(c.repo, ["commit", "-qm", "generation base"])
+
+    {:ok, policies} =
+      Trailblazer.Loop.Artifacts.policies(
+        %{
+          c.repo => %{
+            "true" => %{
+              "prepare" => "awk '{s+=$1} END {print s}' left right > bundle",
+              "paths" => ["bundle"],
+              "definitions" => []
+            }
+          }
+        },
+        %{c.repo => ["true"]}
+      )
+
+    task = %{
+      repo: c.repo,
+      primary: "main",
+      check: "true",
+      from: "test",
+      files: ["left"],
+      artifacts: policies[c.repo]["true"]
+    }
+
+    {:ok, id} = CaseRecord.open(task)
+    {:ok, ws} = Workspace.open(c.repo, id)
+    {:ok, _} = Lifecycle.admit(id, task, ws)
+    File.write!(Path.join(ws.path, "left"), "2\n")
+    File.write!(Path.join(ws.path, "bundle"), "3\n")
+    tree = Lifecycle.tree(ws, ["left", "bundle"])
+    {:ok, _} = Lifecycle.prepare_commit(id, tree, %{status: :pass, command: "true", tree: tree})
+    {:ok, _} = Workspace.commit(ws, "candidate", ["left", "bundle"])
+    {:ok, _} = Lifecycle.reconcile(id)
+    File.write!(Path.join(c.repo, "right"), "2\n")
+    File.write!(Path.join(c.repo, "bundle"), "3\n")
+    git(c.repo, ["commit", "-qam", "other correct candidate"])
+    old = git(c.repo, ["rev-parse", "main"])
+
+    assert {:error, {:artifact_verification, %{reason: :regeneration_required}}} =
+             Coordinator.accept(id)
+
+    assert git(c.repo, ["rev-parse", "main"]) == old
+    assert Lifecycle.get(id)["stage"] == "candidate_ready"
+  end
 end

@@ -12,7 +12,7 @@ defmodule Trailblazer.Loop.Coordinator do
   journal intent in `Trailblazer.Loop.Lifecycle`.
   """
 
-  alias Trailblazer.{Config, Files, Loop.Check, Loop.Lifecycle, Loop.Workspace}
+  alias Trailblazer.{Config, Files, Loop.Artifacts, Loop.Check, Loop.Lifecycle, Loop.Workspace}
 
   @table :trailblazer_coordinator_locks
 
@@ -334,7 +334,7 @@ defmodule Trailblazer.Loop.Coordinator do
   defp tested_result(id, r, old, candidate, command, opts) do
     repo = r["repo"]
 
-    if ancestor?(repo, old, candidate) do
+    if ancestor?(repo, old, candidate) and is_nil(r["artifacts"]) do
       check = r["check"] || %{}
 
       with "pass" <- check["status"],
@@ -352,8 +352,13 @@ defmodule Trailblazer.Loop.Coordinator do
         _ -> {:error, :candidate_check_mismatch}
       end
     else
-      with {:ok, result} <- merge_commit(r, old, candidate),
-           {:ok, evidence} <- verify(id, repo, result, command, opts),
+      merged =
+        if ancestor?(repo, old, candidate),
+          do: {:ok, candidate},
+          else: merge_commit(r, old, candidate)
+
+      with {:ok, result} <- merged,
+           {:ok, evidence} <- verify(id, repo, result, command, r["artifacts"], opts),
            do: {:ok, result, evidence}
     end
   end
@@ -382,7 +387,7 @@ defmodule Trailblazer.Loop.Coordinator do
     end
   end
 
-  defp verify(id, repo, result, command, opts) do
+  defp verify(id, repo, result, command, policy, opts) do
     root = Path.join([Config.get(:state_dir), "integration", id])
     check = Keyword.get(opts, :check, Check)
 
@@ -390,7 +395,8 @@ defmodule Trailblazer.Loop.Coordinator do
       with :ok <- File.mkdir_p(Path.dirname(root)),
            :ok <- remove_stale(repo, root),
            {:ok, _} <- git(repo, ["worktree", "add", "--detach", root, result]),
-           :ok <- Workspace.provision_checkout(root, repo) do
+           :ok <- Workspace.provision_checkout(root, repo),
+           :ok <- verify_artifacts(root, policy, Keyword.get(opts, :check_opts, [])) do
         outcome = check.run(root, command, Keyword.get(opts, :check_opts, []))
 
         cond do
@@ -414,6 +420,15 @@ defmodule Trailblazer.Loop.Coordinator do
       end
     after
       _ = git(repo, ["worktree", "remove", "--force", root])
+    end
+  end
+
+  defp verify_artifacts(_root, nil, _opts), do: :ok
+
+  defp verify_artifacts(root, policy, opts) do
+    case Artifacts.verify(root, policy, opts) do
+      {:ok, _} -> :ok
+      {:error, evidence} -> {:error, {:artifact_verification, evidence}}
     end
   end
 

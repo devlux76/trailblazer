@@ -73,7 +73,7 @@ defmodule Trailblazer.Loop.Workspace do
   @doc "Stages only the admitted edit paths and returns their exact candidate tree."
   def tree(ws, paths) do
     with :ok <- validate(ws),
-         {:ok, _} <- git(ws.path, ["add"] ++ pathspec(paths)),
+         {:ok, _} <- stage(ws.path, paths),
          {:ok, tree} <- git(ws.path, ["write-tree"]),
          do: {:ok, tree}
   end
@@ -84,14 +84,14 @@ defmodule Trailblazer.Loop.Workspace do
   # pathspecs, never globs.
   def diff(ws, paths \\ :all) do
     :ok = validate(ws)
-    {:ok, _} = git(ws.path, ["add", "--intent-to-add"] ++ pathspec(paths))
+    {:ok, _} = stage(ws.path, paths)
     {:ok, text} = git(ws.path, ["diff", "--no-ext-diff", ws.base] ++ pathspec(paths))
     text
   end
 
   def commit(ws, message, paths \\ :all) do
     with :ok <- validate(ws),
-         {:ok, _} <- git(ws.path, ["add"] ++ pathspec(paths)),
+         {:ok, _} <- stage(ws.path, paths),
          {:ok, _} <- commit_with_hooks(ws.path, message),
          {:ok, sha} <- git(ws.path, ["rev-parse", "HEAD"]),
          do: {:ok, sha}
@@ -110,6 +110,21 @@ defmodule Trailblazer.Loop.Workspace do
          ) do
       {_, 0} -> {:ok, :committed}
       {text, _} -> {:error, {:git, String.trim(text)}}
+    end
+  end
+
+  # A deletion is absent from the index after the first tree capture. Do not
+  # ask git add to find it again; its staged deletion remains in the tree/diff.
+  defp stage(root, :all), do: git(root, ["add"] ++ pathspec(:all))
+
+  defp stage(root, paths) do
+    with {:ok, cached} <- git(root, ["ls-files", "-z"]) do
+      cached = String.split(cached, "\0", trim: true)
+
+      present =
+        Enum.filter(paths, &(&1 in cached or match?({:ok, _}, File.lstat(Path.join(root, &1)))))
+
+      if present == [], do: {:ok, ""}, else: git(root, ["add"] ++ pathspec(present))
     end
   end
 

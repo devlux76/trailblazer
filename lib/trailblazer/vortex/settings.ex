@@ -1,6 +1,7 @@
 defmodule Trailblazer.Vortex.Settings do
   @moduledoc "Trusted local VORTEX policy; never sourced from a peer message."
   alias Trailblazer.Files
+  alias Trailblazer.Loop.Artifacts
 
   def load(path) do
     {:ok, decode!(path)}
@@ -43,7 +44,8 @@ defmodule Trailblazer.Vortex.Settings do
               {canonical, checks}
             end)
 
-          {peer, %{room: room, role: role, repos: repos}}
+          {:ok, artifacts} = Artifacts.policies(Map.get(policy, "artifacts"), repos)
+          {peer, %{room: room, role: role, repos: repos, artifacts: artifacts}}
         end)
 
       options = [endpoint: endpoint, owner_peer: owner, peers: policies, listen: true]

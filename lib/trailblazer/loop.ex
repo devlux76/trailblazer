@@ -28,7 +28,17 @@ defmodule Trailblazer.Loop do
   require Logger
 
   alias Trailblazer.{Anomaly, Config, EmbedGate, Files, Model, Trail}
-  alias Trailblazer.Loop.{CaseRecord, Check, Edits, Lifecycle, Prompts, Tools, Workspace}
+
+  alias Trailblazer.Loop.{
+    Artifacts,
+    CaseRecord,
+    Check,
+    Edits,
+    Lifecycle,
+    Prompts,
+    Tools,
+    Workspace
+  }
 
   @attempts 3
   @tool_rounds 6
@@ -288,6 +298,7 @@ defmodule Trailblazer.Loop do
     record(st, :attempt, %{stage: :attempt, n: n})
     tally(:changed, [])
     tally(:previous_edits, nil)
+    tally(:artifacts, nil)
 
     case attempt(st, trail, files, check, feedback) do
       {:ok, reply} ->
@@ -345,6 +356,7 @@ defmodule Trailblazer.Loop do
     with {:ok, reply} <- coder_reply(st, trail, files, feedback),
          {:ok, blocks} <- blocks(st, reply),
          :ok <- apply_edits(st, blocks),
+         :ok <- prepare_artifacts(st),
          :ok <- run_check(st, check),
          :ok <- review(st) do
       {:ok, reply}
@@ -356,6 +368,7 @@ defmodule Trailblazer.Loop do
     with %{status: "failed"} = source <- CaseRecord.get(id),
          true <- source.repo == st.task.repo and source.task["check"] == st.task.check,
          true <- (source.task["from"] || "cli") == st.task.from,
+         true <- source.task["artifacts"] == st.task.artifacts,
          %{} = ws <-
            Enum.find(source.events, &(&1.kind == "attempt" and &1.data["stage"] == "workspace")),
          true <- ws.data["base"] == st.ws.base,
@@ -623,6 +636,26 @@ defmodule Trailblazer.Loop do
     end
   end
 
+  defp prepare_artifacts(%{task: %{artifacts: nil}}), do: :ok
+
+  defp prepare_artifacts(st) do
+    case Artifacts.prepare(st.ws.path, st.task.artifacts, Keyword.get(st.opts, :check_opts, [])) do
+      {:ok, evidence} ->
+        record(st, :attempt, Map.put(evidence, :stage, :artifacts))
+        tally(:artifacts, evidence)
+        tally(:changed, Enum.uniq(tally(:changed) ++ evidence.paths))
+        :ok
+
+      {:error, %{reason: :preparation_failed} = evidence} ->
+        record(st, :attempt, Map.put(evidence, :stage, :artifacts))
+        {:retry, :preparation_failed, "Artifact preparation failed: #{evidence.output_tail}"}
+
+      {:error, evidence} ->
+        record(st, :error, Map.put(evidence, :stage, :artifacts))
+        {:stop, report(st, :failed, "Artifact preparation refused: #{inspect(evidence.reason)}.")}
+    end
+  end
+
   defp tracked(path) do
     case System.cmd("git", ["ls-files", "-z"], cd: path, stderr_to_stdout: true) do
       {out, 0} -> String.split(out, "\0", trim: true)
@@ -658,7 +691,26 @@ defmodule Trailblazer.Loop do
   # An answer that is neither PASS nor FAIL is asked for once more (D13).
   defp review(st) do
     diff = mod(st, :workspace, Workspace).diff(st.ws, tally(:changed))
-    messages = Prompts.reviewer(st.task, diff, st.head.evidence)
+
+    artifact_note =
+      case tally(:artifacts) do
+        nil ->
+          ""
+
+        evidence ->
+          "\n\nTrusted artifact preparation (review generated/deleted outputs and modified build definitions):\n" <>
+            Jason.encode!(
+              Map.take(evidence, [
+                :command,
+                :paths,
+                :deleted_paths,
+                :definitions_changed,
+                :policy_hash
+              ])
+            )
+      end
+
+    messages = Prompts.reviewer(st.task, diff <> artifact_note, st.head.evidence)
 
     with {:ok, reply} <- converse(st, messages, nil, :reviewer),
          {:ok, verdict, text} <- verdict(st, messages, reply) do
@@ -1051,6 +1103,8 @@ defmodule Trailblazer.Loop do
       design: get.(:design),
       check: get.(:check),
       primary: get.(:primary),
+      # Atom-only internal metadata; JSON request fields cannot grant commands.
+      artifacts: Map.get(task, :artifacts),
       read_rounds: read_rounds,
       reasoning_budget_tokens: reasoning_budget,
       replay_reply_from: replay,

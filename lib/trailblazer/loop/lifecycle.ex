@@ -26,6 +26,7 @@ defmodule Trailblazer.Loop.Lifecycle do
             "owner" => Map.get(task, :from, "cli"),
             "files" => task.files,
             "trusted_check" => task.check,
+            "artifacts" => Map.get(task, :artifacts),
             "candidate" => nil,
             "result" => nil,
             "stage" => "opened",

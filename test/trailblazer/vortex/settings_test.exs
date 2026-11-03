@@ -45,4 +45,40 @@ defmodule Trailblazer.Vortex.SettingsTest do
       Settings.load!(path)
     end
   end
+
+  test "artifact commands come only from local admitted repository/check policy" do
+    path =
+      Path.join(System.tmp_dir!(), "artifact-policy-#{System.unique_integer([:positive])}.json")
+
+    on_exit(fn -> File.rm(path) end)
+    body = %{"prepare" => "cp source bundle", "paths" => ["bundle"], "definitions" => []}
+
+    peer = %{
+      "peer" => "caller",
+      "room" => Jason.encode!(["app", "caller"]),
+      "role" => "caller",
+      "repos" => %{"/tmp" => ["true"]},
+      "artifacts" => %{"/tmp" => %{"true" => body}}
+    }
+
+    config = %{"endpoint" => "/tmp/endpoint", "owner_peer" => "app", "peers" => [peer]}
+    File.write!(path, Jason.encode!(config))
+    policy = Settings.load!(path)[:peers]["caller"]
+    selected = Trailblazer.Loop.Artifacts.select(policy.artifacts, "/tmp", "true")
+    assert Map.delete(selected, "sha256") == body
+    assert byte_size(selected["sha256"]) == 64
+
+    for artifacts <- [
+          %{"/tmp" => %{"other check" => body}},
+          %{"/" => %{"true" => body}},
+          %{"/tmp" => %{"true" => %{body | "paths" => ["../escape"]}}}
+        ] do
+      File.write!(
+        path,
+        Jason.encode!(%{config | "peers" => [Map.put(peer, "artifacts", artifacts)]})
+      )
+
+      assert {:error, :invalid_config} = Settings.load(path)
+    end
+  end
 end

@@ -412,4 +412,55 @@ defmodule Trailblazer.Planner.CompanionTest do
     {list, 0} = System.cmd("git", ["worktree", "list", "--porcelain"], cd: repo)
     assert length(Regex.scan(~r/^worktree /m, list)) == 1
   end
+
+  test "independent verification reruns the admitted frozen generation policy", ctx do
+    for stale <- [true, false] do
+      dir = Path.join(ctx.dir, to_string(stale))
+      File.mkdir_p!(dir)
+      {repo, git} = repo(dir)
+
+      {:ok, policies} =
+        Trailblazer.Loop.Artifacts.policies(
+          %{
+            repo => %{
+              "true" => %{
+                "prepare" => "cp a.txt bundle",
+                "paths" => ["bundle"],
+                "definitions" => []
+              }
+            }
+          },
+          %{repo => ["true"]}
+        )
+
+      policy = policies[repo]["true"]
+
+      task = %{
+        repo: repo,
+        check: "true",
+        artifacts: policy,
+        from: "vortex:caller",
+        request: "fix",
+        files: []
+      }
+
+      {:ok, id, :new} =
+        Store.admit("caller", "room", "req-#{System.unique_integer([:positive])}", task, %{
+          ref: "vortex:abcdef1",
+          deadline_ms: nil
+        })
+
+      git.(["checkout", "-qb", "trailblazer/" <> id])
+      File.write!(Path.join(repo, "bundle"), if(stale, do: "stale", else: "one\n"))
+      git.(["add", "."])
+      git.(["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "candidate"])
+      {sha, 0} = System.cmd("git", ["rev-parse", "HEAD"], cd: repo)
+      CaseRecord.close(id, %{case: id, status: :fixed, commit: String.trim(sha), summary: "ok"})
+      pid = start(ctx)
+      eventually(fn -> row(id).state in ["block", "done"] end)
+      assert row(id).state == if(stale, do: "block", else: "done")
+      if stale, do: assert(row(id).note =~ "regeneration_required")
+      GenServer.stop(pid)
+    end
+  end
 end

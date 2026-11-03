@@ -1,7 +1,7 @@
 defmodule Trailblazer.Vortex.Protocol do
   @moduledoc "Versioned task messages; authority is local policy, never body-supplied identity."
   alias Trailblazer.Files
-  alias Trailblazer.Loop.Workspace
+  alias Trailblazer.Loop.{Artifacts, Workspace}
   @types ~w(task accepted report escalation receipt claim returned_fix rejected cancel)
   @keys ~w(protocol type id request_id payload)
 
@@ -55,7 +55,7 @@ defmodule Trailblazer.Vortex.Protocol do
 
   def peer(_, _), do: {:error, :unauthorized_peer}
 
-  def task(%{"type" => "task", "payload" => payload}, %{role: role, repos: repos}, peer)
+  def task(%{"type" => "task", "payload" => payload}, %{role: role, repos: repos} = policy, peer)
       when role in [:caller, :collaborator] do
     with true <-
            Enum.all?(
@@ -104,6 +104,12 @@ defmodule Trailblazer.Vortex.Protocol do
         if Map.has_key?(payload, "replay_reply_from"),
           do: Map.put(task, :replay_reply_from, payload["replay_reply_from"]),
           else: task
+
+      task =
+        case Artifacts.select(Map.get(policy, :artifacts, %{}), repo, check) do
+          nil -> task
+          frozen -> Map.put(task, :artifacts, frozen)
+        end
 
       {:ok, if(planner, do: Map.put(task, :planner, planner), else: task)}
     else

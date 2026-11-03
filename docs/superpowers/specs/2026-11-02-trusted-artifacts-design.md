@@ -1,7 +1,8 @@
 # Trusted artifact preparation before candidate verification
 
-Status: direction approved by Claude; required integration/path amendments
-recorded below before implementation. Issue: trailblazer:0981773.
+Status: helper independently reviewed; admission, execution, Companion and
+Coordinator wiring implemented on codex/trusted-artifacts, awaiting peer review
+and deployment/trial evidence. Issue: trailblazer:0981773.
 
 Observed: the F9 candidate passed checks, but a subsequent `v6:build` changed
 shipped bundles for already-reviewed F30/F7/F25 fixes. A non-mutating check is
@@ -55,7 +56,8 @@ an arbitrary preparation command through request fields.
 4. The existing non-mutating project check, checked-tree comparison and fresh
    review remain mandatory. A normal build failure can feed the next bounded
    attempt; a policy/scope violation stops without retrying. Replay recovery
-   repeats preparation/check/review without another coding call.
+   repeats preparation/check/review without another coding call and refuses a
+   frozen policy that differs from the saved source case.
 5. Companion provisions a fresh candidate checkout, reruns the same recorded
    preparation, and requires that it change nothing before its independent
    project check. A stale or non-reproducible artifact cannot become `done`.
@@ -97,3 +99,19 @@ dependencies or to make model-edited build code safe.
 - Editing a configured build-definition path is visibly flagged for review.
 - One bounded real VORTEX-source trial proves artifacts are committed by the
   worker; a second build is clean. No paid/free provider calls are needed.
+
+## Deployment boundary
+
+A policy takes effect only after an idle Trailblazer rebuild/restart, as with
+all cached local peer settings. Configure it on the sending peer's local policy
+for each exact admitted worktree/check pair; main-checkout admission is separate.
+Do not retrofit an already admitted case: its saved manifest is authoritative.
+Cases with no manifest retain the existing path. A replay with changed artifact
+policy is refused rather than silently rebuilding under new authority.
+
+The worker records preparation evidence as an `attempt` event with stage
+`artifacts`; failures retain their scope/build reason. The case task and
+lifecycle journal both retain the frozen manifest. Companion and Coordinator
+use this recorded value, not the current peer settings. A generated deletion
+is staged exactly once and stays visible in the checked tree and review diff.
+No policy has been enabled or deployed merely by adding this implementation.

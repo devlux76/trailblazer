@@ -118,4 +118,21 @@ defmodule Trailblazer.Vortex.ProtocolTest do
       assert {:error, :unauthorized_task} = Protocol.task(message, @policy, "caller")
     end
   end
+  test "artifact selection is internal; peer and model cannot override it" do
+    body = %{"prepare" => "cp source bundle", "paths" => ["bundle"], "definitions" => []}
+
+    {:ok, artifacts} =
+      Trailblazer.Loop.Artifacts.policies(%{"/tmp" => %{"bun test" => body}}, @policy.repos)
+
+    policy = Map.put(@policy, :artifacts, artifacts)
+    assert {:ok, task} = Protocol.task(@envelope, policy, "caller")
+    assert task.artifacts == artifacts["/tmp"]["bun test"]
+    assert {:ok, plain} = Protocol.task(@envelope, @policy, "caller")
+    refute Map.has_key?(plain, :artifacts)
+
+    for key <- ["artifacts", "prepare"] do
+      forged = %{@envelope | "payload" => Map.put(@task, key, body)}
+      assert {:error, :unauthorized_task} = Protocol.task(forged, policy, "caller")
+    end
+  end
 end

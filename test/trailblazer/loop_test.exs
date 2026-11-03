@@ -140,7 +140,12 @@ defmodule Trailblazer.LoopTest do
     assert String.trim(git(repo, ["rev-parse", "main"])) == report.commit
     assert report.worktree == nil
     assert report.summary =~ "Integrated into main"
-    {_, 1} = System.cmd("git", ["show-ref", "--verify", "--quiet", "refs/heads/" <> report.branch], cd: repo)
+
+    {_, 1} =
+      System.cmd("git", ["show-ref", "--verify", "--quiet", "refs/heads/" <> report.branch],
+        cd: repo
+      )
+
     assert Trailblazer.Loop.Lifecycle.get(report.case)["stage"] == "cleanup_complete"
   end
 
@@ -158,8 +163,8 @@ defmodule Trailblazer.LoopTest do
     assert String.trim(git(repo, ["rev-parse", report.branch])) == report.commit
   end
 
-  defp saved_reply(repo, overrides \\ %{}, close? \\ true) do
-    {:ok, id} = CaseRecord.open(task(repo, %{from: "cli"}))
+  defp saved_reply(repo, overrides \\ %{}, close? \\ true, extra \\ %{}) do
+    {:ok, id} = CaseRecord.open(task(repo, Map.merge(%{from: "cli"}, extra)))
 
     :ok =
       CaseRecord.event(id, :attempt, %{
@@ -1104,5 +1109,120 @@ defmodule Trailblazer.LoopTest do
     report = Loop.run(task(repo), Keyword.put(opts, :model, Boom))
     assert is_binary(report.worktree)
     assert is_binary(report.branch)
+  end
+
+  defp artifact_policy(repo, command) do
+    {:ok, policies} =
+      Trailblazer.Loop.Artifacts.policies(
+        %{
+          repo => %{
+            @check => %{
+              "prepare" => command,
+              "paths" => ["dist/greeting.ex"],
+              "definitions" => ["lib/greeting.ex"]
+            }
+          }
+        },
+        %{repo => [@check]}
+      )
+
+    policies[repo][@check]
+  end
+
+  test "generation precedes the check, is reviewed, committed and durably frozen", %{
+    repo: repo,
+    opts: opts
+  } do
+    policy = artifact_policy(repo, "mkdir -p dist && cp lib/greeting.ex dist/greeting.ex")
+    script([submitted([greeting_block()]), reply("PASS")])
+    report = Loop.run(task(repo, %{artifacts: policy}), opts)
+    assert report.status == :fixed
+    assert git(repo, ["show", "#{report.commit}:dist/greeting.ex"]) =~ "Hello, "
+    assert "dist/greeting.ex" in report.files
+    record = CaseRecord.get(report.case)
+    assert record.task["artifacts"] == policy
+    assert record.lifecycle["artifacts"] == policy
+    assert Enum.any?(record.events, &(&1.kind == "attempt" and &1.data["stage"] == "artifacts"))
+    assert_received {:asked, _, _}
+    assert_received {:asked, [_, %{content: review}], _}
+    assert review =~ "Trusted artifact preparation"
+    assert review =~ "definitions_changed"
+    assert review =~ "lib/greeting.ex"
+  end
+
+  test "a preparation scope violation stops without another coder or reviewer call", %{
+    repo: repo,
+    opts: opts
+  } do
+    policy = artifact_policy(repo, "printf bad > rogue.txt; exit 1")
+    script([submitted([greeting_block()])])
+    report = Loop.run(task(repo, %{artifacts: policy}), opts)
+    assert report.status == :failed
+    assert report.summary =~ "outside_outputs"
+    assert_received {:asked, _, _}
+    refute_received {:asked, _, _}
+    refute Enum.any?(CaseRecord.get(report.case).events, &(&1.kind == "check"))
+  end
+
+  test "ordinary build failure gets bounded feedback and a reset", %{repo: repo, opts: opts} do
+    policy = artifact_policy(repo, "false")
+    script(List.duplicate(submitted([greeting_block()]), 3))
+    report = Loop.run(task(repo, %{artifacts: policy}), opts)
+    assert report.status == :failed
+    assert report.attempts == 3
+    assert_received {:asked, _, _}
+    assert_received {:asked, [_, %{content: feedback}], _}
+    assert feedback =~ "Artifact preparation"
+    refute Enum.any?(CaseRecord.get(report.case).events, &(&1.kind == "check"))
+  end
+
+  test "replay prepares outputs without coding and refuses a changed frozen policy", %{
+    repo: repo,
+    opts: opts
+  } do
+    policy = artifact_policy(repo, "mkdir -p dist && cp lib/greeting.ex dist/greeting.ex")
+    source = saved_reply(repo, %{}, true, %{artifacts: policy})
+    script([reply("PASS")])
+    report = Loop.run(task(repo, %{replay_reply_from: source, artifacts: policy}), opts)
+    assert report.status == :fixed
+    assert report.cost.model_calls == 1
+    assert git(repo, ["show", "#{report.commit}:dist/greeting.ex"]) =~ "Hello, "
+    script([reply("PASS")])
+    changed = artifact_policy(repo, "mkdir -p dist && printf different > dist/greeting.ex")
+    report = Loop.run(task(repo, %{replay_reply_from: source, artifacts: changed}), opts)
+    assert report.status == :failed
+    assert report.cost.model_calls == 0
+  end
+
+  test "deleted declared outputs are explicitly highlighted for the reviewer", %{
+    repo: repo,
+    opts: opts
+  } do
+    File.mkdir_p!(Path.join(repo, "dist"))
+    File.write!(Path.join(repo, "dist/greeting.ex"), "obsolete")
+    git(repo, ["add", "."])
+    git(repo, ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "bundle"])
+    policy = artifact_policy(repo, "rm -f dist/greeting.ex")
+    script([submitted([greeting_block()]), reply("PASS")])
+    report = Loop.run(task(repo, %{artifacts: policy}), opts)
+    assert report.status == :fixed
+    assert_received {:asked, _, _}
+    assert_received {:asked, [_, %{content: review}], _}
+    assert review =~ ~s("deleted_paths":["dist/greeting.ex"])
+
+    assert git(repo, ["diff-tree", "--no-commit-id", "--name-status", "-r", report.commit]) =~
+             "D\tdist/greeting.ex"
+  end
+
+  test "artifact policy also rebuilds fast-forward integrations before ref advancement", %{
+    repo: repo,
+    opts: opts
+  } do
+    policy = artifact_policy(repo, "mkdir -p dist && cp lib/greeting.ex dist/greeting.ex")
+    script([submitted([greeting_block()]), reply("PASS")])
+    report = Loop.run(task(repo, %{artifacts: policy, primary: "main"}), opts)
+    assert report.status == :fixed
+    assert report.integration.result == report.commit
+    assert git(repo, ["show", "main:dist/greeting.ex"]) =~ "Hello, "
   end
 end

@@ -20,7 +20,7 @@ defmodule Trailblazer.Planner.Companion do
   use GenServer
   require Logger
   alias Trailblazer.{Backstop, CaseStore, Config, Events}
-  alias Trailblazer.Loop.{CaseRecord, Check, Workspace}
+  alias Trailblazer.Loop.{Artifacts, CaseRecord, Check, Workspace}
   alias Trailblazer.Vortex.Store
 
   @default_deadline_ms 4 * 60 * 60 * 1000
@@ -277,7 +277,8 @@ defmodule Trailblazer.Planner.Companion do
         with :ok <- File.mkdir_p(Path.dirname(root)),
              :ok <- remove_interrupted_worktree(repo, root),
              {:ok, _} <- git(repo, ["worktree", "add", "--detach", root, commit]),
-             :ok <- Workspace.provision_checkout(root, repo) do
+             :ok <- Workspace.provision_checkout(root, repo),
+             :ok <- verify_artifacts(root, field(task, :artifacts), limit) do
           result = Check.run(root, command, timeout: limit)
 
           tail =
@@ -319,6 +320,15 @@ defmodule Trailblazer.Planner.Companion do
       end
     else
       _ -> {:error, "The case's reported commit does not match its branch #{branch}."}
+    end
+  end
+
+  defp verify_artifacts(_root, nil, _limit), do: :ok
+
+  defp verify_artifacts(root, policy, limit) do
+    case Artifacts.verify(root, policy, timeout: limit) do
+      {:ok, _} -> :ok
+      {:error, evidence} -> {:error, {:artifact_verification, evidence}}
     end
   end
 
