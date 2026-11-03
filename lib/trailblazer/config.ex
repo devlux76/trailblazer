@@ -99,8 +99,8 @@ defmodule Trailblazer.Config do
   defp default(:investigate_transport),
     do: if(get(:vortex), do: :vortex_bridge, else: :unavailable)
 
-  defp default(:code_model), do: "spark-x2.6-4b:q4"
-  defp default(:code_model_url), do: "http://127.0.0.1:8094/v1"
+  defp default(:code_model), do: "spark-x2.6-4b:q8-dspark"
+  defp default(:code_model_url), do: "http://127.0.0.1:8096/v1"
   # The planner brain's model (Bolt + DFlash, small strict-JSON choices) on its
   # own server on the iGPU (Vulkan), so it never takes CPU from the coding model.
   defp default(:planner_model), do: "nemotron-3.5-bolt-e4b:q4"

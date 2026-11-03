@@ -19,7 +19,7 @@ defmodule Trailblazer.ModelTest do
     Req.Test.stub(:model_happy, fn conn ->
       {:ok, body, conn} = Plug.Conn.read_body(conn)
       body = Jason.decode!(body)
-      assert body["model"] == "spark-x2.6-4b:q4"
+      assert body["model"] == "spark-x2.6-4b:q8-dspark"
       assert body["temperature"] == 1.0
       assert body["top_p"] == 0.95
       assert body["top_k"] == 0
