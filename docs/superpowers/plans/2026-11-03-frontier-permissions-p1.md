@@ -14,7 +14,7 @@
 
 - SPEC FIRST. This is a plan, not authorization to call an unimplemented path working. Base: deployed main 0f60f21; 86eb4bf is not merged into this line.
 - P1 has frontier-only decisions. No local model judgement, calibration implementation, bwrap enforcement claim, global policy self-edit, new arbitrary commands, push or VORTEX cutover.
-- Permission timeout defaults to 14,400 seconds, configurable locally; an earlier explicitly admitted hard deadline wins. One reminder at min(1,800 seconds, half the request lifetime), strictly before expiry.
+- Permission timeout defaults to 14,400 seconds, configurable locally; an earlier explicitly admitted hard deadline wins. One reminder at max(lifetime - 1,800 seconds, lifetime/2) after creation, strictly before expiry (use persisted millisecond times).
 - Expiry ends the REQUEST as no_decision; the CASE stays blocked/resumable. Preserve incomplete work, including confused/partial output. No automatic deletion of unfinished worktrees/branches.
 - Discard code only after review/evidence establishes it is bad, unused, inefficient or superseded. Incompleteness or slow inference alone is not such evidence.
 - `task.files` remains context. Approval does not bless a stale check; all approved content enters fresh check/review/commit.
@@ -63,6 +63,16 @@
 - [ ] Test restart of timers/outbox, expiry race, local-decider-unavailable, malformed notifier output, board mirror blocked(awaiting_permission, request, deadline) and blocked(no_decision, recovery pointer). Test quote/newline arguments as data. No model call or repeated polling owns timers.
 - [ ] Run the new focused tests RED; implement; run them plus existing VORTEX/Companion/API/CLI tests GREEN; commit bug:0981773.
 
+### Task 2b: Decider-side authenticated client (required before live acceptance)
+
+**Files:** create `lib/trailblazer/planner/permission_client.ex` and matching tests; modify `cli.ex` and CLI tests. This is a Trailblazer tool client, not a hand-written protocol JSON workflow or a VORTEX product-code change.
+
+**Interfaces:** `trailblazer permission show REQUEST --decider ALIAS --save SNAPSHOT` retrieves the bounded digest-linked evidence, verifies it and writes a private snapshot of EXACTLY what was shown. `trailblazer permission decide REQUEST grant|refuse|escalate|amend_policy --decider ALIAS --evidence SNAPSHOT --reason-file FILE [--normalize HOST_ACTION_ID]` consumes that snapshot, echoes nonce/base/policy/source/exception/evidence digests, and emits strict permission_decision via the decider's OWN configured VORTEX endpoint using Transport.call with expected_peer. The service authenticates/sends as that actual peer; no body-supplied principal, room, command, raw patch or arbitrary mode may override it. Host action ids must be offered in the bound evidence. No global-policy self-edit.
+
+- [ ] RED tests prove end-to-end show -> cached evidence -> own-peer send -> task 2 decision acceptance. Unknown keys, mismatched snapshots/requests/digests, wrong service owner, absent/not-running identity, added commands or unsupported normalizers refuse. A stale snapshot is never silently replaced by fresh evidence at decide time.
+- [ ] Test that changing the actual service peer cannot forge the configured decider, and that credentials never enter stdout, case evidence or the notification. Retrieval is bounded/paged and the assembled snapshot digest is verified. No automatic daemon start, especially the armed old Codex service.
+- [ ] Implement the client, run focused client/CLI/protocol tests GREEN and commit bug:0981773. Task 6 MUST use these commands from the real frontier session to author the decision; hand-crafted JSON/RPC impersonation is not acceptance.
+
 ### Task 3: Real pause/release/continuation across Loop, Runner and Bridge
 
 **Files:** modify `lib/trailblazer/loop.ex`, `loop/{runner,lifecycle}.ex`, `vortex/{bridge,store}.ex`; tests `loop_test.exs`, `loop/runner_test.exs`, `vortex/bridge_test.exs`, `loop/lifecycle_test.exs`.
@@ -103,5 +113,5 @@
 - [ ] Claude reviews each bounded pin; address significant findings with RED→GREEN evidence. All commits reference existing issues and stay <=255 characters. No rollout until full suite passes.
 - [ ] Prove ONE configured frontier can receive an idle notification, fetch bound evidence and return an authenticated decision WITHOUT starting the armed old Codex daemon. Current manual `claude attach` pairing stays in use; ping-claude mail behaviour is unproven for this purpose. If the end-to-end route is missing, fix that tool before enabling live permission policy; never count queued mail as a wake or fake a receipt.
 - [ ] Idle preflight: no runner queue/worker/open active case ownership, Bridge/model/resource/profile leases reconciled; preserve F15's existing files and source transcript. Build release BEFORE normal restart, back up local config, enable only reviewed P1 peer/notifier policy, verify health/default Q8+DSpark/artifact policy after restart.
-- [ ] Adopt EXACT source `vortex-c4a0fdcdb16158bce3f4889e5087e6247d19501717bc30656bbdd1baa055562f` at base afca2ef via task 5. Send initial active notice; frontier judges observed consequences and returns a bound decision. Keep the same established Codex/Claude pairing throughout. Do not start another coder attempt.
+- [ ] Adopt EXACT source `vortex-c4a0fdcdb16158bce3f4889e5087e6247d19501717bc30656bbdd1baa055562f` at base afca2ef via task 5. Send initial active notice; frontier uses task 2b show/decide commands, judges observed consequences and returns a bound decision. Keep the same established Codex/Claude pairing throughout. Do not start another coder attempt.
 - [ ] Verify candidate source/native blocks, directory evidence, authenticated decision, resumed stage, clean second build, project check, fresh review, independent Companion result and native cleanup. Send Claude exact evidence/candidate for acceptance. Reconcile cards only after actual success; otherwise preserve the checkpoint and file the concrete tool gap, no unchanged retry.
