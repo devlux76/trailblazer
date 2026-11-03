@@ -2,12 +2,23 @@
 
 The bridge admits tasks durably, reports completion and hands failed cases to
 an explicitly configured frontier peer. It does not start a model unless a
-trusted in-process resource adapter grants exclusive ownership. The deployed
-adapter currently denies every request: `waiting_resource` is expected.
-Legacy supervised `run` remains unchanged.
+trusted in-process resource adapter grants exclusive ownership. In dedicated
+mode, the adapter grants a lease only while the other runtime is offline and
+the selected router model is idle; release requires verified unload. Direct
+`run` cannot bypass that gate. `waiting_resource` names a held task, not proof
+that the coding worker ran.
 
 Set `TRAILBLAZER_VORTEX_CONFIG` in Trailblazer's service environment to a trusted
-local JSON file (0600). The file contains:
+local JSON file (0600).
+
+The file is parsed once at application boot. If a configured file is missing or
+invalid, core retrieval stays available but coding, VORTEX and planning remain
+disabled; repository `status` reports `vortex.state: unavailable`. No config
+variable means standalone operation, not a parse failure. Reload only through
+an idle restart. Planner config errors likewise disable the optional brain and
+are visible in `status`, without taking the index down.
+
+The file contains:
 
 ```json
 {

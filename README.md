@@ -54,6 +54,19 @@ The authenticated JSON API exposes `POST /run` (202 with `{case}`) and
 `POST /case` (`{case, status, report, record}`); case records keep spilled text
 as file pointers, including invalid model bytes, so the response remains JSON.
 
+Optional VORTEX and planner settings are loaded once at application start.
+Repository `status` includes each subsystem's availability and a sanitized
+reason. A configured but unreadable/invalid VORTEX file leaves indexing and
+queries running, disables the coder and planner, and refuses `run` with
+`vortex_unavailable`. With no VORTEX configuration at all, standalone coding
+remains available. Invalid planner settings disable the optional brain, not
+core indexing. Change settings through an idle service restart rather than
+expecting a getter to reload files.
+
+For the local service dependency ordering, install `deploy/10-bringup-order.conf`
+as the user service's `trailblazer.service.d/10-bringup-order.conf`. It orders
+data services and the DSpark router without requiring VORTEX to start first.
+
 ## Where things live
 
 - `~/.local/share/trailblazer/` — the state directory: `trailblazer.db` and

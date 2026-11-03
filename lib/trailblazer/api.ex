@@ -182,7 +182,14 @@ defmodule Trailblazer.API do
          do: %{watched: true}
   end
 
-  defp run("status", p, _, indexer), do: indexer.status(p["repo"])
+  defp run("status", p, _, indexer) do
+    with %{} = status <- indexer.status(p["repo"]) do
+      Map.merge(status, %{
+        vortex: Trailblazer.Config.runtime_status(:vortex),
+        planner: Trailblazer.Config.runtime_status(:planner)
+      })
+    end
+  end
 
   defp run("stale_citations", p, _, _) do
     {:ok, id} = Store.add_repo(p["repo"])
@@ -302,6 +309,9 @@ defmodule Trailblazer.API do
 
   defp respond(conn, {:error, :own_repo}),
     do: json(conn, 400, %{error: "Trailblazer does not work on its own repository"})
+
+  defp respond(conn, {:error, :vortex_unavailable}),
+    do: json(conn, 503, %{error: "vortex_unavailable"})
 
   defp respond(conn, {:error, reason}) when reason in [:bad_range, :outside_repo, :enoent],
     do: json(conn, 400, %{error: Atom.to_string(reason)})

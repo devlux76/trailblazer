@@ -19,6 +19,9 @@ defmodule Trailblazer.Loop.Runner do
       Workspace.own_repo?(task.repo) ->
         {:error, :own_repo}
 
+      Trailblazer.Config.runtime_status(:vortex).state == :unavailable ->
+        {:error, :vortex_unavailable}
+
       Keyword.get(Trailblazer.Config.get(:vortex) || [], :resource_mode) == :dedicated ->
         {:error, :use_vortex_resource_gate}
 

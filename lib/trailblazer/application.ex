@@ -7,9 +7,17 @@ defmodule Trailblazer.Application do
   """
 
   use Application
+  require Logger
 
   @impl true
   def start(_type, _args) do
+    :ok = Trailblazer.Config.load_runtime_settings()
+
+    for key <- [:vortex, :planner],
+        %{state: :unavailable, reason: reason} <- [Trailblazer.Config.runtime_status(key)] do
+      Logger.warning("trailblazer: #{key} unavailable: #{reason}")
+    end
+
     children = [
       Trailblazer.Events,
       Trailblazer.CaseStore,
@@ -26,7 +34,9 @@ defmodule Trailblazer.Application do
     children =
       case Trailblazer.Config.get(:vortex) do
         nil ->
-          children
+          if Trailblazer.Config.runtime_status(:vortex).state == :unavailable,
+            do: Enum.reject(children, &match?({Trailblazer.Loop.Runner, _}, &1)),
+            else: children
 
         vortex ->
           if vortex[:resource_mode] == :dedicated do

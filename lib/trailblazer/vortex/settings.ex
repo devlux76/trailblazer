@@ -2,7 +2,20 @@ defmodule Trailblazer.Vortex.Settings do
   @moduledoc "Trusted local VORTEX policy; never sourced from a peer message."
   alias Trailblazer.Files
 
+  def load(path) do
+    {:ok, decode!(path)}
+  rescue
+    _ -> {:error, :invalid_config}
+  end
+
   def load!(path) do
+    case load(path) do
+      {:ok, options} -> options
+      {:error, _} -> raise ArgumentError, "invalid local VORTEX configuration"
+    end
+  end
+
+  defp decode!(path) do
     with {:ok, bytes} <- File.read(path),
          {:ok, %{"endpoint" => endpoint, "owner_peer" => owner, "peers" => peers}} <-
            Jason.decode(bytes),
@@ -52,7 +65,5 @@ defmodule Trailblazer.Vortex.Settings do
     else
       _ -> raise ArgumentError, "invalid local VORTEX configuration"
     end
-  rescue
-    _ -> raise ArgumentError, "invalid local VORTEX configuration"
   end
 end

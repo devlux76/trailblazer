@@ -24,6 +24,61 @@ defmodule Trailblazer.Config do
     Application.get_env(:trailblazer, key) || from_system_env(key) || default(key)
   end
 
+  @doc "Load optional authority settings once at application boot; reads never reload files."
+  def load_runtime_settings do
+    settings = Map.new([:vortex, :planner], &{&1, read_setting(&1)})
+    Application.put_env(:trailblazer, :runtime_settings, settings)
+    :ok
+  end
+
+  @doc "Availability of an optional authority subsystem, without exposing configuration bytes."
+  def runtime_status(key) when key in [:vortex, :planner] do
+    case setting(key) do
+      {:ok, _} -> %{state: :ok, reason: nil}
+      :not_configured -> %{state: :not_configured, reason: nil}
+      {:error, _} -> %{state: :unavailable, reason: "invalid local #{key} configuration"}
+    end
+  end
+
+  defp setting(key) do
+    case Application.get_env(:trailblazer, key) do
+      nil ->
+        case Application.get_env(:trailblazer, :runtime_settings) do
+          nil -> read_setting(key)
+          settings -> Map.fetch!(settings, key)
+        end
+
+      value ->
+        {:ok, value}
+    end
+  end
+
+  defp read_setting(key) do
+    variable =
+      if key == :vortex, do: "TRAILBLAZER_VORTEX_CONFIG", else: "TRAILBLAZER_PLANNER_CONFIG"
+
+    cond do
+      value = Application.get_env(:trailblazer, key) -> {:ok, value}
+      path = System.get_env(variable) -> load_setting(key, path)
+      true -> :not_configured
+    end
+  end
+
+  defp load_setting(:vortex, path), do: Trailblazer.Vortex.Settings.load(path)
+
+  defp load_setting(:planner, path) do
+    {:ok, Trailblazer.Planner.Board.load_config!(path)}
+  rescue
+    _ -> {:error, :invalid_config}
+  end
+
+  defp configured(key) do
+    case setting(key) do
+      {:ok, value} -> value
+      _ -> nil
+    end
+  end
+
   @doc """
   How many characters of a definition's document are embedded for the
   repository at `repo`: `:compact_limit` under any of `:compact_roots`
@@ -43,15 +98,8 @@ defmodule Trailblazer.Config do
 
   defp from_system_env(:state_dir), do: System.get_env("TRAILBLAZER_STATE_DIR")
 
-  defp from_system_env(:vortex) do
-    if path = System.get_env("TRAILBLAZER_VORTEX_CONFIG"),
-      do: Trailblazer.Vortex.Settings.load!(path)
-  end
-
-  defp from_system_env(:planner) do
-    if path = System.get_env("TRAILBLAZER_PLANNER_CONFIG"),
-      do: Trailblazer.Planner.Board.load_config!(path)
-  end
+  defp from_system_env(:vortex), do: configured(:vortex)
+  defp from_system_env(:planner), do: configured(:planner)
 
   defp from_system_env(:compact_roots) do
     case System.get_env("TRAILBLAZER_COMPACT_ROOTS") do

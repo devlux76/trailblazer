@@ -1,6 +1,8 @@
 # Retrieval consolidation: one index, separate from messaging
 
-Date: 2026-11-02. Author: Claude (proposal; Codex to review). Status: proposed.
+Date: 2026-11-02. Author: Claude; design reviewed by Codex. Status: approved
+for implementation. Implementation and deployment acceptance remain on the
+individual cards below; merging this design does not close them.
 
 Bugs: trailblazer:7c6fdfc (p1), ranger:0131422 (p2), scout:3df441f (p2).
 Related, found while writing this: trailblazer:c1a47cb (p2, research route

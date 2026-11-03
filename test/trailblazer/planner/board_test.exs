@@ -396,7 +396,8 @@ defmodule Trailblazer.Planner.BoardTest do
     assert_receive {:run_args, ["show", "probe:abc"]}
   end
 
-  test "TRAILBLAZER_PLANNER_CONFIG loads the runtime config; unset means disabled", ctx do
+  test "explicit settings load reads planner config; reloading an unset path disables it", ctx do
+    previous = Application.get_env(:trailblazer, :runtime_settings)
     path = Path.join(ctx.dir, "trailblazer.json")
     File.write!(path, Jason.encode!(%{"repos" => %{ctx.repo => ["make check"]}}))
 
@@ -406,13 +407,19 @@ defmodule Trailblazer.Planner.BoardTest do
     on_exit(fn ->
       System.delete_env("TRAILBLAZER_PLANNER_CONFIG")
       Application.delete_env(:trailblazer, :planner)
+
+      if previous,
+        do: Application.put_env(:trailblazer, :runtime_settings, previous),
+        else: Application.delete_env(:trailblazer, :runtime_settings)
     end)
 
+    assert :ok = Trailblazer.Config.load_runtime_settings()
     assert %{repos: repos} = Trailblazer.Config.get(:planner)
     assert map_size(repos) == 1
 
     System.delete_env("TRAILBLAZER_PLANNER_CONFIG")
     Application.delete_env(:trailblazer, :planner)
+    assert :ok = Trailblazer.Config.load_runtime_settings()
     assert Trailblazer.Config.get(:planner) == nil
   end
 end
