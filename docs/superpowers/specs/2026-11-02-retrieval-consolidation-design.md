@@ -2,8 +2,13 @@
 
 Date: 2026-11-02. Author: Claude (proposal; Codex to review). Status: proposed.
 
-Bugs: trailblazer:7c6fdfc (p1), trailblazer:565c539 (p2, existing),
-ranger:0131422 (p2), scout:3df441f (p2).
+Bugs: trailblazer:7c6fdfc (p1), ranger:0131422 (p2), scout:3df441f (p2).
+Related, found while writing this: trailblazer:c1a47cb (p2, research route
+transport). trailblazer:565c539 (watcher reported `polling`) is already fixed
+by 09cf67e (`following: :on_request`); it is not part of this change.
+
+Calls marked **[Claude's call]** were settled by Claude after a builder
+review; reviewers should check them.
 
 ## 1. Intent
 
@@ -30,137 +35,162 @@ it (scout), and ranger depends on scout instead of carrying copies.
 ## 2. Current state (from code, not specs)
 
 - `Trailblazer.Application.start/2` (application.ex:27) calls
-  `Config.get(:vortex)`; a malformed config makes `Vortex.Settings.load!/1`
-  raise `ArgumentError` (settings.ex:56) and the whole node stops: Store,
-  Indexer, API, Loop.Runner.
-- `Planner.Supervisor` is started only when `:vortex` is configured, so
-  autonomous dispatch is also coupled to messaging.
-- `Watcher` reports `following: :polling` when no file watcher starts, but
-  nothing polls (trailblazer:565c539); the index silently goes stale until the
-  next request.
+  `Config.get(:vortex)`, which re-reads `$TRAILBLAZER_VORTEX_CONFIG`
+  (`~/.config/trailblazer/vortex.json`) through `Vortex.Settings.load!/1` on
+  every call. A malformed file raises `ArgumentError` (settings.ex:56) and the
+  node stops: Store, Indexer, API, Loop.Runner. The same read happens at
+  config.ex:100, planner/research.ex:274 and loop/runner.ex:22, so a file
+  broken after boot can raise at run time.
+- `Config.get(:planner)` has the same pattern (`Board.load_config!` per
+  read), today only reached under `Planner.Supervisor`.
+- The live config sets `resource_mode: "dedicated"`: Loop.Runner is not a
+  core child but runs under `Vortex.Supervisor` beside `Vortex.Resource`,
+  which grants exclusive local inference only while Mirai is offline;
+  `Runner.submit` refuses direct work in that mode.
+- `Planner.Supervisor` starts only when `:vortex` is configured.
+- `trailblazer.service.d/10-bringup-order.conf`: `Wants=` ranger-qdrant,
+  ranger-embed, vortex-trailblazer, mirai-llama-router; `After=` those plus
+  vortex-router.
+- Freshness: every API answer first reconciles the repo with git
+  (`api.ex` `fresh/2`); with no file watcher, `status` says
+  `following: on_request` (09cf67e). Answers are not served stale.
 - `~/projects/scout` is canonical for `scout.py`, `index.py`,
   `trailblazer.py` (scout:b9c1385). `ranger/` still holds byte-identical
   copies plus `scout.SKILL.md.in`; `ranger/tests/test_index.py` and
   `test_trailblazer.py` test the copies; `install.sh` copies scout's files
-  next to `ranger.py` at install time (ranger:0131422).
-- `scout.index_candidates` asks Trailblazer, and on unavailable / not watched /
-  no hits falls back to `index.sync` + `index.search` (Qdrant collection per
-  repo, content-hash incremental) (scout:3df441f).
+  beside `ranger.py` in `~/.claude/skills/ranger/` and
+  `~/.agents/skills/ranger/` (ranger:0131422).
+- `scout.candidates_with_source` (scout.py:69-108) asks Trailblazer; on
+  unavailable / not watched / no hits it falls back to `index.sync` +
+  `index.search` and the Python import graph (scout:3df441f). On the
+  Trailblazer path it still uses `index.candidates_text` and
+  `index.symbol_matches(graph=None)`.
+- `ranger.py:28,236` gets `(index, trailblazer)` from
+  `scout.skill_modules()`; its system prompt (ranger.py:273-277) describes
+  the Python import-graph notes.
 
 ## 3. Goals, non-goals, anti-goals
 
 Goals
 1. Trailblazer starts, indexes and answers `status`, `trail`, `where`, `uses`,
    `impact`, `search` with VORTEX config missing or invalid.
-2. One retrieval implementation (Trailblazer core); `index.py` and its Qdrant
-   collections are deleted.
+2. One retrieval implementation (Trailblazer core); `index.py` and ranger's
+   Qdrant collections are deleted.
 3. One copy of the scout client; ranger imports it.
 4. When the index cannot answer, callers are told exactly why and what to run,
    rather than silently served a different index.
 
 Non-goals
 - Splitting Trailblazer into separate OS processes or repositories. The
-  boundary here is supervision and startup, not packaging (packaging is the
-  later product question).
+  boundary here is supervision and startup, not packaging.
+- Renaming services or units (`ranger-qdrant`, `ranger-embed` are shared
+  infrastructure Trailblazer uses; naming is the later product question).
 - Changing models, the coding loop, or the VORTEX protocol.
-- Making scout/ranger portable off Linux (systemctl, inotifywait remain).
+- Making scout/ranger portable off Linux.
 
 Anti-goals — this fails even if it works when
 - a VORTEX fault can still stop indexing;
+- an unreadable config lets the coder run outside the resource gate and
+  contend with Mirai for inference;
 - removing the fallback leaves scout or ranger failing with no actionable
   message;
-- ranger's test suite still passes against helpers that differ from the
-  installed ones.
+- ranger's tests or its installed skill still run helpers that differ from
+  scout's canonical ones.
 
 ## 4. The change, in order
 
-Each step is one bug, landed and reviewed separately, in this order.
+Three steps, each one bug, landed and reviewed separately in this order.
 
 ### Step 1 — trailblazer:7c6fdfc: index starts without VORTEX
-- VORTEX config loading moves out of the boot path's failure domain: an
-  invalid config yields "VORTEX unavailable: <reason>" (logged once, visible
-  in `trailblazer status` as e.g. `vortex: {state: unavailable, reason}`), and
-  the core children start normally.
-- `Vortex.Settings.load!/1` keeps its strictness (it is a trust boundary);
-  the caller handles the failure. Prefer a `load/1` returning
-  `{:ok, opts} | {:error, reason}` with `load!/1` delegating to it.
-- Today `Config.get(:vortex)` re-reads and re-parses
-  `$TRAILBLAZER_VORTEX_CONFIG` (`~/.config/trailblazer/vortex.json`) through
-  `load!` at every call: application.ex:27, config.ex:100,
-  planner/research.ex:274, loop/runner.ex:22. So a file broken after boot
-  can raise inside Loop.Runner or the research route at run time. Load once
-  at boot, keep the `{:ok, _} | {:error, _}` result, and have all four sites
-  read that; reloading is an explicit act, not a side effect of a read.
-- `trailblazer.service.d` orders the unit `After=`/`Wants=` the
-  `vortex-router` and `vortex-trailblazer` units. Keep `Wants` ordering only
-  as a soft preference; indexing must not wait on them.
-- `Planner.Supervisor` is not part of this step; whether dispatch should run
-  without VORTEX is open question 1.
-- Tests: invalid JSON, missing keys, and a bad peer policy each leave the API
-  answering `status` for a watched fixture repo, with the reason reported.
+- Add `Vortex.Settings.load/1` returning `{:ok, opts} | {:error, reason}`;
+  `load!/1` delegates to it and keeps its strictness (trust boundary).
+- Load once at boot; keep the result (e.g. `:persistent_term` or app env)
+  and have all four `Config.get(:vortex)` sites read it. Reloading is an
+  explicit act, not a side effect of a read. `Config.get(:vortex)` keeps
+  returning the keyword list or `nil`; status gains
+  `vortex: %{state: :ok | :unavailable | :not_configured, reason}`.
+- **Unreadable config fails closed for coding [Claude's call].** The intent
+  (dedicated or not) cannot be known, so: core children (Store, Indexer,
+  API, EmbedGate, …) start; no Loop.Runner, no Vortex children, no Planner.
+  `trailblazer run` / submit returns `{:error, :vortex_unavailable}` with the
+  reason. No config at all (env var unset) keeps today's behaviour: a
+  standalone Runner.
+- **Planner config gets the same treatment [Claude's call]**: load once,
+  `{:error, _}` disables the Planner with a status reason instead of raising.
+  Today unreachable without VORTEX, but it must not become the next boot
+  crash if the open question below is answered "yes".
+- Unit file: drop `vortex-trailblazer` from `Wants=` and `vortex-router` /
+  `vortex-trailblazer` from `After=` so indexing never waits on messaging;
+  keep the embedder, Qdrant and model-router dependencies.
+- trailblazer:c1a47cb (research transport shape) is a separate fix and
+  lands separately; step 1 must not change the shape `Config.get(:vortex)`
+  returns, so it neither fixes nor worsens it.
+- Tests: invalid JSON, missing keys, bad peer policy, bad resource mode —
+  each leaves `status` answering for a watched fixture repo with the reason,
+  no Runner started, submit refused; breaking the file after boot crashes
+  nothing.
 
-### Step 2 — trailblazer:565c539: freshness is real
-Either implement the 15 s poll the status promises, or report the true state
-(`following: none`, reconciled on request) and fix priv/skill/SKILL.md. Codex
-and Claude pick in review; the fix must make `status` truthful. Prerequisite
-for step 4, because without a fallback, a stale index is the only index.
-
-### Step 3 — ranger:0131422: one scout client
+### Step 2 — ranger:0131422: one scout client
 - Delete `ranger/scout.py`, `index.py`, `trailblazer.py`,
   `scout.SKILL.md.in`, and the ranger tests that only cover those modules
   (move any assertion scout lacks into `~/projects/scout/tests`).
-- `ranger.py` imports scout from its installed canonical location (the scout
-  skill directory, which links to `~/projects/scout`); `install.sh` stops
-  copying helpers. Exact import mechanism is the builder's call (a `sys.path`
-  insert of the scout skill dir is sufficient); it must be one path, with no
-  copy.
-- Ranger's remaining tests exercise ranger against real scout modules.
+- `ranger.py` imports scout from the scout skill directory (which links to
+  `~/projects/scout`), inserted first on `sys.path`. `install.sh` stops
+  copying helpers **and deletes** `scout.py`, `index.py`, `trailblazer.py`
+  from both installed ranger dirs; otherwise the stale copies beside
+  `ranger.py` win the import.
+- Ranger's remaining tests exercise ranger against the real scout modules.
 
-### Step 4 — scout:3df441f: delete the Python index
-- On the Trailblazer path scout uses only two things from `index.py`:
-  `candidates_text` (formats hits) and `symbol_matches` (ripgrep exact names,
-  called with `graph=None`) — checked in scout.py:69-108. Move those two into
-  scout (e.g. `scout/format.py`, or into `scout.py`), then delete `index.py`
-  entirely: `sync`, `search`, `list_files`, `chunk_file`, and the Python import
-  graph (`build_graph`, `symbol_edges`, `file_uses`, `graph_note`,
-  `index.structure_text`) are reached only from the fallback branch. Remove
-  that branch in `candidates_with_source` and its tests.
-- When Trailblazer cannot answer, scout exits 1 with a one-line cause and
-  the command to run: service down → `systemctl --user start trailblazer`;
-  not watched → it already calls `trailblazer watch`, keep that; vectors still
-  building → report `pending_vectors: N` and return graph/exact-name results
-  without vector hits (exit 0 if any candidates).
-- Drop the per-repo ranger Qdrant collections after the change is deployed
-  (list and delete them; Trailblazer's collections untouched).
+### Step 3 — scout:3df441f: delete the Python index
+- Move `candidates_text` and `symbol_matches` (the only parts used on the
+  Trailblazer path) into scout; delete `index.py`: `sync`, `search`,
+  `list_files`, `chunk_file` and the Python import graph (`build_graph`,
+  `symbol_edges`, `file_uses`, `graph_note`, `index.structure_text`). Remove
+  the fallback branch in `candidates_with_source` and its tests.
+- `skill_modules()` returns only the Trailblazer client (callers updated:
+  scout.py, ranger.py:28,236). Ranger's system prompt (ranger.py:273-277) is
+  rewritten to describe Trailblazer's appendix, not the Python graph.
+- When Trailblazer cannot answer, the scout CLI exits 1 with one line of
+  cause and the command to run: service down →
+  `systemctl --user start trailblazer`; first sync of a newly watched repo
+  still running → wait up to the existing endpoint timeout, then exit 1
+  "indexing <repo>, retry" **[Claude's call]**; vectors still building →
+  report `pending_vectors: N`, return graph and exact-name results without
+  vector hits (exit 0 if any candidates).
+- **Ranger keeps going without candidates [Claude's call]**: today's
+  behaviour, with the cause printed once on stderr; its search loop works
+  without them, only slower.
+- After deploy, delete ranger's per-repo Qdrant collections (list first;
+  Trailblazer's collections untouched).
 - Update both SKILL.md files: the "its own index otherwise" text goes.
 
 ## 5. Acceptance (whole change)
 
-- With `TRAILBLAZER_VORTEX_CONFIG` pointing at a malformed file (in a test
-  or a throwaway state dir, never the live `~/.config/trailblazer/vortex.json`),
-  `trailblazer status` and `scout -q` answer for a watched repo, and
-  breaking the file after boot does not crash any process.
-- `rg -l 'def sync|qdrant' ~/projects/scout ~/projects/ranger` finds no
-  index implementation.
-- `diff` finds no shared file between ranger and scout; ranger tests import
-  scout from the canonical path.
+- With `TRAILBLAZER_VORTEX_CONFIG` pointing at a malformed file (in a test or
+  a throwaway state dir, never the live `vortex.json`), `trailblazer status`
+  and `scout -q` answer for a watched repo, no coder runs, and breaking the
+  file after boot crashes nothing.
+- No `def sync` / `def search` index implementation remains in
+  `~/projects/scout` or `~/projects/ranger` (main checkouts; worktrees
+  excluded) **[Claude's call: narrowed from a `qdrant` grep, which matches
+  the shared `ranger-qdrant` unit by design]**.
+- No file is shared between ranger and scout, in the repos or in the
+  installed skill dirs.
 - Existing suites green: `mix test` (trailblazer), scout and ranger unittest.
-- Ranger's 3 reference questions still answered with file and line.
+- Ranger's 3 reference questions still answered with file and line —
+  this also answers whether Trailblazer's `structure_text` appendix is at
+  least as useful as the Python graph's was.
 
-## 6. Open questions for review
+## 6. Open questions
 
-1. Should `Planner.Supervisor` run without VORTEX? Its research route uses a
-   VORTEX conference; its coder route only needs the Loop. Claude's lean:
-   yes for the coder route, research route reports unavailable.
-2. (Settled by Claude: the Python import graph is used only on the
-   fallback path; see step 4.) Is Trailblazer's `structure_text` appendix
-   at least as useful as the Python graph's was for ranger's 3 reference
-   questions? Step 4's acceptance run answers this.
-3. mirai-agent code copied into Trailblazer (design.md §9: ModelClient,
-   Tool, Vortex.Client, Embedder) — out of scope here; audit separately for
-   drift?
+1. **Operator:** should the Builder (Loop.Runner) and Dispatcher (Planner)
+   run without VORTEX? Today both are tied to it. "Yes" means the coder
+   route needs its own resource gate when Mirai's dedicated mode is not
+   reachable; that is a separate bug and design, not part of step 1.
+2. **Review:** mirai-agent code copied into Trailblazer (design.md §9:
+   ModelClient, Tool, Vortex.Client, Embedder) — audit separately for drift?
 
 ## 7. Left to the builder
 
-Names of new functions and status fields, test fixture layout, commit
-granularity within each step.
+Names of new functions and status fields, where the loaded result is kept,
+test fixture layout, commit granularity within each step.
