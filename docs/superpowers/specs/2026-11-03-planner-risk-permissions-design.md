@@ -72,14 +72,43 @@ replay implementation stays held until it matches the continuation contract.
    relative source/exception evidence supports reuse across checkout paths,
    not a blanket granted flag. Restart resumes the durable stage/decision
    without rerunning the coder or automatically repeating the judgement call.
-7. Set a trusted local permission deadline (proposed default: 30 minutes).
-   No answer by that absolute persisted deadline atomically refuses with
-   reason `no_decision`, mirrors the blocker, and archives/verifies the
-   checkpoint before removing its owned worktree/branch. Keep evidence and
-   source response inspectable. Restart enforces an already elapsed deadline;
-   expiry and grant race through one transition, and late grants are rejected.
-   Failed archive/ownership checks stay visibly cleanup-blocked, never deleted
-   blindly. Waiting/expiry uses native timers, not recurring model calls.
+7. Notify the configured frontier deciders through a verified ACTIVE wake
+   route as well as VORTEX mail. Persist initial notification and one reminder
+   before expiry, with separate queued/sent/host-admitted/acknowledged outcomes.
+   Mailbox delivery alone is not wake proof. Routes and targets are trusted
+   local configuration, never model-selected commands or recipients. Preserve
+   unknown delivery outcomes without blind duplicate sends. Admission of a
+   notification is not permission to continue.
+8. Use a configurable absolute permission deadline (P1 proposed default:
+   14,400 seconds, consistent with the ordinary four-hour case backstop;
+   respect any earlier explicitly admitted hard deadline). An expired request
+   is recorded as `no_decision`; late grants are rejected atomically. The CASE
+   remains blocked and resumable, not discarded or forced to regenerate code.
+   A later explicit request may reuse the checkpoint after freshness checks,
+   with a new request identity and without a coder call. Restart enforces the
+   persisted deadline; grant/expiry races have one winner. Native timers own
+   the deadline/reminder, never recurring model polls.
+
+## Work preservation is independent of permission expiry
+
+Timeout releases compute/leases and ends waiting for that request; it never
+throws away a run. Preserve base/repo/policy provenance, exact authored and
+generated file bytes (including untracked/binary files and relevant modes),
+all submitted blocks and tool results, prompts/replies/partial stream output,
+and the checkpoint/stage/evidence/decision journal. Confused or incomplete
+reasoning is retained as evidence, not silently trusted as a correct solution.
+
+P1 retains the unfinished owned checkout/branch by default. Expiry does not
+remove it. Later storage compaction is a separate trusted maintenance action:
+first produce and verify a restorable checkpoint, then release the checkout
+while retaining the recovery material. A diff alone is not sufficient when it
+omits untracked files, metadata or partial output. Failed preservation checks
+leave the work visibly retained. No age-based deletion of unfinished work.
+
+Board state shows blocked/no_decision plus checkpoint and recovery action.
+Re-entry resumes the correct stage or selects useful saved work for correction;
+checks and fresh review still decide correctness. Neither an expiry nor a
+confounded answer implies starting from scratch.
 
 F15 already ended under the old guard. P1 must preserve that closed source case
 and explicitly adopt its verified saved response/checkpoint into a new
@@ -112,7 +141,11 @@ widen policy or claim a sandbox already exists.
   cannot receive a local grant. Stale/replayed grants and failed postconditions
   cannot resume; test restart/crash and grant-versus-expiry races.
 - Refuse/amend-policy/expiry are audited and board-visible, no policy self-edit
-  occurs, waiting holds no model lease, and verified expiry releases worktrees.
+  occurs, waiting holds no model lease, and expiry preserves resumable work.
+- Prove initial wake and one reminder reach the configured host; queued mail
+  is not counted as active attention. Preserve delivery uncertainty.
+- Expire, restart, restore a checkpoint containing untracked/binary/partial
+  work, then continue without another coder call; reject late old grants.
 - P2: calibration and host routing tests precede enabling local authority.
 - P3: attempted outside-root/symlink/Git writes prove the execution boundary;
   snapshot-only assertions do not satisfy this acceptance.
