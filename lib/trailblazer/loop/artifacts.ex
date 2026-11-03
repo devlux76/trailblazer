@@ -53,6 +53,8 @@ defmodule Trailblazer.Loop.Artifacts do
                Map.merge(check, %{
                  command: policy["prepare"],
                  paths: paths,
+                 deleted_paths:
+                   Enum.filter(paths, &(before.files[&1] != nil and after_build.files[&1] == nil)),
                  definitions_changed: definitions,
                  policy_hash: policy["sha256"]
                })}

@@ -44,9 +44,14 @@ an arbitrary preparation command through request fields.
    there are still protected. HEAD/index changes are refused. Repositories
    with submodules are unsupported in the first implementation and are refused
    before running preparation.
+   Cache exclusions are root-only: nested dependency/cache writes are guarded
+   and fail closed. Policy authors must avoid undeclared cache writes, including
+   gitignored caches; this stage is not a package installer.
 3. Include changed declared outputs in the candidate's changed paths, review and
    commit. Record preparation command, exit/status, output tail and generated
-   paths. Inform the reviewer which changes came from trusted generation.
+   paths. Inform the reviewer which changes came from trusted generation and
+   highlight declared outputs that disappeared (`deleted_paths`). Deletion is
+   not silently treated as an ordinary rebuilt bundle.
 4. The existing non-mutating project check, checked-tree comparison and fresh
    review remain mandatory. A normal build failure can feed the next bounded
    attempt; a policy/scope violation stops without retrying. Replay recovery

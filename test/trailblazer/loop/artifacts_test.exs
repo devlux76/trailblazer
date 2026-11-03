@@ -136,7 +136,9 @@ defmodule Trailblazer.Loop.ArtifactsTest do
   end
 
   test "declared deletion is reproducible and a nonreproducible build is refused", %{root: root} do
-    assert {:ok, %{paths: ["out.txt"]}} = Artifacts.prepare(root, policy(root, "rm -f out.txt"))
+    assert {:ok, %{paths: ["out.txt"], deleted_paths: ["out.txt"]}} =
+             Artifacts.prepare(root, policy(root, "rm -f out.txt"))
+
     assert {:ok, _} = Artifacts.verify(root, policy(root, "rm -f out.txt"))
     File.write!(Path.join(root, "out.txt"), "0")
 
@@ -148,6 +150,17 @@ defmodule Trailblazer.Loop.ArtifactsTest do
 
     assert {:ok, _} = Artifacts.prepare(root, p)
     assert {:error, %{reason: :regeneration_required}} = Artifacts.verify(root, p)
+  end
+
+  test "nested and ignored cache writes fail closed", %{root: root} do
+    File.mkdir_p!(Path.join(root, "packages/a/node_modules"))
+    File.write!(Path.join(root, ".gitignore"), ".local-cache\n")
+
+    assert {:error, %{reason: :outside_outputs, paths: ["packages/a/node_modules/cache"]}} =
+             Artifacts.prepare(root, policy(root, "printf cache > packages/a/node_modules/cache"))
+
+    assert {:error, %{reason: :outside_outputs, paths: [".local-cache"]}} =
+             Artifacts.prepare(root, policy(root, "printf cache > .local-cache"))
   end
 
   test "two individually correct candidates can merge cleanly with a stale bundle", %{root: root} do
