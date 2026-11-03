@@ -84,7 +84,12 @@ defmodule Trailblazer.Loop.Workspace do
   # pathspecs, never globs.
   def diff(ws, paths \\ :all) do
     :ok = validate(ws)
-    {:ok, _} = stage(ws.path, paths)
+
+    {:ok, _} =
+      if paths == :all,
+        do: git(ws.path, ["add", "--intent-to-add"] ++ pathspec(paths)),
+        else: stage(ws.path, paths)
+
     {:ok, text} = git(ws.path, ["diff", "--no-ext-diff", ws.base] ++ pathspec(paths))
     text
   end

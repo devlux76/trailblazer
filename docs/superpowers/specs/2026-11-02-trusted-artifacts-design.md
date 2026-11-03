@@ -45,6 +45,8 @@ an arbitrary preparation command through request fields.
    there are still protected. HEAD/index changes are refused. Repositories
    with submodules are unsupported in the first implementation and are refused
    before running preparation.
+   All provisioned/reset-preserved trees (`deps`, `node_modules`, `_build`,
+   `target`) are forbidden output/definition destinations.
    Cache exclusions are root-only: nested dependency/cache writes are guarded
    and fail closed. Policy authors must avoid undeclared cache writes, including
    gitignored caches; this stage is not a package installer.

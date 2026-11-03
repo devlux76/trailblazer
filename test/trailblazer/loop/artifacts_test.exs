@@ -48,7 +48,16 @@ defmodule Trailblazer.Loop.ArtifactsTest do
 
     assert {:error, :invalid_artifacts} = Artifacts.policies(raw, %{root => ["check"]})
 
-    for path <- ["../escape", "/tmp/escape", ".git/config", "node_modules/x", "out/*.js"] do
+    for path <- [
+          "../escape",
+          "/tmp/escape",
+          ".git/config",
+          "node_modules/x",
+          "deps/x",
+          "_build/x",
+          "target/x",
+          "out/*.js"
+        ] do
       raw =
         put_in(raw, [root], %{
           "check" => %{"prepare" => "true", "paths" => [path], "definitions" => []}

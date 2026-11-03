@@ -2,7 +2,7 @@ defmodule Trailblazer.Loop.Artifacts do
   @moduledoc "Trusted, frozen generation policy; preparation never weakens checked-tree evidence."
   alias Trailblazer.{Files, Loop.Check}
 
-  @excluded ~w(.git node_modules deps _build)
+  @excluded ~w(.git node_modules deps _build target)
 
   def policies(nil, _repos), do: {:ok, %{}}
 

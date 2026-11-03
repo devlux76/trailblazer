@@ -54,6 +54,14 @@ defmodule Trailblazer.Loop.WorkspaceTest do
     assert ctx.git.(["rev-parse", "HEAD"]) == ws.base
   end
 
+  test "default diff previews untracked content without fully staging it", ctx do
+    {:ok, ws} = Workspace.open(ctx.repo, ctx.case_id)
+    File.write!(Path.join(ws.path, "new.txt"), "preview only\n")
+    assert Workspace.diff(ws) =~ "+preview only"
+    {staged, 0} = System.cmd("git", ["diff", "--cached", "--name-only"], cd: ws.path)
+    assert staged == ""
+  end
+
   test "reset clears tracked, untracked and ignored attempt output only in its worktree", ctx do
     {:ok, ws} = Workspace.open(ctx.repo, ctx.case_id)
     File.write!(Path.join(ws.path, "tracked.txt"), "changed\n")
