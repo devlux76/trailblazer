@@ -39,6 +39,11 @@ an arbitrary preparation command through request fields.
    unrelated source changes, undeclared new/deleted paths, symlinks and submodule
    changes stop the case with evidence. `files` remains a context hint, not a
    claim that the current edit engine enforces a source-path permission list.
+   The guard hashes owned files and modes, including ignored nondependency
+   files; provisioned dependency/build caches are excluded but tracked files
+   there are still protected. HEAD/index changes are refused. Repositories
+   with submodules are unsupported in the first implementation and are refused
+   before running preparation.
 3. Include changed declared outputs in the candidate's changed paths, review and
    commit. Record preparation command, exit/status, output tail and generated
    paths. Inform the reviewer which changes came from trusted generation.
