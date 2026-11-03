@@ -43,6 +43,41 @@ defmodule Trailblazer.Vortex.ProtocolTest do
     assert {:error, _} = Protocol.task(@envelope, %{policy | role: :frontier}, "caller")
   end
 
+  test "a planner card targets a linked worktree under its repository's name (c8813a0)" do
+    tmp = Path.join(System.tmp_dir!(), "tb-wt-#{System.unique_integer([:positive])}")
+    main = Path.join(tmp, "vortex")
+    linked = Path.join(tmp, "v6-impl")
+    foreign = Path.join(tmp, "elsewhere")
+
+    try do
+      for dir <- [main, foreign] do
+        File.mkdir_p!(dir)
+        {_, 0} = System.cmd("git", ["init", "-q"], cd: dir)
+
+        {_, 0} =
+          System.cmd("git", ["-c", "user.name=t", "-c", "user.email=t@e", "commit", "-q", "--allow-empty", "-m", "base"],
+            cd: dir
+          )
+      end
+
+      {_, 0} = System.cmd("git", ["worktree", "add", "-q", "-b", "side", linked], cd: main)
+      assert Protocol.repo_name(main) == "vortex"
+      assert Protocol.repo_name(linked) == "vortex"
+      assert Protocol.repo_name(foreign) == "elsewhere"
+
+      {:ok, canonical} = Trailblazer.Files.canonical_path(linked)
+      policy = %{room: "room", role: :caller, repos: %{canonical => ["bun test"]}}
+      planned = fn ref -> %{@envelope | "payload" => %{@task | "repo" => linked} |> Map.put("planner", %{"ref" => ref})} end
+
+      assert {:ok, task} = Protocol.task(planned.("vortex:abcdef1"), policy, "caller")
+      assert task.planner.ref == "vortex:abcdef1"
+      assert {:error, :unauthorized_task} = Protocol.task(planned.("v6-impl:abcdef1"), policy, "caller")
+      assert {:error, :unauthorized_task} = Protocol.task(planned.("elsewhere:abcdef1"), policy, "caller")
+    after
+      File.rm_rf!(tmp)
+    end
+  end
+
   test "outbound encoding preserves attribution and the wire cap" do
     assert {:ok, body} = Protocol.encode(@envelope)
     assert String.starts_with?(body, "From Trailblazer, not typed by the operator:\n")

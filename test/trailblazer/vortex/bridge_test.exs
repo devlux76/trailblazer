@@ -49,6 +49,64 @@ defmodule Trailblazer.Vortex.BridgeTest do
     %{"kind" => "message", "peer" => "caller", "room" => "room", "body" => body, "cursor" => 1}
   end
 
+  test "an authorized peer's refused task gets one correlated rejected reply and opens no case", ctx do
+    body =
+      Protocol.envelope("task", "message-1", ctx.request, %{
+        "repo" => "/tmp",
+        "request" => "fix",
+        "check" => "rm -rf /"
+      })
+      |> Jason.encode!()
+
+    refused = %{"kind" => "message", "peer" => "caller", "room" => "room", "body" => body, "cursor" => 1}
+    Agent.update(ctx.page, fn _ -> %{events: [refused], cursor: 1} end)
+
+    runner =
+      start_supervised!(
+        {Runner, name: nil, prepare: fn _ -> :ok end, run: fn _, _ -> flunk("must not execute") end}
+      )
+
+    bridge =
+      start_supervised!({Bridge, name: nil, peers: ctx.peers, transport: ctx.transport, runner: runner})
+
+    assert :ok = Bridge.pump(bridge)
+    assert_receive {:acked, 1}
+    assert_receive {:sent, %{"text" => reply}}
+    assert {:ok, rejected} = Protocol.decode(reply)
+    assert rejected["type"] == "rejected"
+    assert rejected["request_id"] == ctx.request
+    assert rejected["payload"] == %{"reason" => "unauthorized_task"}
+    refute reply =~ "rm -rf"
+    assert Bridge.status(bridge).requests == []
+    assert Bridge.status(bridge).active == nil
+
+    # A redelivery repeats the identical reply (same id), and still opens no case.
+    Agent.update(ctx.page, fn _ -> %{events: [Map.put(refused, "cursor", 2)], cursor: 2} end)
+    assert :ok = Bridge.pump(bridge)
+    assert_receive {:acked, 2}
+    assert_receive {:sent, %{"text" => again}}
+    assert {:ok, %{"id" => same}} = Protocol.decode(again)
+    assert same == rejected["id"]
+    assert Bridge.status(bridge).requests == []
+  end
+
+  test "a task from an unauthorized peer gets no reply at all", ctx do
+    stranger = event(ctx) |> Map.put("peer", "stranger")
+    Agent.update(ctx.page, fn _ -> %{events: [stranger], cursor: 1} end)
+
+    runner =
+      start_supervised!(
+        {Runner, name: nil, prepare: fn _ -> :ok end, run: fn _, _ -> flunk("must not execute") end}
+      )
+
+    bridge =
+      start_supervised!({Bridge, name: nil, peers: ctx.peers, transport: ctx.transport, runner: runner})
+
+    assert :ok = Bridge.pump(bridge)
+    assert_receive {:acked, 1}
+    refute_receive {:sent, _}, 200
+  end
+
   test "intake stays model-free until ownership is available, and duplicate delivery opens no second case",
        ctx do
     Agent.update(ctx.page, fn _ -> %{events: [event(ctx)], cursor: 1} end)

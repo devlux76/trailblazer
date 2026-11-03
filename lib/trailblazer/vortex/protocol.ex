@@ -123,7 +123,7 @@ defmodule Trailblazer.Vortex.Protocol do
 
     with true <- Enum.all?(Map.keys(planner), &(&1 in ~w(ref deadline_seconds))),
          [_, name] <- Regex.run(~r/\A([a-z0-9][a-z0-9_.-]*):[0-9a-f]{7,64}\z/, ref),
-         true <- name != "shared" and name == Path.basename(repo),
+         true <- name != "shared" and name == repo_name(repo),
          true <- seconds == nil or (is_integer(seconds) and seconds > 0) do
       {:ok, %{ref: ref, deadline_ms: seconds && seconds * 1000}}
     else
@@ -132,6 +132,27 @@ defmodule Trailblazer.Vortex.Protocol do
   end
 
   defp planner(_, _), do: {:error, :bad_planner}
+
+  # A card names its repository by the main checkout. A linked worktree shares that
+  # repository's common git dir, so its name comes from there, not from its own
+  # directory (trailblazer:c8813a0): vortex/.claude/worktrees/v6-impl is "vortex".
+  # Outside a git repository the directory name stands, as before.
+  @doc false
+  def repo_name(repo) do
+    case System.cmd("git", ["-C", repo, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+           stderr_to_stdout: true
+         ) do
+      {common, 0} ->
+        common = String.trim(common)
+
+        if Path.basename(common) == ".git",
+          do: common |> Path.dirname() |> Path.basename(),
+          else: common |> Path.basename() |> Path.rootname(".git")
+
+      _ ->
+        Path.basename(repo)
+    end
+  end
 
   defp payload?("receipt", payload),
     do: Map.keys(payload) == ["message_id"] and id?(payload["message_id"])

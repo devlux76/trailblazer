@@ -416,15 +416,24 @@ defmodule Trailblazer.Vortex.Bridge do
     end
   end
 
-  defp receive_message(event, policy, %{"type" => "task"} = message, _state) do
-    with {:ok, task} <- Protocol.task(message, policy, event.peer),
-         {planner, task} = Map.pop(task, :planner),
-         {:ok, id, fresh} <-
-           Store.admit(event.peer, event.room, message["request_id"], task, planner) do
-      Events.subscribe({:case, id})
-      if planner && fresh == :new, do: Events.publish(:planner, {:assigned, id})
-      :ok
-    end
+  defp receive_message(event, policy, %{"type" => "task"} = message, state) do
+    result =
+      with {:ok, task} <- Protocol.task(message, policy, event.peer),
+           {planner, task} = Map.pop(task, :planner),
+           {:ok, id, fresh} <-
+             Store.admit(event.peer, event.room, message["request_id"], task, planner) do
+        Events.subscribe({:case, id})
+        if planner && fresh == :new, do: Events.publish(:planner, {:assigned, id})
+        :ok
+      end
+
+    # Only a decoded task from an already-authorized peer reaches here: tell that
+    # peer it was refused, so its client records a definite refusal instead of an
+    # uncertain timeout (trailblazer:c8813a0). Only the reason name travels. No case
+    # exists, so the reply is not durable: if it is lost the client times out, as
+    # before. Its id derives from the request, so a redelivery repeats the same reply.
+    with {:error, reason} <- result, do: reject(state, policy, message["request_id"], reason)
+    result
   end
 
   defp receive_message(
@@ -646,6 +655,20 @@ defmodule Trailblazer.Vortex.Bridge do
       end
     end)
   end
+
+  # A refused task's reply to its authorized peer (see receive_message/4 for "task").
+  defp reject(state, %{room: room}, request_id, reason) when is_binary(request_id) do
+    id = "rejected:" <> Base.encode16(:crypto.hash(:sha256, request_id), case: :lower)
+    payload = %{"reason" => if(is_atom(reason), do: Atom.to_string(reason), else: "refused")}
+
+    with {:ok, body} <- Protocol.encode(Protocol.envelope("rejected", id, request_id, payload)) do
+      Task.start(fn -> call(state, "send", %{"room" => room, "text" => body}) end)
+    end
+
+    :ok
+  end
+
+  defp reject(_, _, _, _), do: :ok
 
   defp value(map, key) do
     fields = %{
