@@ -42,7 +42,13 @@ an arbitrary preparation command through request fields.
    claim that the current edit engine enforces a source-path permission list.
    The guard hashes owned files and modes, including ignored nondependency
    files; provisioned dependency/build caches are excluded but tracked files
-   there are still protected. HEAD/index changes are refused. Repositories
+   there are still protected. Declared outputs may have new directory ancestors
+   or have existing directory ancestors recreated with normalized permission
+   bits (for example 0775 to 0755). Ancestors must remain real directories;
+   deletion/type changes, unrelated-directory modes and file modes remain
+   guarded. Directory permissions are not Git candidate content, and this
+   remains a trusted host command rather than an OS sandbox.
+   HEAD/index changes are refused. Repositories
    with submodules are unsupported in the first implementation and are refused
    before running preparation.
    All provisioned/reset-preserved trees (`deps`, `node_modules`, `_build`,

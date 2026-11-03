@@ -208,7 +208,8 @@ defmodule Trailblazer.Loop.Artifacts do
     outside =
       Enum.reject(changed, fn path ->
         path in allowed or
-          (before[path] == nil and match?({:directory, _}, after_build[path]) and
+          ((before[path] == nil or match?({:directory, _}, before[path])) and
+             match?({:directory, _}, after_build[path]) and
              Enum.any?(allowed, &String.starts_with?(&1, path <> "/")))
       end)
 

@@ -216,4 +216,23 @@ defmodule Trailblazer.Loop.ArtifactsTest do
     git(root, ["-c", "core.hooksPath=/dev/null", "commit", "-qm", "explicit regeneration"])
     assert {:ok, _} = Artifacts.verify(root, p)
   end
+
+  test "recreating a declared output parent may normalize its directory mode", %{root: root} do
+    File.mkdir_p!(Path.join(root, "dist"))
+    File.chmod!(Path.join(root, "dist"), 0o775)
+    File.write!(Path.join(root, "dist/bundle"), "old")
+
+    p =
+      policy(root, "rm -rf dist && mkdir -m 755 dist && printf new > dist/bundle", ["dist/bundle"])
+
+    assert {:ok, result} = Artifacts.prepare(root, p)
+    assert result.paths == ["dist/bundle"]
+    assert {:ok, _} = Artifacts.verify(root, p)
+    File.mkdir_p!(Path.join(root, "unrelated"))
+    File.chmod!(Path.join(root, "unrelated"), 0o755)
+    p = policy(root, "chmod 700 unrelated", ["dist/bundle"])
+
+    assert {:error, %{reason: :outside_outputs, paths: ["unrelated"]}} =
+             Artifacts.prepare(root, p)
+  end
 end
