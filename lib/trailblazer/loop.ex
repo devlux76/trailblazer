@@ -309,7 +309,7 @@ defmodule Trailblazer.Loop do
           case tally(:previous_edits) do
             [_ | _] = edits ->
               next_feedback <>
-                "\n\nPrevious applied edits (reference only, captured before the check). " <>
+                "\n\nPrevious submitted edit blocks (reference only, captured before any check; a missed atomic submission writes no files). " <>
                 "Use their exact code to diagnose the failure; still submit corrected edits with submit_edits.\n\n```json\n" <>
                 Jason.encode!(edits, pretty: true) <> "\n```"
 
@@ -620,6 +620,8 @@ defmodule Trailblazer.Loop do
   end
 
   defp apply_edits(st, blocks) do
+    tally(:previous_edits, blocks)
+
     case Edits.apply(st.ws.path, blocks,
            files: tracked(st.ws.path),
            shown: Map.get(st.task, :files, [])
@@ -627,12 +629,30 @@ defmodule Trailblazer.Loop do
       {:ok, paths} ->
         record(st, :edit, %{status: :applied, blocks: blocks, paths: paths})
         tally(:changed, paths)
-        tally(:previous_edits, blocks)
         :ok
 
       {:error, failures} ->
         record(st, :edit, %{status: :missed, blocks: blocks, failures: failures})
-        {:retry, :edits_missed, Edits.feedback(failures)}
+
+        missing =
+          for f <- failures,
+              f.reason == :no_such_file or (f.reason == :no_match and f.closest == ""),
+              do: f.block.path
+
+        if st.task.read_rounds == 0 and missing != [] do
+          record(st, :error, %{stage: :edits, reason: :source_context_missing, paths: missing})
+
+          {:stop,
+           report(
+             st,
+             :failed,
+             "source_context_missing: #{Enum.join(missing, ", ")}. " <>
+               "Supply literal current SEARCH anchors or authorize read rounds on a fresh admission; no zero-read retry was run.",
+             %{attempts: length(st.failures) + 1}
+           )}
+        else
+          {:retry, :edits_missed, Edits.feedback(failures)}
+        end
     end
   end
 

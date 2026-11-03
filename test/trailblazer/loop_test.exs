@@ -465,7 +465,7 @@ defmodule Trailblazer.LoopTest do
     assert_received {:asked, _, _}
     assert_received {:asked, [_, %{content: second_user}], _}
     assert second_user =~ "the greeting has no comma"
-    assert second_user =~ "Previous applied edits"
+    assert second_user =~ "Previous submitted edit blocks"
     assert second_user =~ "Hello; "
     # the second attempt's SEARCH matched, so the first attempt's edit was undone
     assert git(repo, ["show", "#{report.branch}:lib/greeting.ex"]) =~ ~s("Hello, ")
@@ -491,7 +491,7 @@ defmodule Trailblazer.LoopTest do
       fn [_, %{content: user}], _ ->
         assert user =~ "previous edits were discarded"
         assert user =~ "original files"
-        assert user =~ "Previous applied edits"
+        assert user =~ "Previous submitted edit blocks"
         assert user =~ "Hello; "
         assert user =~ "test/greeting.txt"
         assert user =~ "Hello, Ada"
@@ -534,7 +534,7 @@ defmodule Trailblazer.LoopTest do
     end
   end
 
-  test "correction context keeps model edits before check mutations and clears them after a missed edit",
+  test "correction context excludes check mutations and replaces evidence on a missed submission",
        %{repo: repo, opts: opts} do
     wrong = String.replace(@fix, ~s("Hello, " <> name), ~s("Hello; " <> name))
     miss = String.replace(@fix, ~s("Hello " <> name), ~s("Hi " <> name), global: false)
@@ -543,13 +543,14 @@ defmodule Trailblazer.LoopTest do
       reply(wrong),
       fn [_, %{content: user}], _ ->
         assert user =~ "candidate has no comma"
-        assert user =~ "Previous applied edits"
+        assert user =~ "Previous submitted edit blocks"
         assert user =~ "Hello; "
         refute user =~ "CHECK_MUTATION_MUST_NOT_BE_CONTEXT"
         reply(miss)
       end,
       fn [_, %{content: user}], _ ->
-        refute user =~ "Previous applied edits"
+        assert user =~ "Previous submitted edit blocks"
+        assert user =~ "Hi "
         refute user =~ "Hello; "
         reply(@fix)
       end,
@@ -1224,5 +1225,59 @@ defmodule Trailblazer.LoopTest do
     assert report.status == :fixed
     assert report.integration.result == report.commit
     assert git(repo, ["show", "main:dist/greeting.ex"]) =~ "Hello, "
+  end
+
+  test "a missed atomic submission retains all blocks for a zero-read correction", %{
+    repo: repo,
+    opts: opts
+  } do
+    miss = %{greeting_block() | search: ~s|  def hello(name), do: "Hi " <> name\n|}
+    addition = %{path: "notes.txt", search: "", replace: "RETAIN_SUBMITTED_NOTE\n"}
+
+    script([
+      submitted([addition, miss]),
+      fn messages, _ ->
+        user = Enum.at(messages, 1).content
+        assert user =~ "Previous submitted edit blocks"
+        assert user =~ "RETAIN_SUBMITTED_NOTE"
+        assert user =~ "notes.txt"
+        submitted([addition, greeting_block()])
+      end,
+      reply("PASS")
+    ])
+
+    report = Loop.run(task(repo, %{read_rounds: 0}), opts)
+    assert report.status == :fixed
+    assert report.attempts == 2
+    assert git(repo, ["show", "#{report.commit}:notes.txt"]) == "RETAIN_SUBMITTED_NOTE\n"
+  end
+
+  test "zero-read miss without source context stops before an unchanged retry", %{
+    repo: repo,
+    opts: opts
+  } do
+    miss = %{greeting_block() | search: "unrelated prose: revise the normative paragraph\n"}
+    script([submitted([miss])])
+    report = Loop.run(task(repo, %{read_rounds: 0}), opts)
+    assert report.status == :failed
+    assert report.summary =~ "source_context_missing"
+    assert report.summary =~ "lib/greeting.ex"
+    assert report.cost.model_calls == 1
+
+    assert Enum.any?(
+             CaseRecord.get(report.case).events,
+             &(&1.kind == "error" and &1.data["reason"] == "source_context_missing")
+           )
+
+    assert_received {:asked, _, _}
+    refute_received {:asked, _, _}
+  end
+
+  test "nonzero read budget retains a retry for a source-context miss", %{repo: repo, opts: opts} do
+    miss = %{greeting_block() | search: "unrelated prose: revise the normative paragraph\n"}
+    script([submitted([miss]), submitted([greeting_block()]), reply("PASS")])
+    report = Loop.run(task(repo, %{read_rounds: 1}), opts)
+    assert report.status == :fixed
+    assert report.attempts == 2
   end
 end
