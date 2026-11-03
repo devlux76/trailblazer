@@ -68,3 +68,14 @@ CREATE TABLE IF NOT EXISTS vortex_classification (
   reason TEXT NOT NULL,
   PRIMARY KEY(peer,cursor)
 );
+
+-- Generic permission request lifetime is independent of the preserved case.
+CREATE TABLE IF NOT EXISTS permission_request (
+  id TEXT PRIMARY KEY,
+  case_id TEXT NOT NULL REFERENCES task_case(id),
+  version INTEGER NOT NULL,
+  state TEXT NOT NULL,
+  deadline_at INTEGER NOT NULL,
+  record TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS permission_case ON permission_request(case_id);
