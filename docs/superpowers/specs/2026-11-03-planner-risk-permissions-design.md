@@ -103,7 +103,9 @@ remove it. Later storage compaction is a separate trusted maintenance action:
 first produce and verify a restorable checkpoint, then release the checkout
 while retaining the recovery material. A diff alone is not sufficient when it
 omits untracked files, metadata or partial output. Failed preservation checks
-leave the work visibly retained. No age-based deletion of unfinished work.
+leave the work visibly retained. No age-based deletion of unfinished work. Code may be discarded only after
+review/evidence establishes it is bad, unused, inefficient or superseded;
+incompleteness alone is not that classification.
 
 Board state shows blocked/no_decision plus checkpoint and recovery action.
 Re-entry resumes the correct stage or selects useful saved work for correction;
