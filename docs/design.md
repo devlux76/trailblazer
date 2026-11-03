@@ -7,6 +7,18 @@ document says *the operator decided*, that is the operator's call;
 where it says *builder's call* or *Claude's call*, it is a default that
 can be changed without asking.
 
+Current implementation notes (2026-11-02): this remains a specification,
+including requirements not implemented yet. The dated plans are historical;
+the following gaps must not be read as completed features:
+
+| Requirement | Current implementation and remaining work |
+|---|---|
+| Verify a frontier's returned fix (§7.5) | VORTEX stores the return as `waiting_verification`; ancestry, scope, trusted checks and fresh review are not wired. See bug:a3339f5. |
+| Integrate and clean a resource-gated task (§7.7) | `Loop.Coordinator` implements integration/archive/cleanup and the HTTP API accepts an explicit `primary`. The current Planner/VORTEX task protocol does not admit `primary`, so those cases stop at a candidate; live gated acceptance remains open in bug:1beebca. There is no age-based prune. |
+| Repair a real harness incident (§11) | The incident-emitter and returned-fix end-to-end acceptance remain required, not demonstrated by local coding trials (bug:a3339f5). |
+| Event-only observation (§13) | The local bounded-launch cleanup observer currently reads case status every five seconds. It makes no model calls or retries; this is a known exception to reconcile, not an event-driven implementation. |
+| Operate running services (§12) | Still deferred; the coding worker has no general restart/deployment authority. |
+
 ## 1. What it is, and why
 
 Trailblazer is a local coding tool **for AIs, not for people**, in the
@@ -21,7 +33,7 @@ delegate. The result is design mistakes that are found in review and
 fixed inside multi-million-token Claude sessions, where every token
 costs the most.
 
-Trailblazer puts a local code model, **Qwen3.6-35B-A3B**, in a harness
+Trailblazer puts the operator-selected local code model (§7.2) in a harness
 built for coding. It is not Mirai's harness: a code model placed inside
 her two-minds runtime would be confused by it. Trailblazer uses her
 **body** (the model router, the embedder, Qdrant, VORTEX) and none of
@@ -81,22 +93,24 @@ and the caller does not watch the run.
 
 ## 4. Constraints
 
-- **Hardware.** CPU only, 6 threads, 29 GB of RAM. Qwen3.6-35B-A3B with
-  MTP takes about 24 GB, so it cannot be loaded beside LFM2.5-24B.
-  Prefill is the bottleneck: measured at 8–11 prompt tokens a second in
-  the first live runs (31 GB of swap in use), so every 1,000 prompt
-  tokens cost about 90 s. Every token in the prompt has to earn its
-  place (§6.5).
+- **Hardware.** The coding preset is CPU-only with 6 threads. Earlier
+  Qwen/MTP measurements (about 24 GB loaded, 8–11 prompt tokens/s under
+  swap pressure) describe that historical deployment, not Spark's current
+  memory use or throughput. Every token in the prompt still has to earn
+  its place (§6.5); measure the active deployment rather than inferring
+  capacity or time from those old runs.
 - **No timing assumptions** (the operator decided, §13). How long
   anything takes depends on the machine's load; work moves by messages,
   and time is only a backstop.
 - **Embedding is slow:** EmbeddingGemma 2 manages about 0.4 code chunks
   a second here. The first full index of a repo takes hours, so
   re-embedding must be incremental.
-- **No inference lock.** The operator decided: `inference-lock` was a
-  rule Claude and Codex made while benchmarking and is not part of
-  Trailblazer. Trailblazer only schedules its own work (§6.6).
-  NOTE(question bug:9c45208): dedicated resource mode holds the inference-lock flock; is that the sanctioned exception?
+- **Resource coordination.** Standalone core retrieval has no global
+  inference-lock requirement. Dedicated coding mode is the explicit
+  exception: `Vortex.Resource` holds the shared kernel flock while its
+  inference lease is granted, requires the other runtime offline, and
+  verifies router unload before releasing ownership. This serializes
+  cooperating inference clients, not arbitrary processes on the host.
 - **Toolchain:** Erlang/OTP and Elixir as mirai-agent pins them;
   dependencies at latest while developing, pinned at release.
 - **Licence:** the Aider-derived parts are Apache-2.0 and carry the
@@ -205,7 +219,9 @@ For a request:
 
 The default budgets (Claude's call, to be tuned against measurements):
 system prompt at most 900 tokens, as in the draft; trail at most 4,000
-tokens; files the caller named, in full, on top of that.
+tokens. Named files contribute a path/line-count manifest and seed the
+trail, not an additional full-file copy (the revision below supersedes
+the original files-in-full plan).
 
 **The coder's prompt is as short as it can be, plus a head start**
 (the operator's aim; Claude's call on the means, revised 2026-10-18
@@ -227,10 +243,9 @@ after T1 of L9, whose 6,500-token prompt was 72% trail, mostly noise):
 3. *Stable before variable.* Each attempt's prompt keeps the previous
    one's text as an unchanged prefix and appends what failed, so the
    model server's prompt cache can spare a retry the re-read. With one
-   slot and no host cache (`parallel = 1`, `cache-ram = 0` in the router
-   today) the reviewer's call evicts the coder's prefix; giving the
-   router a prompt cache in RAM is to be measured against the memory it
-   costs (§13.4).
+   slot the reviewer can displace the coder's active prefix. The current
+   serving preset uses `parallel = 1` and `cache-ram = 2048`; cache reuse
+   and its memory cost are measurements, not a correctness guarantee (§13.4).
 4. *Measured, not guessed:* every case records its prompt's tokens by
    section, and the time to first token, so budgets are tuned against
    the record (§10).
@@ -315,8 +330,10 @@ model's reasoning is recorded (§8) but never sent back to it.
 
 ### 7.3 One attempt
 
-The model is given the system prompt, the trail, the files in full and
-the request. It answers with SEARCH/REPLACE edit blocks. It may first
+The model is given the system prompt, the trail, a named-file manifest and
+the request. It submits native `submit_edits` SEARCH/REPLACE blocks; the
+validated legacy text/whole-message JSON forms are also accepted (see
+`local-planner.md`). It may first
 call the core's questions (§6.7) when the trail is not enough; each call
 and its answer is part of the attempt. Edits are applied with the
 tolerant matcher ported from Aider (§9). A block that does not apply
@@ -341,9 +358,11 @@ model, fresh context, a short reviewer prompt.
 
 ### 7.5 Three attempts, then phone a friend
 
-The operator's rule: **three attempts, then escalate.** There is no
-judgement of whether a task "looks trivial". Every task gets three
-local attempts, and the fourth goes to a friend.
+The operator's rule: **at most three local attempts, then escalate.** There
+is no judgement of whether a task "looks trivial" and no fourth local
+attempt. A reasoning-only output cutoff stops earlier rather than retrying
+the unchanged budget; verification-only recovery also makes one attempt.
+Unsafe setup, ownership or transport failures can end the case before coding.
 
 Who the friend is (the operator decided):
 
@@ -473,9 +492,10 @@ On the CLI it is one JSON object.
   Ambiguity remains blocked with evidence. Complete cleanup, including
   candidate branch deletion, requires an integrated result or a verified
   archive (`discard` intent).
-- The journal APIs provide recovery boundaries for integration/removal;
-  tests of those APIs do not claim a production integration coordinator.
-  See `docs/2026-10-23-design-review.md` and the durable-outcomes plan/register.
+- The journal and coordinator implement integration/removal, but API fixture
+  tests do not prove the missing resource-gated `primary` admission path.
+  Without that explicit policy, a Planner/VORTEX candidate remains for review.
+  See bug:1beebca and `docs/2026-10-23-design-review.md`.
 
 ### 7.8 Doors
 

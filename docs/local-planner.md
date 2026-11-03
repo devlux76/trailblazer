@@ -1,7 +1,8 @@
 # Local planning and dispatch
 
-The optional planner brain uses the existing local Qwen coding model to
-prioritize current work. Its only target is Trailblazer. It has no paid
+The optional planner brain defaults to Nemotron-3.5-Bolt-E4B on its separate
+local router (`spark` remains the coding worker; see design.md §7.2). It
+prioritizes current work and its only target is Trailblazer. It has no paid
 fallback. Elixir/OTP owns planning tasks, resource cleanup, dispatch and restart
 recovery in the planner one-for-all supervision group.
 
@@ -46,11 +47,18 @@ inference. Fix the cause and change the current work deliberately, or restart
 the idle service to recover an outstanding lease. Never restart during coding.
 
 Completion produces an independently checked candidate branch. It does not
-merge or deploy it. Producer interruption before admission and complete
-assignment generations remain shared:40dbd63; automatic integration remains
-trailblazer:1beebca. Source issue: trailblazer:cf1c78a.
+merge or deploy it through the current Planner/VORTEX route. The core's
+optional coordinator is implemented, but explicit `primary` admission through
+the resource gate and its live acceptance remain trailblazer:1beebca.
+Producer interruption before admission and complete assignment generations
+remain shared:40dbd63. Source issue: trailblazer:cf1c78a.
 
 ## The research route
+
+Implementation gap: production `Research.endpoint_transport/0` currently
+expects a map, while `Vortex.Settings` returns a keyword list. The route below
+is its intended contract; live dispatch is blocked by bug:c1a47cb until that
+wiring is repaired and tested against the real settings loader.
 
 A ready card without a nonempty `Implementation plan:` line always goes to research.
 The plan must resolve the starting code, ordered changes, interfaces, and test
