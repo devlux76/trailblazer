@@ -287,16 +287,25 @@ reported as *unverified* and is not committed (Claude's call).
 
 ### 7.2 The model
 
-Spark-X2.6-4B, the publisher's Q4_K_M GGUF, selected by the operator
-for a compact coding-worker trial. The existing CPU llama router serves
-it as `spark-x2.6-4b:q4` with the model-card sampling parameters:
+Spark-X2.6-4B, the publisher's Q8_0 GGUF with its companion DSpark draft,
+is the operator-selected coding worker. The CPU llama router serves it as
+`spark-x2.6-4b:q8-dspark`; the default OpenAI-compatible base URL is
+`http://127.0.0.1:8096/v1`. The earlier Q4_K_M trial on port 8094 is not
+the current default. The request sampling parameters are:
 
 - temperature 1.0, top_p 0.95, top_k 0 (disabled), min_p 0, presence penalty 0
 - repetition penalty 1.0
-- 16,384 tokens of runtime context; the model's maximum is 1,048,576
-- thinking on, `preserve_thinking` off
+- thinking enabled with reasoning effort `high`
 
-Source: https://huggingface.co/XHToken/Spark-X2.6-4B
+The serving preset allocates 131,072 context tokens. Separately, Trailblazer's
+default output cap is 16,384 tokens, including reasoning; a caller may set an
+explicit smaller reasoning budget within that cap. Neither setting is the
+model's 1,048,576-token advertised maximum. The DSpark-capable serving fork
+uses `draft-dspark`, at most seven proposed tokens, and greedy draft sampling;
+this does not change the target sampler settings above.
+
+Sources: [target model](https://huggingface.co/XHToken/Spark-X2.6-4B)
+and [DSpark draft](https://huggingface.co/XHToken/Spark-X2.6-4B-DSpark-GGUF).
 
 Trailblazer reads the model name and base URL from configuration. The
 model's reasoning is recorded (§8) but never sent back to it.
