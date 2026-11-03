@@ -12,11 +12,11 @@ The reset still returns to base, and a later failed submission replaces the
 previous submission's evidence. Check-mutated files never become this context.
 
 For read_rounds=0, a no_match with empty closest excerpt, or a missing file with
-nonempty SEARCH, stops before another coder call. Record source_context_missing
+nonempty SEARCH and no filename candidates, stops before another coder call. Record source_context_missing
 with affected paths and tell Planner to supply literal current anchors or
 explicitly authorize read rounds on a fresh admission. Do not widen the read
 budget, fuzzy-apply an edit, or infer source from the plan. An available closest
-excerpt permits the existing bounded retry. Nonzero read budgets retain their
+excerpt or filename candidates permit the existing bounded retry. Nonzero read budgets retain their
 current behavior. Unsafe paths retain existing containment refusals.
 
 Plan authors must provide literal before-text for every edit in a zero-read

@@ -636,7 +636,7 @@ defmodule Trailblazer.Loop do
 
         missing =
           for f <- failures,
-              f.reason == :no_such_file or (f.reason == :no_match and f.closest == ""),
+              f.reason in [:no_such_file, :no_match] and f.closest == "",
               do: f.block.path
 
         if st.task.read_rounds == 0 and missing != [] do

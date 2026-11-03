@@ -340,7 +340,7 @@ tolerant matcher ported from Aider (§9). A block that does not apply
 comes back to the model with the closest lines in the file. The complete
 submitted block set is retained in retry feedback, including blocks from a
 missed atomic submission (which writes no files). A zero-read (`read_rounds=0`)
-miss without a source excerpt, or a missing existing-file target, stops with
+miss without a source excerpt, or a missing target without filename candidates, stops with
 `source_context_missing` before another model call. Planner must supply literal
 current anchors or authorize discovery on a fresh admission; the tool does not
 widen the read budget. See [retry-context design](superpowers/specs/2026-11-03-retry-context-design.md).

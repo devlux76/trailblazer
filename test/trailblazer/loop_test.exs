@@ -1280,4 +1280,30 @@ defmodule Trailblazer.LoopTest do
     assert report.status == :fixed
     assert report.attempts == 2
   end
+
+  test "zero-read missing path with candidate names can correct its target", %{
+    repo: repo,
+    opts: opts
+  } do
+    File.mkdir_p!(Path.join(repo, "other"))
+    File.write!(Path.join(repo, "other/greeting.ex"), @greeting)
+    git(repo, ["add", "."])
+    git(repo, ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "ambiguous names"])
+
+    script([
+      submitted([%{greeting_block() | path: "missing/greeting.ex"}]),
+      fn messages, _ ->
+        user = Enum.at(messages, 1).content
+        assert user =~ "lib/greeting.ex"
+        assert user =~ "other/greeting.ex"
+        assert user =~ "Previous submitted edit blocks"
+        submitted([greeting_block()])
+      end,
+      reply("PASS")
+    ])
+
+    report = Loop.run(task(repo, %{read_rounds: 0}), opts)
+    assert report.status == :fixed
+    assert report.attempts == 2
+  end
 end
