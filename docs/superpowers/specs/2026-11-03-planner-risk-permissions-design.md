@@ -1,92 +1,118 @@
 # Planner permission decisions from observed consequences
 
-Draft for Claude/operator review; no implementation. Issue: trailblazer:0981773.
-Supersedes treating 86eb4bf's directory-mode allowance as the permanent fix.
+Direction approved by Claude; revised for generic requests and phased rollout.
+SPEC ONLY; implementation plan follows review. Issue: trailblazer:0981773.
 
-## Outcome and current state
+## Outcome, scope and rollout
 
-Planner may grant or refuse continuation based on what a preparation step
-actually changes and achieves. Declared outputs express intent, not the answer.
-F15's 0775→0755 directory recreation should produce evidence for a judgement,
-not require another hard-coded exception or another coder invocation.
+One generic Trailblazer permission primitive: `awaiting_permission`, an evidence
+bundle, and a bound decision. Artifact scope is the FIRST consumer, not a
+separate approval mechanism. Later actual edit-policy or check-tree guards use
+the same lifecycle/audit trail. This does not create a named-file restriction:
+`task.files` is currently context, not an edit allowlist.
 
-Deployed main remains 0f60f21 with the conservative guard. 86eb4bf is reviewed
-but NOT deployed; keep it as historical evidence, not a new stopgap rollout.
-0697491 and its uncommitted replay/mode refinements are held. Resume that work
-only after its recovery contract matches the decision lifecycle below.
+Planner judges what an action achieves and changes, rather than merely whether
+it matches declared intent. F15's 0775→0755 directory recreation needs evidence
+and judgement, not another hard-coded permission exception or coder invocation.
 
-## Decision lifecycle
+- **P1: frontier-only.** Pause/evidence/binding/resume and authenticated Codex or
+  Claude decisions over VORTEX. Local Planner has NO decision authority. Retain
+  today's detection boundary; make no outside-write prevention claim. F15's
+  acceptance belongs here and requires a recorded frontier decision.
+- **P2: calibrated local tier.** Retain P1 evidence/frontier decisions as labelled
+  calibration cases. The local brain must agree with them, including refusal,
+  escalation, and adversarial variations, before explicit local policy enables
+  any authority. Security-related false grants fail calibration. Bolt's security
+  judgement is unproven; model availability or a plausible answer is not proof.
+- **P3: restricted execution.** Prove a bwrap write boundary with attempted
+  escapes and Git writes; specify allowed read roots/scratch before rollout.
+  This stronger enforcement is not a prerequisite for P1's detection-based F15.
 
-1. Preparation records before/after observations. An out-of-policy effect
-   checkpoints the case as `awaiting_permission`, preserves the exact edited
-   checkout and response, releases coder/model/resource leases, and emits one
-   durable permission request. It does not retry the coder, commit, or mark the
-   case failed. Planner can use its own model without a coder lease deadlock.
-2. Evidence includes the admitted objective, frozen command/output policy,
-   build-definition diff, exit/output, and each exception's relative path,
-   before/after type, mode, size, content/link digest, root containment and
-   proposed commit disposition. Include source diffs, untracked/ignored effects,
-   reproducibility evidence and explicit observation gaps. Directory metadata
-   is distinguished from Git content; "not committed" alone does not imply
-   harmlessness (permissions and runtime effects still matter).
-3. A separate strict permission decision uses the existing Planner model,
-   journal and transport foundations; card selection's Decision.choose is not
-   already this capability. The answer is `grant`, `refuse`, `escalate`, or
-   `amend_policy`, with consequence-based reasoning. A grant names the exact
-   exceptions, proposed commit paths, expected postconditions and any finite
-   normalization action. Normalization is host-implemented (e.g. restore a
-   recorded parent mode), never arbitrary model-supplied shell.
-4. Local Planner may decide fully observed low-risk consequences, such as a
-   directory-only change that ships no content and does not weaken access.
-   Those examples route judgement; they do not auto-grant by pathname. Added
-   write access, symlink/type changes, unexpected source/build-code changes,
-   unknown effects or uncertainty escalate to an authenticated configured
-   frontier reviewer over VORTEX. The host enforces decision authority; model
-   text cannot self-promote. Refusal records its reason and ends the case.
-   amend_policy is only a proposal through the reviewed trusted-policy path,
-   never a policy file written by the worker or self-applied by the model.
-5. Bind decisions to case/base, frozen policy, relevant source digest and
-   exception-delta fingerprint. Persist evidence digest, decision, reason,
-   decision-maker/model and authority tier. Revalidate before resuming; changed
-   evidence invalidates the grant. Normalization produces a new observation
-   and must satisfy the grant's postconditions. Any approved Git content joins
-   the checked/reviewed/committed tree; hidden source changes cannot pass tests
-   and then be omitted from the commit.
-6. Continue with non-mutating checks and fresh code review. Companion and merge
-   verification repeat observation against the saved policy and applicable
-   case-scoped grant; different effects need a new decision. Reuse is based on
-   relevant relative exception/source evidence, not checkout paths or a blanket
-   granted flag. Restart resumes the checkpoint/decision without rerunning the
-   coder or automatically repeating a model decision. An unavailable decider
-   leaves a visible waiting state and releases resources.
+Deployed main stays 0f60f21 with its conservative guard. 86eb4bf remains
+historical/unmerged, not a permanent fix or a new stopgap deployment. 0697491's
+replay implementation stays held until it matches the continuation contract.
+
+## Shared request and decision lifecycle
+
+1. An out-of-policy observation checkpoints case/consumer/stage as
+   `awaiting_permission`, preserving the exact edited checkout and response.
+   Release coder/model/resource leases before emitting one durable request.
+   The case is paused, not failed; no coder retry, commit or parallel resume.
+   Mirror it on the Planner board as blocked, with awaiting_permission,
+   request id and deadline visible. A grant queues a continuation in the
+   existing serial executor at the recorded stage, never a new coding attempt.
+2. Evidence includes the admitted objective and action, frozen command/policy,
+   build-definition/source diffs, exit/output, and each exception's relative
+   path, before/after type/mode/size/content-or-link digest, observed containment
+   and commit disposition. Include untracked/ignored effects, reproducibility
+   evidence and observation gaps. "Not committed" does not imply harmlessness.
+3. The HOST computes risk features: directory-metadata-only, ships content,
+   widens access, type/symlink change, source/build-definition touched, and
+   observation gap. Host policy chooses the permitted decision tier; models
+   cannot relabel features, select their own tier or self-promote. P1 routes
+   everything to configured authenticated frontier principals. In P2, only
+   calibrated low-risk feature combinations can reach the local tier;
+   uncertainty, widening access, unexpected source or gaps remain frontier.
+   Routing selects a decider, not an automatic grant based on a pathname.
+4. A strict answer is `grant`, `refuse`, `escalate` or `amend_policy`, with
+   consequence-based reasoning. A grant lists exact exceptions, commit paths,
+   postconditions and optional finite host normalization (e.g. restore a
+   recorded parent mode), never arbitrary model shell. Local amendment is a
+   proposal through the reviewed trusted-policy path, not a file self-edited
+   by a worker/model. Card-selection Decision.choose is not this capability.
+5. Bind request/decision to case/base, frozen policy, relevant source digest
+   and exception-delta fingerprint. Persist evidence digest, authenticated
+   decision-maker/tier/model, reasoning, time and disposition. Reobserve before
+   resuming: changed evidence invalidates approval; normalization must meet
+   postconditions. Approved Git content joins the checked/reviewed/committed
+   tree. A grant never blesses an old check after mutation: rerun checks against
+   the resulting tree and obtain fresh code review.
+6. Companion and merge verification repeat observation using recorded policy
+   and applicable case-scoped decisions. Different effects need a new decision;
+   relative source/exception evidence supports reuse across checkout paths,
+   not a blanket granted flag. Restart resumes the durable stage/decision
+   without rerunning the coder or automatically repeating the judgement call.
+7. Set a trusted local permission deadline (proposed default: 30 minutes).
+   No answer by that absolute persisted deadline atomically refuses with
+   reason `no_decision`, mirrors the blocker, and archives/verifies the
+   checkpoint before removing its owned worktree/branch. Keep evidence and
+   source response inspectable. Restart enforces an already elapsed deadline;
+   expiry and grant race through one transition, and late grants are rejected.
+   Failed archive/ownership checks stay visibly cleanup-blocked, never deleted
+   blindly. Waiting/expiry uses native timers, not recurring model calls.
+
+F15 already ended under the old guard. P1 must preserve that closed source case
+and explicitly adopt its verified saved response/checkpoint into a new
+permission continuation, checking peer/repo/base/policy and response provenance.
+No source-case rewrite or ordinary coder redispatch. This narrow P1 migration
+follows the new lifecycle; the broader 0697491 replay work remains held.
 
 ## Proposed authority floor — explicitly subject to operator review
 
-Risk judgement cannot change the authenticated principal/repository, choose a
-new top-level host command, mutate Git authority (HEAD/index/.git), or authorize
-writes outside the admitted writable roots or through a symlink escape. Wider
-authority is a separate trusted-policy change by its owner, not a risk grant.
-The fixed build command still executes reviewed repository build definitions;
-"no model-supplied commands" does not magically remove that existing authority.
+Risk grants cannot change authenticated principal/repository, choose a new
+TOP-LEVEL host command, mutate Git authority (HEAD/index/.git), or authorize
+outside-root/symlink-escape writes. Wider authority requires a separate trusted
+policy change by its owner. The fixed build command still executes reviewed
+repository build definitions; that existing authority is not magically removed.
 
-**Enforcement gap:** today's after-the-fact snapshots cannot prevent or prove
-the absence of outside-root writes by a host command. The proposed write floor
-needs an actual restricted execution boundary before claiming enforcement.
-bwrap exists on this host; suitability is not yet proven. Specify/prove allowed
-read roots and scratch writes, and mount Git authority read-only, during the
-implementation plan. Detection after an escape is a refusal/incident, not a
-claim that no damage occurred. This draft does not silently widen the current
-policy or promise a sandbox already exists.
+P1 refuses known authority violations and reports gaps. Today's after-the-fact
+snapshots cannot prevent or prove the absence of outside-root writes, so P1
+must describe DETECTION, not enforcement or absence of damage. bwrap exists on
+this host but is unproven. P3 must prove allowed reads/scratch and read-only Git
+authority before claiming a write floor. This proposed floor does not silently
+widen policy or claim a sandbox already exists.
 
-## Acceptance before rollout
+## Acceptance by phase
 
-- Real F15 mode recreation reaches a recorded local decision and resumes from
-  saved edits through check/review/Companion, without a coder call.
-- A world-writable parent is escalated, unexpected source cannot be silently
-  omitted, and an uncertain/partial evidence bundle is not locally granted.
-- Root/Git/command authority violations cannot be granted; prove the write
-  boundary with attempted outside-root and Git writes, not snapshot assertions.
-- Stale/replayed/forged grants and changed postconditions cannot resume work;
-  crash/restart at request, decision and resume boundaries is idempotent.
-- Refuse and amend-policy paths are auditable, no policy self-edit occurs,
-  and no model/resource lease is held while waiting for another decider.
+- P1: real F15 mode recreation pauses, receives a bound frontier decision and
+  continues saved edits through check/review/Companion without a coder call.
+- The same primitive handles a second simulated guard consumer; a changed
+  check tree requires a new check, and unexpected source cannot be omitted.
+- World-writable parents, uncertain evidence and forged/self-promoted decisions
+  cannot receive a local grant. Stale/replayed grants and failed postconditions
+  cannot resume; test restart/crash and grant-versus-expiry races.
+- Refuse/amend-policy/expiry are audited and board-visible, no policy self-edit
+  occurs, waiting holds no model lease, and verified expiry releases worktrees.
+- P2: calibration and host routing tests precede enabling local authority.
+- P3: attempted outside-root/symlink/Git writes prove the execution boundary;
+  snapshot-only assertions do not satisfy this acceptance.
