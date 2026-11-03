@@ -288,12 +288,15 @@ reported as *unverified* and is not committed (Claude's call).
 ### 7.2 The model
 
 Spark-X2.6-4B, the publisher's Q8_0 GGUF with its companion DSpark draft,
-is the operator-selected coding worker. The CPU llama router serves it as
+is the operator-selected coding worker. A separate CPU router serves it as
 `spark-x2.6-4b:q8-dspark`; the default OpenAI-compatible base URL is
 `http://127.0.0.1:8096/v1`. The earlier Q4_K_M trial on port 8094 is not
-the current default. The request sampling parameters are:
+the current default. The dedicated `mirai-llama-dspark.service` uses the
+XHToken llama.cpp fork (22c0ae18); the upstream router on port 8094 cannot
+load this draft. The request sampling parameters are:
 
-- temperature 1.0, top_p 0.95, top_k 0 (disabled), min_p 0, presence penalty 0
+- temperature 1.0, top_p 0.95, top_k 0 (disabled), min_p 0
+- presence and frequency penalties 0
 - repetition penalty 1.0
 - thinking enabled with reasoning effort `high`
 
