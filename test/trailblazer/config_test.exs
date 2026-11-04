@@ -20,6 +20,13 @@ defmodule Trailblazer.ConfigTest do
     assert Config.get(:planner_lease)
   end
 
+  test "the reviewer is a different model than the coder with a 15-minute backstop" do
+    assert Config.get(:review_model) == "nemotron-3.5-bolt-e4b:q4"
+    assert Config.get(:review_model_url) == "http://127.0.0.1:8098/v1"
+    assert Config.get(:review_backstop_ms) == 900_000
+    refute Config.get(:review_model) == Config.get(:code_model)
+  end
+
   test "documents are full length unless the repository is under a compact root" do
     assert Config.doc_limit("/home/someone/vendor/llama.cpp") == 2400
 

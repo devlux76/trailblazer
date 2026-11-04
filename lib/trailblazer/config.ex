@@ -156,6 +156,17 @@ defmodule Trailblazer.Config do
   # Only a planner sharing the coding model's router needs the CPU lease (whose
   # verified unload is of planner_model).
   defp default(:planner_lease), do: get(:planner_model_url) == get(:code_model_url)
+
+  # The reviewer works on its own server on the iGPU; the coding model must never review its own work (operator rule).
+  # Served by the planner brain's iGPU server when it is up; when it is down the review escalates to the frontier, it does not
+  # fail the checked case.
+  defp default(:review_model), do: "nemotron-3.5-bolt-e4b:q4"
+  defp default(:review_model_url), do: "http://127.0.0.1:8098/v1"
+  # One review pass gets fifteen minutes, like a coder pass.
+  defp default(:review_backstop_ms), do: 900_000
+  # One review pass per Backstop, and three passes at most per case; a retry
+  # does not inherit or reset a larger budget.
+  defp default(:review_backstop_ms), do: 900_000
   defp default(:code_model_max_tokens), do: 16_384
   # Backstops (design §13.2): set from measurements with a wide margin, so
   # firing means something is wrong. A model call can read an 11-minute

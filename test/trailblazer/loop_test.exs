@@ -703,10 +703,85 @@ defmodule Trailblazer.LoopTest do
   } do
     script([reply(@fix), {:error, :model_down}])
     report = Loop.run(task(repo), opts)
-    assert report.status == :failed
+    assert report.status == :awaiting_review
     assert report.commit == nil
+    assert report.cost.model_calls == 2
     assert git(repo, ["rev-parse", report.branch]) == git(repo, ["rev-parse", "main"])
     assert report.check == %{status: :pass}
+    assert File.dir?(report.worktree)
+  end
+
+  test "the reviewer is a dedicated model on its own router with its own 15-minute backstop",
+       %{repo: repo, opts: opts} do
+    script([reply(@fix), reply("## PASS")])
+    assert Loop.run(task(repo), opts).status == :fixed
+
+    assert_received {:asked, _, coder_opts}
+    assert_received {:asked, _, reviewer_opts}
+    refute Keyword.has_key?(coder_opts, :model)
+    assert reviewer_opts[:model] == "nemotron-3.5-bolt-e4b:q4"
+    assert reviewer_opts[:model_url] == "http://127.0.0.1:8098/v1"
+    assert reviewer_opts[:backstop_ms] == 900_000
+    assert reviewer_opts[:role] == :reviewer
+  end
+
+  test "a permanently unclear review with a passing check ends awaiting_review with the checked tree pinned",
+       %{repo: repo, opts: opts} do
+    script([
+      reply(@fix),
+      reply("Looks fine to me."),
+      reply("Looks fine still."),
+      reply("Definitely fine.")
+    ])
+
+    report = Loop.run(task(repo), opts)
+
+    assert report.status == :awaiting_review
+    assert report.commit == nil
+    assert report.check == %{status: :pass}
+    assert File.dir?(report.worktree)
+
+    assert report.awaiting_review.ref == "refs/trailblazer/checkpoints/#{report.case}"
+
+    assert git(repo, ["rev-parse", report.awaiting_review.ref]) ==
+             git(report.worktree, ["write-tree"])
+
+    assert CaseRecord.get(report.case).status == "awaiting_review"
+  end
+
+  test "a reviewer equal to the coder is refused before any reviewer call", %{
+    repo: repo,
+    opts: opts
+  } do
+    Application.put_env(:trailblazer, :review_model, Trailblazer.Config.get(:code_model))
+    on_exit(fn -> Application.delete_env(:trailblazer, :review_model) end)
+
+    script([reply(@fix)])
+    report = Loop.run(task(repo), opts)
+
+    assert report.status == :awaiting_review
+    assert report.commit == nil
+    assert report.cost.model_calls == 1
+    assert report.awaiting_review.reason == :same_model_review_refused
+    assert CaseRecord.get(report.case).status == "awaiting_review"
+  end
+
+  test "an awaiting_review case with an admitted primary is not retired; worktree and branch survive",
+       %{repo: repo, opts: opts} do
+    script([reply(@fix), {:error, :model_down}])
+    report = Loop.run(task(repo, %{primary: "main"}), opts)
+
+    assert report.status == :awaiting_review
+    assert File.dir?(report.worktree)
+    assert git(repo, ["rev-parse", report.branch]) == git(repo, ["rev-parse", "main"])
+    refute Map.has_key?(report, :integration)
+
+    {_, 0} =
+      System.cmd(
+        "git",
+        ["show-ref", "--verify", "--quiet", "refs/trailblazer/checkpoints/" <> report.case],
+        cd: repo
+      )
   end
 
   test "E16: a crash anywhere ends the task as failed with its record closed", %{
@@ -1085,7 +1160,9 @@ defmodule Trailblazer.LoopTest do
   test "a review cut off at the length limit is not a PASS", %{repo: repo, opts: opts} do
     script([reply(@fix), reply("PASS", %{finish_reason: "length"}), reply("none"), reply("none")])
     report = Loop.run(task(repo), opts)
-    assert report.status == :failed
+    # a length-cut review is not a verdict; three unusable passes park the case
+    # as awaiting_review instead of failing a checked tree (operator rule)
+    assert report.status == :awaiting_review
     assert report.commit == nil
   end
 

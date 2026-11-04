@@ -270,7 +270,7 @@ defmodule Trailblazer.Vortex.Store do
       CaseStore.transaction(fn conn ->
         put(conn, id, request.peer, request.room, "report", request.request_id, payload)
 
-        if record.status == "failed" do
+        if record.status in ["failed", "awaiting_review"] do
           case frontier do
             {peer, room} ->
               put(conn, id, peer, room, "escalation", request.request_id, payload)

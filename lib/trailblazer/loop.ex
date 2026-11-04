@@ -304,6 +304,9 @@ defmodule Trailblazer.Loop do
       {:ok, reply} ->
         succeeded(st, n, reply, check)
 
+      {:awaiting_review, reason} ->
+        awaiting_review(st, reason)
+
       {:retry, why, next_feedback} ->
         next_feedback =
           case tally(:previous_edits) do
@@ -522,6 +525,22 @@ defmodule Trailblazer.Loop do
         do: opts,
         else: opts ++ [reasoning_budget_tokens: st.task.reasoning_budget_tokens]
 
+    role_opts =
+      case role do
+        :reviewer ->
+          [
+            model: Config.get(:review_model),
+            model_url: Config.get(:review_model_url),
+            backstop_ms: Config.get(:review_backstop_ms),
+            backstop_kind: :review_call,
+            role: :reviewer
+          ]
+
+        _ ->
+          []
+      end
+
+    opts = role_opts ++ opts
     opts = opts ++ Keyword.get(st.opts, :model_opts, [])
 
     case with_gate(st, fn -> mod(st, :model, Model).chat(messages, opts) end) do
@@ -532,6 +551,11 @@ defmodule Trailblazer.Loop do
         tally(:prompt_tokens, tally(:prompt_tokens) + (usage[:prompt_tokens] || 0))
         tally(:completion_tokens, tally(:completion_tokens) + (usage[:completion_tokens] || 0))
         {:ok, reply}
+
+      {:error, reason} when role == :reviewer ->
+        record(st, :error, %{stage: :reviewer, reason: reason})
+        tally(:model_calls, tally(:model_calls) + 1)
+        {:review_error, reason}
 
       {:error, :model_down} ->
         record(st, :error, %{stage: role, reason: :model_down})
@@ -707,74 +731,131 @@ defmodule Trailblazer.Loop do
     end
   end
 
-  # A review in a fresh context: the request, the design and the diff only.
-  # An answer that is neither PASS nor FAIL is asked for once more (D13).
+  # The review, in a fresh context: the request, the design, the diff only.
+  # The reviewer is a different model than the coder on its own router:
+  # Spark never reviews Spark. Up to three passes, each under its own
+  # 15-minute Backstop — a retry never inherits or resets a budget. An
+  # unclear, timed-out, unavailable or unusable review is never fed back
+  # to the coder and never fails a tree that passed its check.
   defp review(st) do
-    diff = mod(st, :workspace, Workspace).diff(st.ws, tally(:changed))
+    if Config.get(:review_model) == Config.get(:code_model) do
+      record(st, :review, %{verdict: :refused, reason: :same_model})
+      {:awaiting_review, :same_model_review_refused}
+    else
+      diff = mod(st, :workspace, Workspace).diff(st.ws, tally(:changed))
 
-    artifact_note =
-      case tally(:artifacts) do
-        nil ->
-          ""
+      artifact_note =
+        case tally(:artifacts) do
+          nil ->
+            ""
 
-        evidence ->
-          "\n\nTrusted artifact preparation (review generated/deleted outputs and modified build definitions):\n" <>
-            Jason.encode!(
-              Map.take(evidence, [
-                :command,
-                :paths,
-                :deleted_paths,
-                :definitions_changed,
-                :policy_hash
-              ])
-            )
-      end
+          evidence ->
+            "\n\nTrusted artifact preparation (review generated/deleted outputs and modified build definitions):\n" <>
+              Jason.encode!(
+                Map.take(evidence, [
+                  :command,
+                  :paths,
+                  :deleted_paths,
+                  :definitions_changed,
+                  :policy_hash
+                ])
+              )
+        end
 
-    messages = Prompts.reviewer(st.task, diff <> artifact_note, st.head.evidence)
-
-    with {:ok, reply} <- converse(st, messages, nil, :reviewer),
-         {:ok, verdict, text} <- verdict(st, messages, reply) do
-      record(st, :review, %{verdict: verdict_name(verdict), text: text})
-
-      case verdict do
-        :pass ->
-          :ok
-
-        {:fail, findings} ->
-          {:retry, :review, "The review of your change found:\n\n#{findings}"}
-
-        {:unclear, _} ->
-          {:retry, :review_unclear,
-           "The review could not tell whether your change is right. Make it smaller and plainer."}
-      end
+      messages = Prompts.reviewer(st.task, diff <> artifact_note, st.head.evidence)
+      review_passes(st, messages, 1)
     end
   end
 
-  defp verdict(st, messages, reply) do
-    case judged(reply) do
-      {:unclear, _} ->
-        again =
-          messages ++
-            [
-              %{role: "assistant", content: reply.content},
-              %{role: "user", content: "Answer with exactly PASS, or FAIL: and the findings."}
-            ]
+  defp review_passes(st, messages, pass) when pass <= 3 do
+    case converse(st, messages, nil, :reviewer) do
+      {:ok, reply} ->
+        case judged(reply) do
+          :pass ->
+            record(st, :review, %{verdict: :pass, pass: pass, text: reply.content})
+            :ok
 
-        with {:ok, second} <- converse(st, again, nil, :reviewer) do
-          {:ok, judged(second), second.content}
+          {:fail, findings} ->
+            record(st, :review, %{verdict: :fail, pass: pass, text: findings})
+            {:retry, :review, "The review of your change found:\n\n#{findings}"}
+
+          {:unclear, text} ->
+            record(st, :review, %{verdict: :unclear, pass: pass, text: text})
+
+            if pass < 3 do
+              disambiguate(messages, reply)
+              |> then(&review_passes(st, &1, pass + 1))
+            else
+              {:awaiting_review, :review_unclear}
+            end
         end
 
-      verdict ->
-        {:ok, verdict, reply.content}
+      {:review_error, reason} ->
+        record(st, :review, %{verdict: :unavailable, pass: pass, reason: reason})
+        {:awaiting_review, reason}
     end
+  end
+
+  defp disambiguate(messages, reply) do
+    messages ++
+      [
+        %{role: "assistant", content: reply.content},
+        %{role: "user", content: "Answer with exactly PASS, or FAIL: and the findings."}
+      ]
   end
 
   # a review cut off at the length limit may say PASS and mean nothing
   defp judged(%{finish_reason: "length", content: text}), do: {:unclear, text}
   defp judged(reply), do: Prompts.review_verdict(reply.content)
 
-  defp verdict_name(:pass), do: :pass
-  defp verdict_name({kind, _}), do: kind
+  # The review could not produce a verdict the machine may act on. The
+  # checked tree is the work product: pin it to a durable ref before
+  # anything else is released, keep the workspace and branch as evidence,
+  # and close as awaiting_review. No reset, no coder call, no commit —
+  # an unusable review is not a defect to fix.
+  defp awaiting_review(st, reason) do
+    ws = st.ws
+    tree = Lifecycle.tree(ws, tally(:changed))
+    ref = "refs/trailblazer/checkpoints/" <> st.id
+
+    pinned =
+      case git(ws.path, ["update-ref", ref, tree]) do
+        {:ok, _} -> true
+        {:error, _} -> false
+      end
+
+    record(st, :review, %{
+      verdict: :awaiting_review,
+      reason: reason,
+      tree: tree,
+      ref: ref,
+      pinned: pinned
+    })
+
+    note =
+      "The reviewer could not produce a verdict (#{describe(reason)}). " <>
+        "The checked tree is pinned at #{ref} (tree #{tree}); " <>
+        "the worktree and branch are retained; no commit was made and " <>
+        "the coder was not asked again. The frontier reviews; nothing is re-coded."
+
+    report(
+      st,
+      :awaiting_review,
+      note,
+      %{files: tally(:changed), tree: tree, ref: ref, reason: reason, pinned: pinned}
+    )
+    |> Map.put(:awaiting_review, %{ref: ref, tree: tree, reason: reason, pinned: pinned})
+  end
+
+  defp git(dir, args) do
+    case System.cmd("git", ["-c", "core.hooksPath=/dev/null" | args],
+           cd: dir,
+           stderr_to_stdout: true
+         ) do
+      {out, 0} -> {:ok, String.trim(out)}
+      {out, _} -> {:error, String.trim(out)}
+    end
+  end
 
   ## Endings
 
@@ -861,9 +942,16 @@ defmodule Trailblazer.Loop do
     case Lifecycle.get(id) do
       %{"primary" => primary} when is_binary(primary) ->
         result =
-          if report.status == :fixed,
-            do: coordinator.accept(id, Keyword.take(opts, [:check_opts])),
-            else: coordinator.retire(id, [])
+          cond do
+            report.status == :fixed ->
+              coordinator.accept(id, Keyword.take(opts, [:check_opts]))
+
+            report.status == :awaiting_review ->
+              {:ok, %{"stage" => "retained"}}
+
+            true ->
+              coordinator.retire(id, [])
+          end
 
         coordinated(report, result)
 
@@ -887,6 +975,15 @@ defmodule Trailblazer.Loop do
       result: r["result"],
       archive: r["archive"]["path"]
     })
+  end
+
+  defp coordinated(report, {:ok, %{"stage" => "retained"}}) do
+    %{
+      report
+      | summary:
+          report.summary <>
+            " Not integrated; workspace, branch and checked tree retained for frontier review."
+    }
   end
 
   defp coordinated(report, {:ok, %{"stage" => "discarded"} = r}) do

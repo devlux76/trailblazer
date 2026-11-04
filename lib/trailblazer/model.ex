@@ -28,6 +28,8 @@ defmodule Trailblazer.Model do
   def chat(messages, opts \\ []) do
     budget = opts[:reasoning_budget_tokens]
     total = Keyword.get(opts, :max_tokens, Config.get(:code_model_max_tokens))
+    model = Keyword.get(opts, :model, Config.get(:code_model))
+    kind = Keyword.get(opts, :backstop_kind, :model_call)
 
     unless is_nil(budget) or valid_reasoning_budget?(budget, total),
       do: raise(ArgumentError, "reasoning_budget_tokens must be nonnegative and below max_tokens")
@@ -47,8 +49,8 @@ defmodule Trailblazer.Model do
 
       backstop =
         Backstop.arm(
-          :model_call,
-          Config.get(:code_model),
+          kind,
+          model,
           {:ms, Keyword.get(opts, :backstop_ms, Config.get(:backstop_model_ms))},
           fn -> seen_so_far(partials, started) end
         )
@@ -112,8 +114,10 @@ defmodule Trailblazer.Model do
   end
 
   defp do_chat(messages, opts, started, partials) do
+    model = Keyword.get(opts, :model) || Config.get(:code_model)
+
     body = %{
-      model: Config.get(:code_model),
+      model: model,
       messages:
         Enum.map(
           messages,
@@ -168,10 +172,12 @@ defmodule Trailblazer.Model do
       http_body: ""
     }
 
+    url_base = Keyword.get(opts, :model_url) || Config.get(:code_model_url)
+
     req =
       Req.new(
         method: :post,
-        url: String.trim_trailing(Config.get(:code_model_url), "/") <> "/chat/completions",
+        url: String.trim_trailing(url_base, "/") <> "/chat/completions",
         json: body,
         into: &chunk/2,
         retry: false,

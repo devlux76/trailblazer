@@ -358,9 +358,17 @@ asked, only that, and in the way the design says? A failed review uses
 up an attempt like a failed check. This is the defence against the
 first anti-goal: code that passes the tests and breaks the design.
 
-Whether the reviewer is the same model in a fresh context or a
-different one is the builder's call. Claude's default is the same
-model, fresh context, a short reviewer prompt.
+The reviewer is a different model than the coder, on its own router;
+Spark never reviews Spark. The configured reviewer is Nemotron
+(`nemotron-3.5-bolt-e4b:q4`, iGPU router `http://127.0.0.1:8098/v1`).
+Up to three passes, each under its own 15-minute Backstop — a retry
+never inherits or resets a budget. A clear FAIL returns findings to
+the coder; a timed-out, unavailable, malformed or unclear review is
+never fed to the coder and never fails a tree that passed its check:
+the case closes as `awaiting_review`, the checked tree is pinned at
+`refs/trailblazer/checkpoints/<case-id>`, and the workspace and branch
+are retained for a frontier review with compile/run regression evidence
+(Nemotron; Codex, or Claude when Codex authored the change).
 
 ### 7.5 Three attempts, then phone a friend
 
@@ -407,7 +415,7 @@ dossier, not retried.
 Short and in a fixed shape, because a model reads it:
 
 ```
-status      fixed | escalated | unverified | failed
+status      fixed | escalated | unverified | failed | awaiting_review
 summary     two or three sentences
 branch      and commit, when there is one
 files       changed
