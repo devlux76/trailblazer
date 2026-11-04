@@ -120,4 +120,18 @@ defmodule Trailblazer.Loop.ReadBackedToolsTest do
     assert File.read!(Path.join(dir, "a.txt")) == "ONE\nTWO\n"
     assert File.read_link!(Path.join(dir, "alias.txt")) == "a.txt"
   end
+
+  test "empty SEARCH on an existing file refuses append and supplies full-range guidance", %{
+    dir: dir
+  } do
+    original = "one\ntwo\n"
+    File.write!(Path.join(dir, "a.txt"), original)
+    hash = :crypto.hash(:sha256, original) |> Base.encode16(case: :lower)
+    assert {:error, failures} = Edits.apply(dir, [%{path: "a.txt", search: "", replace: "new\n"}])
+    assert File.read!(Path.join(dir, "a.txt")) == original
+    feedback = Edits.feedback(failures)
+    assert feedback =~ "file_exists"
+    assert feedback =~ "sha256: #{hash}"
+    assert feedback =~ "start: 1, end: 2"
+  end
 end

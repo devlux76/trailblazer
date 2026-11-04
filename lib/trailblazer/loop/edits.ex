@@ -483,7 +483,12 @@ defmodule Trailblazer.Loop.Edits do
           {:ok, rel, block.replace}
 
         String.trim(block.search) == "" ->
-          {:ok, rel, ensure_newline(current) <> block.replace}
+          {:ok, offsets} = line_offsets(current)
+
+          hint =
+            "sha256: #{sha256(current)}\nFull-file replacement: start: 1, end: #{length(offsets) - 1}\n"
+
+          {:error, failure(block, :file_exists, hint)}
 
         current == nil ->
           {:error,
@@ -836,6 +841,11 @@ defmodule Trailblazer.Loop.Edits do
   defp failure_note(%{block: b, reason: reason} = f) do
     "\n## #{b.path} (#{reason})\n" <> note_body(f)
   end
+
+  defp note_body(%{reason: :file_exists, closest: hint}),
+    do:
+      "The file already exists. Empty SEARCH only creates a new or empty file; use a digest-bound range to replace existing contents.\n" <>
+        hint <> "\n"
 
   defp note_body(%{reason: :stale_digest, closest: hint}), do: hint <> "\n"
 

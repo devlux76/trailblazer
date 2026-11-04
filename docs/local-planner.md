@@ -100,7 +100,9 @@ All ranges for a file refer to that same version; edits do not renumber later
 ranges. Canonical path aliases share one target. Overlap, duplicate insertion,
 stale versions and mixed edit modes are errors; adjacent ranges and insertion
 at a replacement boundary are valid. Untouched bytes are preserved. Legacy
-SEARCH requires a unique match, with existing whitespace tolerance.
+SEARCH requires a unique match, with existing whitespace tolerance. Empty SEARCH on a nonempty file
+is refused with its digest and full-file range, so a mistaken whole-file update
+cannot silently append duplicate code.
 
 Both forms share atomic preview/application, project checks, independent
 review and candidate verification. Preview writes nothing, including directories.

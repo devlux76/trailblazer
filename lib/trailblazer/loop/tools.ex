@@ -103,7 +103,9 @@ defmodule Trailblazer.Loop.Tools do
                 properties: %{
                   path: string("Repository-relative file path"),
                   search:
-                    string("Exact existing text including whitespace; empty for a new file"),
+                    string(
+                      "Exact existing text including whitespace; empty only for a new or empty file"
+                    ),
                   replace: string("Replacement text, or entire contents of a new file")
                 },
                 required: ["path", "search", "replace"]

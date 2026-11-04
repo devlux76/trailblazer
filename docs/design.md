@@ -342,7 +342,8 @@ Ranges use original coordinates, are grouped by canonical file identity, and
 splice from the end. Stale versions, overlaps, duplicate insertions, mixed
 legacy/range modes on one file and escaping paths are refused. Adjacent ranges
 and boundary insertions are valid. Untouched Unicode, CRLF and final-newline
-bytes stay unchanged. Legacy matching tolerates whitespace differences but
+bytes stay unchanged. Empty SEARCH never appends to a nonempty file; it returns the current digest
+and whole-file range for a local correction. Legacy matching tolerates whitespace differences but
 requires a unique target; it never guesses between repeated matches or repairs
 punctuation automatically. Preview and actual application share the same
 atomic validation and path resolution; preview writes no files or directories.

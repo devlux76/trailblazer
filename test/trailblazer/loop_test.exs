@@ -1514,4 +1514,35 @@ defmodule Trailblazer.LoopTest do
     assert report.attempts == 1
     assert git(repo, ["show", "#{report.commit}:lib/greeting.ex"]) =~ "Hello, "
   end
+
+  test "whole-file append misuse is corrected locally to a digest-bound replacement", %{
+    repo: repo,
+    opts: opts
+  } do
+    replacement = String.replace(@greeting, "Hello ", "Hello, ")
+
+    correction = fn messages, _ ->
+      feedback = List.last(messages)
+      assert feedback.role == "tool"
+      assert feedback.content =~ "file_exists"
+      hash = :crypto.hash(:sha256, @greeting) |> Base.encode16(case: :lower)
+      assert feedback.content =~ hash
+
+      submitted([
+        %{path: "lib/greeting.ex", sha256: hash, start: 1, end: 3, replace: replacement}
+      ])
+    end
+
+    script([
+      submitted([%{path: "lib/greeting.ex", search: "", replace: replacement}]),
+      correction,
+      reply("PASS")
+    ])
+
+    report = Loop.run(task(repo, %{read_rounds: 0}), opts)
+    assert report.status == :fixed
+    assert report.attempts == 1
+    assert report.cost.model_calls == 3
+    assert git(repo, ["show", "#{report.commit}:lib/greeting.ex"]) == replacement
+  end
 end
