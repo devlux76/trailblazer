@@ -190,6 +190,25 @@ host must check the rendered sender AND destination, not just an exit status.
 Settings remain cached at boot; configuration edits require a normal idle
 restart. The coordinator/transport/CLI remain separate implementation stages.
 
+### P1 decision wire shape (codec, not authorization)
+
+`permission_decision` retains the 16,384-byte protocol envelope cap. Its payload
+requires exactly request_id, nonce, binding, evidence_sha256, base, policy_hash,
+source_hash, exception_hash, outcome, reason, exception_ids, commit_paths and
+normalizations. Request id must match the outer envelope; hashes/nonces have
+their host-generated hexadecimal lengths. Outcomes are grant/refuse/escalate/
+amend_policy; reasoning is nonempty and at most 1,000 bytes. Selection ids are
+bounded strings and commit paths are relative, excluding traversal and Git
+administration. Missing/unknown fields, identity/tier/command overrides or
+malformed lists are refused. Semantic selection and source freshness still
+belong to the bound request/consumer.
+
+Codec acceptance does NOT authenticate the decider or grant permission. Bridge
+handling must first verify the real transport peer/direct room against the
+configured and frozen frontier authority, then use the permission CAS. Until
+that integration lands, the existing bridge refuses these as unexpected
+messages. No decision effect or execution is enabled by the codec alone.
+
 ## Proposed authority floor — explicitly subject to operator review
 
 Risk grants cannot change authenticated principal/repository, choose a new

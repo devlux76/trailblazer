@@ -2,7 +2,8 @@ defmodule Trailblazer.Vortex.Protocol do
   @moduledoc "Versioned task messages; authority is local policy, never body-supplied identity."
   alias Trailblazer.Files
   alias Trailblazer.Loop.{Artifacts, Workspace}
-  @types ~w(task accepted report escalation receipt claim returned_fix rejected cancel)
+
+  @types ~w(task accepted report escalation receipt claim returned_fix rejected cancel permission_decision)
   @keys ~w(protocol type id request_id payload)
 
   def decode(text) when is_binary(text) and byte_size(text) <= 16_384 do
@@ -23,7 +24,8 @@ defmodule Trailblazer.Vortex.Protocol do
          true <- message["protocol"] == "trailblazer/1" and message["type"] in @types,
          true <- id?(message["id"]) and id?(message["request_id"]),
          true <- is_map(message["payload"]),
-         true <- payload?(message["type"], message["payload"]) do
+         true <- payload?(message["type"], message["payload"]),
+         true <- permission_bound?(message) do
       {:ok, message}
     else
       _ -> {:error, :bad_envelope}
@@ -145,7 +147,9 @@ defmodule Trailblazer.Vortex.Protocol do
   # Outside a git repository the directory name stands, as before.
   @doc false
   def repo_name(repo) do
-    case System.cmd("git", ["-C", repo, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+    case System.cmd(
+           "git",
+           ["-C", repo, "rev-parse", "--path-format=absolute", "--git-common-dir"],
            stderr_to_stdout: true
          ) do
       {common, 0} ->
@@ -173,7 +177,35 @@ defmodule Trailblazer.Vortex.Protocol do
       end)
   end
 
+  defp payload?("permission_decision", p) do
+    Enum.sort(Map.keys(p)) ==
+      ~w(base binding commit_paths evidence_sha256 exception_hash exception_ids nonce normalizations outcome policy_hash reason request_id source_hash) and
+      is_binary(p["request_id"]) and Regex.match?(~r/\Aperm-[0-9a-f]{32}\z/, p["request_id"]) and
+      hex?(p["nonce"], 32) and hex?(p["base"], 40) and
+      Enum.all?(
+        ~w(binding evidence_sha256 exception_hash policy_hash source_hash),
+        &hex?(p[&1], 64)
+      ) and
+      p["outcome"] in ~w(grant refuse escalate amend_policy) and
+      is_binary(p["reason"]) and String.trim(p["reason"]) != "" and byte_size(p["reason"]) <= 1000 and
+      Enum.all?(~w(exception_ids normalizations), fn key ->
+        is_list(p[key]) and Enum.all?(p[key], &(is_binary(&1) and byte_size(&1) in 1..256))
+      end) and is_list(p["commit_paths"]) and
+      Enum.all?(p["commit_paths"], fn path ->
+        is_binary(path) and path not in ["", "."] and relative?(path) and
+          ".git" not in Path.split(path)
+      end)
+  end
+
   defp payload?(_, _), do: true
+
+  defp permission_bound?(%{"type" => "permission_decision"} = m),
+    do: m["request_id"] == m["payload"]["request_id"]
+
+  defp permission_bound?(_), do: true
+
+  defp hex?(value, size),
+    do: is_binary(value) and byte_size(value) == size and Regex.match?(~r/\A[0-9a-f]+\z/, value)
 
   defp id?(id), do: is_binary(id) and Regex.match?(~r/\A[A-Za-z0-9][A-Za-z0-9:._-]{0,127}\z/, id)
 

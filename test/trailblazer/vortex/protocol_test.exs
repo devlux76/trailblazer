@@ -135,4 +135,54 @@ defmodule Trailblazer.Vortex.ProtocolTest do
       assert {:error, :unauthorized_task} = Protocol.task(forged, policy, "caller")
     end
   end
+
+  test "permission decisions have strict bound data, never body-supplied identity or commands" do
+    id = "perm-" <> String.duplicate("a", 32)
+
+    payload = %{
+      "request_id" => id,
+      "nonce" => String.duplicate("b", 32),
+      "binding" => String.duplicate("c", 64),
+      "evidence_sha256" => String.duplicate("d", 64),
+      "base" => String.duplicate("e", 40),
+      "policy_hash" => String.duplicate("f", 64),
+      "source_hash" => String.duplicate("1", 64),
+      "exception_hash" => String.duplicate("2", 64),
+      "outcome" => "grant",
+      "reason" => "Only the recorded directory metadata changes.",
+      "exception_ids" => ["dir-mode"],
+      "commit_paths" => ["dist/bundle.js"],
+      "normalizations" => []
+    }
+
+    message = Protocol.envelope("permission_decision", "decision-1", id, payload)
+    assert {:ok, ^message} = Protocol.decode(Jason.encode!(message))
+
+    for patch <- [
+          %{"from" => "operator"},
+          %{"peer" => "frontier"},
+          %{"tier" => "local"},
+          %{"command" => "execute"},
+          %{"outcome" => "allow_everything"},
+          %{"nonce" => "bad"},
+          %{"request_id" => "different-request"},
+          %{"commit_paths" => ["../outside"]},
+          %{"commit_paths" => [".git/config"]},
+          %{"normalizations" => "execute"},
+          %{"reason" => ""}
+        ] do
+      changed = %{message | "payload" => Map.merge(payload, patch)}
+      assert {:error, :bad_envelope} = Protocol.decode(Jason.encode!(changed))
+    end
+
+    for field <- Map.keys(payload) do
+      changed = %{message | "payload" => Map.delete(payload, field)}
+      assert {:error, :bad_envelope} = Protocol.decode(Jason.encode!(changed))
+    end
+
+    for outcome <- ~w(refuse escalate amend_policy) do
+      changed = %{message | "payload" => %{payload | "outcome" => outcome}}
+      assert {:ok, ^changed} = Protocol.decode(Jason.encode!(changed))
+    end
+  end
 end
