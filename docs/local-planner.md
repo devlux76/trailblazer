@@ -86,13 +86,36 @@ issue: trailblazer:4cc63df.
 
 ## Coding and verification contract
 
-The coding worker exposes `submit_edits` alongside its read/search tools. It
-accepts a nonempty array of repository-relative `path`, exact `search`, and
-`replace` strings; an empty search creates a file. At the reading budget, only
-this edit tool remains and the request explicitly selects it. Legacy Aider text
-blocks remain accepted, but are not the required native editing interface.
-Both formats use the same atomic edit application, project check, fresh review,
-and independently checked candidate path. Tool submission alone is not success.
+The coding worker exposes `submit_edits` alongside its retrieval tools.
+A nonempty `blocks` array accepts two strict shapes:
+
+- Legacy: `{path, search, replace}`, all strings; empty search creates a file.
+- Read-backed: `{path, sha256, start, end, replace}`; digest is lowercase
+  64-hex from a read of the full original file bytes, and line numbers are
+  integers. `start >= 1`; inclusive `end` may equal `start - 1` to insert.
+  EOF insertion uses `start = lines + 1`. Ranges require an existing file.
+
+The read result includes path, digest, total lines and bounded numbered source.
+All ranges for a file refer to that same version; edits do not renumber later
+ranges. Canonical path aliases share one target. Overlap, duplicate insertion,
+stale versions and mixed edit modes are errors; adjacent ranges and insertion
+at a replacement boundary are valid. Untouched bytes are preserved. Legacy
+SEARCH requires a unique match, with existing whitespace tolerance.
+
+Both forms share atomic preview/application, project checks, independent
+review and candidate verification. Preview writes nothing, including directories.
+At the read budget, schemas stay present for prefix caching; the host permits
+only submission. The DSpark backend accepts `tool_choice: "required"`; a named
+function-choice object is unsupported and must not be relied on.
+
+For native calls, a missed batch or malformed/mixed/forbidden call gets a compact
+tool result in the same conversation. Its original arguments remain in history;
+the model resubmits the complete corrected batch. Two correction calls are
+allowed, then `edit_repair_exhausted` stops and retains work/evidence for review.
+No full coder retry or workspace reset is caused by that exhaustion.
+A zero-read miss with no recoverable source stops immediately. Error feedback
+does not repeat replacement code and bounds the complete feedback to 12,000 characters.
+Tool submission alone is not success. Legacy Aider text remains supported.
 
 A complete whole-message JSON edit array or `{ "blocks": [...] }` object,
 optionally inside one `json` fence, also uses that exact validator and pipeline.
@@ -110,7 +133,7 @@ Unambiguous Markdown verdict headings use the existing exact PASS/FAIL rules.
 
 An explicit assignment can set `planner assign ... --read-rounds N` (0 through
 6, default 6). The validated task field survives admission and persisted case
-recovery. Zero exposes and forces only `submit_edits` from the first coder call;
+recovery. Zero permits only `submit_edits` from the first coder call while retaining stable schemas;
 use it when the supplied implementation plan resolves every needed edit. Other
 tasks can retain a small read budget. Repeating an existing assignment with a
 different budget is refused; reconcile it before starting a fresh task. Reading,
@@ -119,7 +142,7 @@ output and wall-clock budgets are separate controls.
 `--reasoning-tokens N` supplies an optional per-task thinking limit to the
 backend's native `reasoning_budget_tokens` field. It must be nonnegative and
 below the total response cap, reserving room for an answer or edit submission.
-Omitting it preserves the backend default. It leaves high reasoning effort and
+Omitting it preserves the backend default. The supervised audit queue explicitly uses 2,048 reasoning tokens within its 16,384 output cap (operator update 2026-11-04). It leaves high reasoning effort and
 model-card samplers intact. A reasoning-only response cut off at the total token
 limit is recorded as output exhaustion and stops the case without repeating the
 same budget; partial reasoning remains available for diagnosis.

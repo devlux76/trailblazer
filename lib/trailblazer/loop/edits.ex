@@ -164,8 +164,9 @@ defmodule Trailblazer.Loop.Edits do
     files = Keyword.get(opts, :files, [])
     shown = Keyword.get(opts, :shown, [])
     blocks = Enum.map(blocks, &normalize/1)
+    blocks = Enum.map(blocks, &resolve(&1, worktree, files, shown))
 
-    case split_by_kind(blocks) do
+    case split_by_kind(worktree, blocks) do
       {:error, failures} ->
         {:error, failures}
 
@@ -180,9 +181,7 @@ defmodule Trailblazer.Loop.Edits do
     end
   end
 
-  defp apply(worktree, blocks, contents, files, shown, opts) do
-    blocks = Enum.map(blocks, &resolve(&1, worktree, files, shown))
-
+  defp apply(worktree, blocks, contents, _files, _shown, opts) do
     {contents, failures} =
       Enum.reduce(blocks, {contents, []}, fn block, {contents, failures} ->
         case edit(worktree, block, contents) do
@@ -215,10 +214,10 @@ defmodule Trailblazer.Loop.Edits do
 
   defp normalize(block), do: block
 
-  defp split_by_kind(blocks) do
+  defp split_by_kind(worktree, blocks) do
     {range_blocks, legacy_blocks, unknown_blocks} =
       Enum.reduce(blocks, {[], [], []}, fn block, {r, l, u} ->
-        case block.type do
+        case Map.get(block, :type) do
           :range -> {[block | r], l, u}
           :search -> {r, [block | l], u}
           _ -> {r, l, [block | u]}
@@ -233,10 +232,16 @@ defmodule Trailblazer.Loop.Edits do
 
       true ->
         range_paths =
-          blocks |> Enum.filter(&(&1.type == :range)) |> Enum.map(& &1.path) |> MapSet.new()
+          blocks
+          |> Enum.filter(&(&1.type == :range))
+          |> Enum.map(&target_key(worktree, &1.path))
+          |> MapSet.new()
 
         search_paths =
-          blocks |> Enum.filter(&(&1.type == :search)) |> Enum.map(& &1.path) |> MapSet.new()
+          blocks
+          |> Enum.filter(&(&1.type == :search))
+          |> Enum.map(&target_key(worktree, &1.path))
+          |> MapSet.new()
 
         case MapSet.intersection(range_paths, search_paths) |> Enum.to_list() do
           [] ->
@@ -251,15 +256,24 @@ defmodule Trailblazer.Loop.Edits do
     end
   end
 
+  defp target_key(worktree, path) do
+    full = Path.expand(path, worktree)
+
+    case Files.canonical_path(full) do
+      {:ok, canonical} -> canonical
+      _ -> full
+    end
+  end
+
   ## Read-backed range edits
 
   defp apply_ranges(_worktree, []), do: {:ok, %{}}
 
   defp apply_ranges(worktree, blocks) do
     blocks
-    |> Enum.group_by(& &1.path)
-    |> Enum.reduce_while({:ok, %{}}, fn {path, group}, {:ok, contents} ->
-      case apply_range_group(worktree, path, group) do
+    |> Enum.group_by(&target_key(worktree, &1.path))
+    |> Enum.reduce_while({:ok, %{}}, fn {_, group}, {:ok, contents} ->
+      case apply_range_group(worktree, hd(group).path, group) do
         {:ok, rel, text} -> {:cont, {:ok, Map.put(contents, rel, text)}}
         {:error, failures} -> {:halt, {:error, failures}}
       end
@@ -277,9 +291,11 @@ defmodule Trailblazer.Loop.Edits do
              {:ok, offsets} <- line_offsets(text),
              :ok <- validate_ranges(blocks, length(offsets) - 1, text),
              :ok <- check_spans(blocks, offsets) do
+          rel = Path.relative_to(target_key(worktree, rel), target_key(worktree, "."))
           {:ok, rel, splice_all(text, blocks, offsets)}
         else
           {:error, :no_such_file} -> {:error, Enum.map(blocks, &failure(&1, :no_such_file, ""))}
+          {:error, :unreadable} -> {:error, Enum.map(blocks, &failure(&1, :unreadable, ""))}
           {:error, failures} -> {:error, failures}
         end
     end
@@ -299,19 +315,62 @@ defmodule Trailblazer.Loop.Edits do
 
     case mismatched do
       [] -> :ok
-      _ -> {:error, Enum.map(mismatched, &failure(&1, :stale_digest, ""))}
+      _ -> {:error, Enum.map(mismatched, &failure(&1, :stale_digest, digest_hint(&1, text, sha)))}
+    end
+  end
+
+  # The excerpt is the exact current source at the failing range (bounded),
+  # or just the digest when the window is too large to show.
+  defp digest_hint(block, text, sha) do
+    hint = "current sha256: #{sha}\n"
+
+    case excerpt(text, block.start, max(block.start, block.end)) do
+      nil -> hint
+      lines -> hint <> lines
+    end
+  end
+
+  defp excerpt(text, first, last) do
+    if not (is_integer(first) and is_integer(last)) do
+      nil
+    else
+      all =
+        text
+        |> String.split(~r/\r?\n/)
+        |> then(fn l -> if List.last(l) == "", do: Enum.drop(l, -1), else: l end)
+
+      total = length(all)
+      from = max(first - 2, 1)
+      to = min(last + 2, total)
+
+      if total == 0 or to - from + 1 > 80 or from > to do
+        nil
+      else
+        all
+        |> Enum.with_index(1)
+        |> Enum.slice((from - 1)..(to - 1)//1)
+        |> Enum.map_join("\n", fn {line, n} -> "#{n}| #{line}" end)
+      end
     end
   end
 
   defp sha256(text), do: :crypto.hash(:sha256, text) |> Base.encode16(case: :lower)
 
   defp line_offsets(text) do
-    if text == "" do
-      {:ok, [0]}
-    else
-      pieces = String.split(text, ~r/(?<=\n)/)
-      offsets = pieces |> Enum.map(&byte_size/1) |> Enum.scan(0, fn size, acc -> acc + size end)
-      {:ok, [0 | offsets]}
+    ends = for {index, 1} <- :binary.matches(text, "\n"), do: index + 1
+
+    case ends do
+      [] when text == "" ->
+        {:ok, [0]}
+
+      _ ->
+        offsets = [0 | ends]
+
+        if String.ends_with?(text, "\n") do
+          {:ok, offsets}
+        else
+          {:ok, offsets ++ [byte_size(text)]}
+        end
     end
   end
 
@@ -345,57 +404,75 @@ defmodule Trailblazer.Loop.Edits do
     end)
   end
 
-  # Sort by byte span ascending; reject interleaving spans and duplicate insertions.
+  # Reject overlapping replacements, insertions strictly inside a replaced
+  # span and duplicate insertions at one position. Adjacent disjoint
+  # replacements and boundary insertions are valid; same-start operations are
+  # sorted deterministically (insertions first, then lowest end).
   defp check_spans(blocks, offsets) do
-    sorted = Enum.sort_by(blocks, fn b -> {b.start, if(b.end == b.start - 1, do: 1, else: 0)} end)
+    span = fn b -> {Enum.at(offsets, b.start - 1), Enum.at(offsets, b.end)} end
+    insertion? = fn b -> b.end == b.start - 1 end
 
-    Enum.reduce_while(sorted, {:ok, 0, MapSet.new()}, fn b, {:ok, max_end, insert_points} ->
-      a = Enum.at(offsets, b.start - 1)
-      b_end = Enum.at(offsets, b.end)
+    sorted =
+      Enum.sort_by(blocks, fn b ->
+        {Enum.at(offsets, b.start - 1), if(insertion?.(b), do: 0, else: 1), b.end}
+      end)
+
+    Enum.reduce_while(sorted, {:ok, 0, [], MapSet.new()}, fn b, {:ok, max_end, spans, inserts} ->
+      {s, e} = span.(b)
 
       cond do
-        a < max_end ->
-          reason = if b.end == b.start - 1, do: :duplicate_insertion, else: :overlapping_ranges
-          {:halt, {:error, [failure(b, reason, "")]}}
+        insertion?.(b) ->
+          cond do
+            Enum.any?(spans, fn {rs, re} -> rs < s and s < re end) ->
+              {:halt, {:error, [failure(b, :overlapping_ranges, "")]}}
 
-        b.end == b.start - 1 and MapSet.member?(insert_points, a) ->
-          {:halt, {:error, [failure(b, :duplicate_insertion, "")]}}
+            MapSet.member?(inserts, s) ->
+              {:halt, {:error, [failure(b, :duplicate_insertion, "")]}}
+
+            true ->
+              {:cont, {:ok, max_end, spans, MapSet.put(inserts, s)}}
+          end
+
+        s < max_end ->
+          {:halt, {:error, [failure(b, :overlapping_ranges, "")]}}
 
         true ->
-          insert_points =
-            if b.end == b.start - 1, do: MapSet.put(insert_points, a), else: insert_points
-
-          {:cont, {:ok, max(max_end, b_end), insert_points}}
+          {:cont, {:ok, max(max_end, e), [{s, e} | spans], inserts}}
       end
     end)
     |> case do
-      {:ok, _, _} -> :ok
+      {:ok, _, _, _} -> :ok
       {:error, failures} -> {:error, failures}
     end
   end
 
   defp splice_all(text, blocks, offsets) do
-    sorted = Enum.sort_by(blocks, & &1.start, :desc)
+    # Descending from the end in original-byte coordinates: splices already
+    # applied sit above the current position, so original offsets stay valid
+    # and no shift may accumulate. At the same start, a consuming replacement is
+    # applied before an insertion so the insertion lands before the replaced
+    # bytes, never inside them.
+    sorted =
+      Enum.sort_by(
+        blocks,
+        fn b ->
+          {b.start, if(b.end == b.start - 1, do: 0, else: 1)}
+        end,
+        :desc
+      )
 
-    Enum.reduce(sorted, {text, 0}, fn b, {acc, shift} ->
-      a = Enum.at(offsets, b.start - 1) + shift
+    Enum.reduce(sorted, text, fn b, acc ->
+      a = Enum.at(offsets, b.start - 1)
 
       case b.end == b.start - 1 do
         true ->
-          b_end = a
-          _ = b_end
-
-          {binary_part(acc, 0, a) <> b.replace <> binary_part(acc, a, byte_size(acc) - a),
-           shift + byte_size(b.replace)}
+          binary_part(acc, 0, a) <> b.replace <> binary_part(acc, a, byte_size(acc) - a)
 
         false ->
-          b_end = Enum.at(offsets, b.end) + shift
-
-          {binary_part(acc, 0, a) <> b.replace <> binary_part(acc, b_end, byte_size(acc) - b_end),
-           shift + byte_size(b.replace) - (b_end - a)}
+          b_end = Enum.at(offsets, b.end)
+          binary_part(acc, 0, a) <> b.replace <> binary_part(acc, b_end, byte_size(acc) - b_end)
       end
     end)
-    |> elem(0)
   end
 
   defp edit(worktree, block, contents) do
@@ -428,6 +505,11 @@ defmodule Trailblazer.Loop.Edits do
   end
 
   ## File names (Aider's find_filename, after the block is parsed)
+
+  defp resolve(%{type: :range} = block, _worktree, _files, _shown), do: block
+
+  defp resolve(%{} = block, _worktree, _files, _shown) when not is_map_key(block, :search),
+    do: block
 
   defp resolve(%{search: search} = block, worktree, files, shown) do
     cond do
@@ -613,9 +695,15 @@ defmodule Trailblazer.Loop.Edits do
   defp perfect_replace(whole_lines, part_lines, replace_lines, out_lines) do
     n = length(part_lines)
 
-    Enum.find_value(0..max(length(whole_lines) - n, -1)//1, fn i ->
-      if Enum.slice(whole_lines, i, n) == part_lines, do: splice(out_lines, i, n, replace_lines)
-    end)
+    matches =
+      0..max(length(whole_lines) - n, -1)//1
+      |> Stream.filter(&(Enum.slice(whole_lines, &1, n) == part_lines))
+      |> Enum.take(2)
+
+    case matches do
+      [i] -> splice(out_lines, i, n, replace_lines)
+      _ -> nil
+    end
   end
 
   defp replace_part_with_missing_leading_whitespace(_whole, [], _replace, _out), do: nil
@@ -637,18 +725,21 @@ defmodule Trailblazer.Loop.Edits do
 
     n = length(part_lines)
 
-    Enum.find_value(0..max(length(whole_lines) - n, -1)//1, fn i ->
-      chunk = Enum.slice(whole_lines, i, n)
+    matches =
+      0..max(length(whole_lines) - n, -1)//1
+      |> Stream.map(fn i ->
+        case match_but_for_leading_whitespace(Enum.slice(whole_lines, i, n), part_lines) do
+          nil -> nil
+          add -> {i, Enum.map(replace_lines, &if(String.trim(&1) != "", do: add <> &1, else: &1))}
+        end
+      end)
+      |> Stream.reject(&is_nil/1)
+      |> Enum.take(2)
 
-      case match_but_for_leading_whitespace(chunk, part_lines) do
-        nil ->
-          nil
-
-        add ->
-          replaced = Enum.map(replace_lines, &if(String.trim(&1) != "", do: add <> &1, else: &1))
-          splice(out_lines, i, n, replaced)
-      end
-    end)
+    case matches do
+      [{i, replaced}] -> splice(out_lines, i, n, replaced)
+      _ -> nil
+    end
   end
 
   defp indent(line), do: String.length(line) - String.length(String.trim_leading(line))
@@ -717,58 +808,82 @@ defmodule Trailblazer.Loop.Edits do
 
   ## Feedback (Aider's apply_edits failure message and find_similar_lines)
 
-  @doc "What the model is told when blocks missed, in Aider's words."
+  @doc "What the model is told when blocks missed, compact and without re-printing the batch."
   @spec feedback([failure()]) :: String.t()
   def feedback(failures) do
-    blocks = if length(failures) == 1, do: "block", else: "blocks"
+    header =
+      case failures do
+        [_] -> "1 edit block failed to match; no file was changed.\n"
+        _ -> "#{length(failures)} edit blocks failed to match; no file was changed.\n"
+      end
+
+    body = Enum.map_join(failures, "", &failure_note/1)
+
+    footer =
+      "\nResubmit the complete corrected batch. Each SEARCH must identify one location; use more context or a read-backed range for repeated text.\n"
+
+    budget = 12_000 - String.length(header <> footer)
+    notice = "\n... feedback truncated; use a smaller range.\n"
 
     body =
-      Enum.map_join(failures, "", fn %{block: b} = f ->
-        """
+      if String.length(body) > budget,
+        do: String.slice(body, 0, budget - String.length(notice)) <> notice,
+        else: body
 
-        ## SearchReplaceNoExactMatch: This SEARCH block failed to exactly match lines in #{b.path}
-        <<<<<<< SEARCH
-        #{b.search}=======
-        #{b.replace}>>>>>>> REPLACE
-
-        """ <> reason_note(f) <> closest_note(f) <> already_note(f)
-      end)
-
-    "# #{length(failures)} SEARCH/REPLACE #{blocks} failed to match!\n" <>
-      body <>
-      "The SEARCH section must exactly match an existing block of lines including all white" <>
-      " space, comments, indentation, docstrings, etc\n" <>
-      "No file was changed: send every block again, the ones that matched included.\n"
+    header <> body <> footer
   end
 
-  defp reason_note(%{reason: :outside_worktree, block: b}),
-    do: "#{b.path} is outside the repository; edit only files inside it.\n\n"
-
-  defp reason_note(%{reason: :no_such_file, block: b, closest: ""}),
-    do: "#{b.path} does not exist. To create it, leave the SEARCH section empty.\n\n"
-
-  defp reason_note(%{reason: :no_such_file, block: b, closest: names}),
-    do: "#{b.path} does not exist. Files with that name:\n#{names}\nName one of them in full.\n\n"
-
-  defp reason_note(_failure), do: ""
-
-  defp closest_note(%{closest: ""}), do: ""
-  defp closest_note(%{reason: :no_such_file}), do: ""
-
-  defp closest_note(%{closest: closest, block: b}),
-    do:
-      "Did you mean to match some of these actual lines from #{b.path}?\n\n#{@fence}\n#{closest}\n#{@fence}\n\n"
-
-  defp already_note(%{block: %{replace: ""}}), do: ""
-
-  defp already_note(%{block: b, reason: :no_match} = f) do
-    if f[:already],
-      do:
-        "Are you sure you need this SEARCH/REPLACE block?\nThe REPLACE lines are already in #{b.path}!\n\n",
-      else: ""
+  defp failure_note(%{block: b, reason: reason} = f) do
+    "\n## #{b.path} (#{reason})\n" <> note_body(f)
   end
 
-  defp already_note(_failure), do: ""
+  defp note_body(%{reason: :stale_digest, closest: hint}), do: hint <> "\n"
+
+  defp note_body(%{reason: :invalid_range, closest: message}) when message != "",
+    do: message <> "\n"
+
+  defp note_body(%{reason: :invalid_range}),
+    do: "The range is not valid for this file.\n"
+
+  defp note_body(%{reason: :overlapping_ranges}),
+    do: "Ranges in this file overlap; make them disjoint (adjacent is allowed).\n"
+
+  defp note_body(%{reason: :duplicate_insertion}),
+    do: "Two inserts target the same position; keep one or merge them.\n"
+
+  defp note_body(%{reason: :mixed_edits}),
+    do: "This file has both legacy and range blocks; use exactly one kind per file.\n"
+
+  defp note_body(%{reason: :unreadable}),
+    do: "The path is not a readable regular file.\n"
+
+  defp note_body(%{reason: :no_such_file, closest: names}) when names != "",
+    do: "No such file. Files with that name:\n#{names}\nName one of them in full.\n"
+
+  defp note_body(%{reason: :no_such_file}),
+    do: "No such file; leave the search empty to create it (legacy) or fix the path.\n"
+
+  defp note_body(%{reason: :outside_worktree}),
+    do: "This path is outside the repository; edit only files inside it.\n"
+
+  defp note_body(%{reason: :no_match, block: b, closest: closest} = f) do
+    already =
+      if f[:already],
+        do:
+          "Are you sure you need this SEARCH/REPLACE block? The REPLACE lines are already in #{b.path}!\n\n",
+        else: ""
+
+    did =
+      if closest != "",
+        do:
+          "Did you mean to match these exact lines in #{b.path}?\n\n" <>
+            "#{@fence}\n#{closest}\n#{@fence}\n\n",
+        else: ""
+
+    already <> did
+  end
+
+  defp note_body(_failure), do: ""
 
   defp already?(_current, ""), do: false
   defp already?(current, replace), do: String.contains?(current, String.trim(replace))

@@ -424,69 +424,76 @@ defmodule Trailblazer.Loop do
 
   # One exchange: the task may reduce the default reading budget,
   # then must submit edits through the remaining edit tool.
-  defp converse(st, messages, tools, role, round \\ 1, corr \\ 0) do
-    {messages, submit_only} =
-      cond do
-        tools == nil -> {messages, false}
-        round <= st.task.read_rounds -> {messages, false}
-        true ->
-          {messages ++
-             [
-               %{
-                 role: "user",
-                 content:
-                   "Reading is complete. Call submit_edits now with all path/search/replace blocks. No more read or search calls. Call it alone."
-               }
-             ], true}
+  defp converse(st, messages, tools, role, round \\ 1, corrections \\ 0) do
+    submit_only = tools != nil and (round > st.task.read_rounds or corrections > 0)
+
+    messages =
+      if submit_only and corrections == 0 do
+        messages ++
+          [
+            %{
+              role: "user",
+              content:
+                "Reading is complete. Call submit_edits alone with the complete batch. No more read or search calls."
+            }
+          ]
+      else
+        messages
       end
 
     case chat(st, messages, tools, role, submit_only) do
       {:ok, %{tool_calls: [_ | _] = calls} = reply} when tools != nil ->
-        native_submit(st, messages, tools, role, round, reply, calls, corr, submit_only)
+        submissions = Enum.filter(calls, &(&1.name == "submit_edits"))
+
+        cond do
+          length(submissions) == 1 and length(calls) == 1 ->
+            case Tools.edit_blocks(hd(submissions).arguments) do
+              {:ok, blocks} ->
+                preview_edits(st, messages, tools, role, round, reply, blocks, corrections)
+
+              {:error, reason} ->
+                correct_edits(st, messages, tools, role, round, reply, corrections, reason)
+            end
+
+          submissions != [] ->
+            correct_edits(
+              st,
+              messages,
+              tools,
+              role,
+              round,
+              reply,
+              corrections,
+              "Call submit_edits alone, without read/search calls, with the complete batch."
+            )
+
+          submit_only ->
+            correct_edits(
+              st,
+              messages,
+              tools,
+              role,
+              round,
+              reply,
+              corrections,
+              "Reading is complete. Only submit_edits may be called now."
+            )
+
+          true ->
+            answers = Enum.map(calls, &answer_tool(st, &1))
+
+            converse(
+              st,
+              messages ++ [assistant_message(reply) | answers],
+              tools,
+              role,
+              round + 1,
+              corrections
+            )
+        end
 
       other ->
         other
-    end
-  end
-
-  # Native submit_edits path. Previously the read schemas were deleted from the
-  # tools list in the edit-only phase and the model forced to submit_edits by a
-  # tool choice the deployed router does not support; now the tools list stays
-  # identical and the host refuses reads itself. The batch is previewed against
-  # the worktree before returning to attempt(): on a miss the original tool
-  # call is answered with the compact matcher feedback and the model asked for
-  # a corrected complete batch — never a retry of the trail or a workspace reset.
-  defp native_submit(st, messages, tools, role, round, reply, calls, corr, submit_only) do
-    submissions = Enum.filter(calls, &(&1.name == "submit_edits"))
-    forbidden = Enum.reject(calls, &(&1.name == "submit_edits"))
-
-    cond do
-      submit_only and submissions == [] ->
-        if round > st.task.read_rounds + 1 do
-          {:retry, :no_blocks, "Reading budget exhausted. Call submit_edits with the changes."}
-        else
-          assistant = assistant_message(reply)
-          answers = Enum.map(forbidden, &refusal_tool/1)
-          converse(st, messages ++ [assistant | answers], tools, role, round, corr)
-        end
-
-      length(submissions) == 1 and length(calls) == 1 ->
-        case Tools.edit_blocks(hd(submissions).arguments) do
-          {:ok, blocks} -> preview_correction(st, messages, tools, role, round, reply, hd(submissions), blocks, corr)
-          {:error, reason} -> {:retry, :unparsed, reason}
-        end
-
-      submissions != [] ->
-        {:retry, :unparsed,
-         "Call submit_edits alone, without read/search calls, with all changes."}
-
-      round > st.task.read_rounds ->
-        {:retry, :no_blocks, "Reading budget exhausted. Call submit_edits with the changes."}
-
-      true ->
-        assistant = assistant_message(reply)
-        answers = Enum.map(calls, &answer_tool(st, &1))
-        converse(st, messages ++ [assistant | answers], tools, role, round + 1, corr)
     end
   end
 
@@ -496,42 +503,108 @@ defmodule Trailblazer.Loop do
       content: reply.content,
       tool_calls:
         Enum.map(reply.tool_calls, fn call ->
-          %{id: call.id, type: "function", function: %{name: call.name, arguments: call.arguments}}
+          %{
+            id: call.id,
+            type: "function",
+            function: %{name: call.name, arguments: call.arguments}
+          }
         end)
     }
   end
 
-  defp refusal_tool(call) do
-    %{role: "tool", tool_call_id: call.id, content: "Reading is complete. Only submit_edits may be called now."}
-  end
+  defp preview_edits(st, messages, tools, role, round, reply, blocks, corrections) do
+    tally(:previous_edits, blocks)
+    record(st, :edit, %{status: :preview, paths: Enum.map(blocks, & &1.path)})
 
-  defp preview_correction(st, messages, tools, role, round, reply, call, blocks, corr) do
-    record(st, :edit, %{status: :preview, blocks: Enum.map(blocks, & &1.path)})
-
-    case mod(st, :edits, Edits).apply(st.ws.path, blocks, dry_run: true) do
+    case Edits.apply(st.ws.path, blocks, [dry_run: true] ++ edit_options(st)) do
       {:ok, _} ->
         record(st, :edit, %{status: :preview_ok, blocks: length(blocks)})
         {:ok, Map.put(reply, :edit_blocks, blocks)}
 
       {:error, failures} ->
-        record(st, :edit, %{status: :preview_missed, correction: corr + 1})
-        feedback = Edits.feedback(failures)
-        answer = %{role: "tool", tool_call_id: call.id, content: feedback}
-        corrections = corr + 1
+        record(st, :edit, %{
+          status: :preview_missed,
+          blocks: blocks,
+          failures: failures,
+          correction: corrections
+        })
 
-        if corrections > 2 do
-          record(st, :edit, %{status: :edit_repair_exhausted, corrections: corrections})
-
-          report =
-            report(st, :failed,
-              "Edit repair exhausted: three submissions failed to match their targets; no file was written. The checked tree and worktree are preserved for frontier review."
+        case missing_source(st, failures) do
+          [] ->
+            correct_edits(
+              st,
+              messages,
+              tools,
+              role,
+              round,
+              reply,
+              corrections,
+              Edits.feedback(failures)
             )
 
-          {:stop, report}
-        else
-          converse(st, messages ++ [assistant_message(reply) | [answer]], tools, role, round, corrections)
+          paths ->
+            source_missing(st, paths)
         end
     end
+  end
+
+  defp correct_edits(st, messages, tools, role, round, reply, corrections, feedback) do
+    answers =
+      Enum.map(reply.tool_calls, fn call ->
+        record(st, :tool_call, %{
+          id: call.id,
+          name: call.name,
+          arguments: call.arguments,
+          result: feedback,
+          status: :refused
+        })
+
+        %{role: "tool", tool_call_id: call.id, content: feedback}
+      end)
+
+    if corrections >= 2 do
+      record(st, :edit, %{status: :edit_repair_exhausted, submissions: corrections + 1})
+
+      {:stop,
+       report(
+         st,
+         :failed,
+         "edit_repair_exhausted: three unusable submissions; no partial batch was written. Worktree and case evidence retained.",
+         %{attempts: length(st.failures) + 1, reason: :edit_repair_exhausted}
+       )}
+    else
+      converse(
+        st,
+        messages ++ [assistant_message(reply) | answers],
+        tools,
+        role,
+        round,
+        corrections + 1
+      )
+    end
+  end
+
+  defp edit_options(st),
+    do: [files: tracked(st.ws.path), shown: Map.get(st.task, :files, [])]
+
+  defp missing_source(%{task: %{read_rounds: 0}}, failures) do
+    for f <- failures,
+        f.reason in [:no_such_file, :no_match] and f.closest == "",
+        do: f.block.path
+  end
+
+  defp missing_source(_st, _failures), do: []
+
+  defp source_missing(st, paths) do
+    record(st, :error, %{stage: :edits, reason: :source_context_missing, paths: paths})
+
+    {:stop,
+     report(
+       st,
+       :failed,
+       "source_context_missing: #{Enum.join(paths, ", ")}. Supply literal current anchors or authorize reads on a fresh admission; no zero-read retry was run.",
+       %{attempts: length(st.failures) + 1, reason: :source_context_missing}
+     )}
   end
 
   defp answer_tool(st, call) do
@@ -548,7 +621,7 @@ defmodule Trailblazer.Loop do
     %{role: "tool", tool_call_id: call.id, content: result}
   end
 
-  defp chat(st, messages, tools, role, submit_only \\ false) do
+  defp chat(st, messages, tools, role, submit_only) do
     record(st, :prompt, %{role: role, messages: messages, tools: tools != nil})
 
     # a call that fails part way keeps what it had (E5)
@@ -1006,7 +1079,8 @@ defmodule Trailblazer.Loop do
             report.status == :fixed ->
               coordinator.accept(id, Keyword.take(opts, [:check_opts]))
 
-            report.status == :awaiting_review ->
+            report.status == :awaiting_review or
+                report[:reason] in [:edit_repair_exhausted, :source_context_missing] ->
               {:ok, %{"stage" => "retained"}}
 
             true ->
@@ -1169,6 +1243,7 @@ defmodule Trailblazer.Loop do
       case: st.id
     }
 
+    report = Map.merge(report, Map.take(extra, [:reason]))
     if extra[:dossier], do: Map.put(report, :dossier, extra[:dossier]), else: report
   end
 

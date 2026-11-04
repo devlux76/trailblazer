@@ -330,29 +330,50 @@ model's reasoning is recorded (§8) but never sent back to it.
 
 ### 7.3 One attempt
 
-The model is given the system prompt, the trail, a named-file manifest and
-the request. It submits native `submit_edits` SEARCH/REPLACE blocks; the
-validated legacy text/whole-message JSON forms are also accepted (see
-`local-planner.md`). It may first
-call the core's questions (§6.7) when the trail is not enough; each call
-and its answer is part of the attempt. Edits are applied with the
-tolerant matcher ported from Aider (§9). A block that does not apply
-comes back to the model with the closest lines in the file. The complete
-submitted block set is retained in retry feedback, including blocks from a
-missed atomic submission (which writes no files). A zero-read (`read_rounds=0`)
-miss without a source excerpt, or a missing target without filename candidates, stops with
-`source_context_missing` before another model call. Planner must supply literal
-current anchors or authorize discovery on a fresh admission; the tool does not
-widen the read budget. See [retry-context design](superpowers/specs/2026-11-03-retry-context-design.md).
+The model receives the system prompt, trail, named-file manifest and request.
+Native `submit_edits` accepts either SEARCH/REPLACE blocks or read-backed line
+ranges. The legacy text and whole-message JSON forms remain accepted (see
+`local-planner.md`). Reading returns the full original file's SHA-256 and
+numbered source. A range identifies that version and inclusive 1-based lines;
+it replaces only those original bytes, without retyping the old source.
+EOF/before-line insertions use `end = start - 1`.
 
-An attempt **fails** when its edits do not apply, the check fails, or
-the review (§7.4) finds a problem. The next attempt is given what
-failed: the check's output (its last 4,000 characters) or the review's
-findings.
+Ranges use original coordinates, are grouped by canonical file identity, and
+splice from the end. Stale versions, overlaps, duplicate insertions, mixed
+legacy/range modes on one file and escaping paths are refused. Adjacent ranges
+and boundary insertions are valid. Untouched Unicode, CRLF and final-newline
+bytes stay unchanged. Legacy matching tolerates whitespace differences but
+requires a unique target; it never guesses between repeated matches or repairs
+punctuation automatically. Preview and actual application share the same
+atomic validation and path resolution; preview writes no files or directories.
+
+Tool schemas stay identical throughout native reading and submission so the
+system prefix remains reusable. The pinned DSpark server supports string
+`tool_choice = "required"`, not named-function objects. Trailblazer enforces
+submit-only mode on the host after reading ends and during correction; forbidden
+read calls are never executed.
+
+A native submission miss, malformed arguments, mixed calls or forbidden reads
+returns a compact tool result in the same conversation, with the original
+assistant call retained and each tool-call ID answered. No workspace reset,
+retrieval restart or duplicate full batch is needed. At most two correction
+calls follow the initial unusable reply. A third unusable reply stops with
+`edit_repair_exhausted`, retaining the worktree and case evidence even for a
+managed primary. It consumes one coding attempt, not three whole coding runs.
+Feedback is capped at 12,000 characters including its envelope;
+stale-range feedback includes the current digest and a bounded numbered excerpt.
+A zero-read miss without source or filename candidates stops immediately as
+`source_context_missing`; this does not silently widen the read budget.
+
+A successful preview proceeds to application, artifacts, check and independent
+review. A failed check or usable review finding still allows the normal next
+coding attempt from the original base with its submitted blocks as reference.
+Legacy text/JSON misses retain the original outer-attempt behavior.
+Source issue: trailblazer:9ae2ace.
 
 ### 7.4 Review against the design
 
-After the check passes, the model reviews its own diff against the
+After the check passes, an independent model reviews the diff against the
 request and the design sections in its trail: does it do what was
 asked, only that, and in the way the design says? A failed review uses
 up an attempt like a failed check. This is the defence against the

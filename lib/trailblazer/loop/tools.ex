@@ -13,7 +13,9 @@ defmodule Trailblazer.Loop.Tools do
 
   The graph answers about the watched repository. `read` reads from the
   task's worktree when one is given (`%{repo: path, worktree: path}`), since
-  that is the text the model's edits must match.
+  that is the text the model's edits must match. Its answer starts with a
+  compact path/sha256/lines header: the sha256 identifies the exact bytes the
+  model may edit with a range block.
   """
 
   alias Trailblazer.{Files, Query}
@@ -60,7 +62,7 @@ defmodule Trailblazer.Loop.Tools do
       ),
       tool(
         "read",
-        "Lines of a file in the repository, numbered. At most #{@read_lines} lines per call.",
+        "Lines of a file in the repository, numbered. The answer starts with a compact path/sha256/lines header: sha256 covers the file's full bytes exactly as read. At most #{@read_lines} lines per call.",
         %{
           path: string("Path relative to the repository root"),
           start: %{type: "integer", minimum: 1, description: "First line (default 1)"},
@@ -84,24 +86,54 @@ defmodule Trailblazer.Loop.Tools do
     ]
   end
 
-  @doc "Native submission of Aider-style edits; applying them remains the loop's responsibility."
+  @doc "Native submission of edits; applying them remains the loop's responsibility."
   def edit_definition do
     tool(
       "submit_edits",
-      "Submit all code changes for checking and review. Use empty search for a new file. Do not call read/search in the same response.",
+      "Submit all code changes for checking and review. Two block kinds are accepted. Range block: path (repository-relative), sha256 (lowercase hex), start and end (1-based line numbers, inclusive; set end to start-1 to insert before that line), replace. Use an empty search string for a new file. Do not call read/search in the same response.",
       %{
         blocks: %{
           type: "array",
           minItems: 1,
           items: %{
-            type: "object",
-            additionalProperties: false,
-            properties: %{
-              path: string("Repository-relative file path"),
-              search: string("Exact existing text including whitespace; empty for a new file"),
-              replace: string("Replacement text, or entire contents of a new file")
-            },
-            required: ["path", "search", "replace"]
+            anyOf: [
+              %{
+                type: "object",
+                additionalProperties: false,
+                properties: %{
+                  path: string("Repository-relative file path"),
+                  search:
+                    string("Exact existing text including whitespace; empty for a new file"),
+                  replace: string("Replacement text, or entire contents of a new file")
+                },
+                required: ["path", "search", "replace"]
+              },
+              %{
+                type: "object",
+                additionalProperties: false,
+                properties: %{
+                  path: string("Repository-relative file path"),
+                  sha256: %{
+                    type: "string",
+                    pattern: "^[0-9a-f]{64}$",
+                    description: "SHA-256 of the file's full bytes, exactly as read from disk"
+                  },
+                  start: %{
+                    type: "integer",
+                    minimum: 1,
+                    description: "First line of the range, 1-based and inclusive"
+                  },
+                  end: %{
+                    type: "integer",
+                    minimum: 0,
+                    description:
+                      "Last line of the range, inclusive; end = start - 1 inserts before that line"
+                  },
+                  replace: string("Replacement text for the range; empty to delete it")
+                },
+                required: ["path", "sha256", "start", "end", "replace"]
+              }
+            ]
           }
         }
       },
@@ -113,25 +145,80 @@ defmodule Trailblazer.Loop.Tools do
   def edit_blocks(arguments) when is_binary(arguments) do
     with {:ok, %{"blocks" => [_ | _] = blocks} = args} when map_size(args) == 1 <-
            Jason.decode(arguments),
-         true <-
-           Enum.all?(blocks, fn
-             %{"path" => path, "search" => search, "replace" => replace} = block ->
-               map_size(block) == 3 and is_binary(path) and path != "" and
-                 is_binary(search) and is_binary(replace)
-
-             _ ->
-               false
-           end) do
-      {:ok,
-       Enum.map(blocks, fn b -> %{path: b["path"], search: b["search"], replace: b["replace"]} end)}
+         {:ok, decoded} <- decode_blocks(blocks) do
+      {:ok, decoded}
     else
       _ ->
         {:error,
-         "submit_edits requires a nonempty blocks array of path, search and replace strings"}
+         "submit_edits requires a nonempty blocks array; each block is either " <>
+           "{path, search, replace} strings, or a range block {path, sha256, start, end, replace} " <>
+           "with a lowercase 64-hex sha256 and integer line numbers"}
     end
   end
 
   def edit_blocks(_), do: {:error, "submit_edits arguments must be JSON"}
+
+  @hex64 ~r/\A[0-9a-f]{64}\z/
+
+  defp decode_blocks(blocks) do
+    blocks
+    |> Enum.reduce_while({:ok, []}, fn block, {:ok, acc} ->
+      case decode_block(block) do
+        {:ok, decoded} -> {:cont, {:ok, [decoded | acc]}}
+        {:error, message} -> {:halt, {:error, message}}
+      end
+    end)
+    |> case do
+      {:ok, list} -> {:ok, Enum.reverse(list)}
+      other -> other
+    end
+  end
+
+  defp decode_block(%{"path" => path, "search" => search, "replace" => replace} = block)
+       when map_size(block) == 3 do
+    if is_binary(path) and path != "" and is_binary(search) and is_binary(replace) do
+      {:ok, %{path: path, search: search, replace: replace}}
+    else
+      {:error, "legacy block needs a non-empty path and string search/replace"}
+    end
+  end
+
+  defp decode_block(
+         %{
+           "path" => path,
+           "sha256" => sha256,
+           "start" => start,
+           "end" => last,
+           "replace" => replace
+         } = block
+       )
+       when map_size(block) == 5 do
+    cond do
+      not (is_binary(path) and path != "") ->
+        {:error, "range block needs a non-empty path"}
+
+      not (is_binary(sha256) and Regex.match?(@hex64, sha256)) ->
+        {:error, "range block sha256 must be a lowercase 64-hex string"}
+
+      not (is_integer(start) and start >= 1) ->
+        {:error, "range block start must be an integer >= 1"}
+
+      not (is_integer(last) and last >= 0) ->
+        {:error, "range block end must be an integer >= 0"}
+
+      not is_binary(replace) ->
+        {:error, "range block replace must be a string"}
+
+      true ->
+        {:ok,
+         %{path: path, digest: sha256, start: start, end: last, replace: replace, type: :range}}
+    end
+  end
+
+  defp decode_block(_block),
+    do:
+      {:error,
+       "each block must be exactly {path, search, replace} or {path, sha256, start, end, replace}"}
 
   @doc "Strict whole-message JSON fallback; code bytes and edit validation stay unchanged."
   def text_edit_blocks(text) when is_binary(text) do
@@ -263,24 +350,28 @@ defmodule Trailblazer.Loop.Tools do
         {:ok, text} ->
           all = text |> String.split(~r/\r?\n/) |> drop_last_empty()
           total = length(all)
+          header = "path: #{path}\nsha256: #{sha256(text)}\nlines: #{total}\n"
 
-          case all |> Enum.with_index(1) |> Enum.slice((first - 1)..(last - 1)//1) do
-            [] ->
-              "#{path} has #{total} lines, no line #{first}"
+          body =
+            case all |> Enum.with_index(1) |> Enum.slice((first - 1)..(last - 1)//1) do
+              [] ->
+                "#{path} has #{total} lines, no line #{first}"
 
-            numbered ->
-              shown = Enum.map_join(numbered, "\n", fn {line, n} -> "#{n}| #{line}" end)
-              {_, shown_last} = List.last(numbered)
-              wanted = Map.get(args, "end", total)
+              numbered ->
+                shown = Enum.map_join(numbered, "\n", fn {line, n} -> "#{n}| #{line}" end)
+                {_, shown_last} = List.last(numbered)
+                wanted = Map.get(args, "end", total)
 
-              # say where the read stopped, so the model reads on rather than
-              # taking a cut file for a short one
-              if shown_last < min(wanted, total),
-                do:
-                  shown <>
-                    "\n... cut at line #{shown_last} of #{total}: read again from #{shown_last + 1}",
-                else: shown
-          end
+                # say where the read stopped, so the model reads on rather than
+                # taking a cut file for a short one
+                if shown_last < min(wanted, total),
+                  do:
+                    shown <>
+                      "\n... cut at line #{shown_last} of #{total}: read again from #{shown_last + 1}",
+                  else: shown
+            end
+
+          header <> body
 
         {:error, :outside_repo} ->
           {:error, "#{path} is outside the repository"}
@@ -325,6 +416,8 @@ defmodule Trailblazer.Loop.Tools do
 
   defp drop_last_empty(lines),
     do: if(List.last(lines) == "", do: Enum.drop(lines, -1), else: lines)
+
+  defp sha256(text), do: :crypto.hash(:sha256, text) |> Base.encode16(case: :lower)
 
   ## Arguments
 

@@ -271,8 +271,10 @@ defmodule Trailblazer.LoopTest do
       })
 
     final = fn _messages, options ->
-      assert Enum.map(options[:tools], & &1.function.name) == ["submit_edits"]
-      assert options[:tool_choice] == %{type: "function", function: %{name: "submit_edits"}}
+      assert Enum.map(options[:tools], & &1.function.name) ==
+               ~w(where uses impact read search submit_edits)
+
+      assert options[:tool_choice] == "required"
       submitted([greeting_block()])
     end
 
@@ -286,8 +288,10 @@ defmodule Trailblazer.LoopTest do
          opts: opts
        } do
     first = fn _messages, options ->
-      assert Enum.map(options[:tools], & &1.function.name) == ["submit_edits"]
-      assert options[:tool_choice] == %{type: "function", function: %{name: "submit_edits"}}
+      assert Enum.map(options[:tools], & &1.function.name) ==
+               ~w(where uses impact read search submit_edits)
+
+      assert options[:tool_choice] == "required"
       assert options[:reasoning_budget_tokens] == 1024
       submitted([greeting_block()])
     end
@@ -316,8 +320,10 @@ defmodule Trailblazer.LoopTest do
     end
 
     second = fn _messages, options ->
-      assert Enum.map(options[:tools], & &1.function.name) == ["submit_edits"]
-      assert options[:tool_choice] == %{type: "function", function: %{name: "submit_edits"}}
+      assert Enum.map(options[:tools], & &1.function.name) ==
+               ~w(where uses impact read search submit_edits)
+
+      assert options[:tool_choice] == "required"
       submitted([greeting_block()])
     end
 
@@ -1328,10 +1334,19 @@ defmodule Trailblazer.LoopTest do
     script([
       submitted([addition, miss]),
       fn messages, _ ->
-        user = Enum.at(messages, 1).content
-        assert user =~ "Previous submitted edit blocks"
-        assert user =~ "RETAIN_SUBMITTED_NOTE"
-        assert user =~ "notes.txt"
+        previous = Enum.find(Enum.reverse(messages), &(&1.role == "assistant"))
+        assert hd(previous.tool_calls).function.arguments =~ "RETAIN_SUBMITTED_NOTE"
+        assert hd(previous.tool_calls).function.arguments =~ "notes.txt"
+        assert List.last(messages).role == "tool"
+        refute Enum.at(messages, 1).content =~ "Previous submitted edit blocks"
+
+        record =
+          CaseRecord.open_cases()
+          |> Enum.map(&CaseRecord.get(&1, inline: false))
+          |> Enum.find(&(&1.repo == repo))
+
+        refute File.exists?(Path.join(record.lifecycle["path"], "notes.txt"))
+        assert File.read!(Path.join(record.lifecycle["path"], "lib/greeting.ex")) == @greeting
         submitted([addition, greeting_block()])
       end,
       reply("PASS")
@@ -1339,7 +1354,7 @@ defmodule Trailblazer.LoopTest do
 
     report = Loop.run(task(repo, %{read_rounds: 0}), opts)
     assert report.status == :fixed
-    assert report.attempts == 2
+    assert report.attempts == 1
     assert git(repo, ["show", "#{report.commit}:notes.txt"]) == "RETAIN_SUBMITTED_NOTE\n"
   end
 
@@ -1364,12 +1379,15 @@ defmodule Trailblazer.LoopTest do
     refute_received {:asked, _, _}
   end
 
-  test "nonzero read budget retains a retry for a source-context miss", %{repo: repo, opts: opts} do
+  test "nonzero read budget permits a local correction for a source-context miss", %{
+    repo: repo,
+    opts: opts
+  } do
     miss = %{greeting_block() | search: "unrelated prose: revise the normative paragraph\n"}
     script([submitted([miss]), submitted([greeting_block()]), reply("PASS")])
     report = Loop.run(task(repo, %{read_rounds: 1}), opts)
     assert report.status == :fixed
-    assert report.attempts == 2
+    assert report.attempts == 1
   end
 
   test "zero-read missing path with candidate names can correct its target", %{
@@ -1384,10 +1402,12 @@ defmodule Trailblazer.LoopTest do
     script([
       submitted([%{greeting_block() | path: "missing/greeting.ex"}]),
       fn messages, _ ->
-        user = Enum.at(messages, 1).content
-        assert user =~ "lib/greeting.ex"
-        assert user =~ "other/greeting.ex"
-        assert user =~ "Previous submitted edit blocks"
+        feedback = List.last(messages)
+        assert feedback.role == "tool"
+        assert feedback.content =~ "lib/greeting.ex"
+        assert feedback.content =~ "other/greeting.ex"
+        previous = Enum.find(Enum.reverse(messages), &(&1.role == "assistant"))
+        assert hd(previous.tool_calls).function.arguments =~ "missing/greeting.ex"
         submitted([greeting_block()])
       end,
       reply("PASS")
@@ -1395,6 +1415,103 @@ defmodule Trailblazer.LoopTest do
 
     report = Loop.run(task(repo, %{read_rounds: 0}), opts)
     assert report.status == :fixed
-    assert report.attempts == 2
+    assert report.attempts == 1
+  end
+
+  test "malformed native arguments are corrected in the same conversation", %{
+    repo: repo,
+    opts: opts
+  } do
+    bad =
+      reply("", %{tool_calls: [%{id: "bad-json", name: "submit_edits", arguments: "{not json"}]})
+
+    correction = fn messages, _ ->
+      assert Enum.at(messages, -1).role == "tool"
+      assert Enum.at(messages, -1).tool_call_id == "bad-json"
+      assert Enum.at(messages, -1).content =~ "submit_edits"
+      submitted([greeting_block()])
+    end
+
+    script([bad, correction, reply("PASS")])
+    report = Loop.run(task(repo, %{read_rounds: 0}), opts)
+    assert report.status == :fixed
+    assert report.attempts == 1
+    assert report.cost.model_calls == 3
+  end
+
+  test "repeated forbidden reads exhaust the shared correction budget without executing", %{
+    repo: repo,
+    opts: opts
+  } do
+    read =
+      reply("", %{
+        tool_calls: [%{id: "forbidden", name: "read", arguments: ~s({"path":"lib/greeting.ex"})}]
+      })
+
+    script(List.duplicate(read, 4))
+    report = Loop.run(task(repo, %{read_rounds: 0, primary: "main"}), opts)
+    assert report.status == :failed
+    assert report.summary =~ "edit_repair_exhausted"
+    assert report.attempts == 1
+    assert report.cost.model_calls == 3
+    assert File.dir?(report.worktree)
+    assert File.read!(Path.join(report.worktree, "lib/greeting.ex")) == @greeting
+    assert git(repo, ["show", "main:lib/greeting.ex"]) == @greeting
+    events = CaseRecord.get(report.case).events
+
+    refute Enum.any?(
+             events,
+             &(&1.kind == "tool_call" and &1.data["name"] == "read" and
+                 &1.data["status"] != "refused")
+           )
+  end
+
+  test "three missed submissions stop one attempt and retain evidence", %{repo: repo, opts: opts} do
+    miss = %{greeting_block() | search: ~s|  def hello(name), do: "Hi " <> name\n|}
+    script(List.duplicate(submitted([miss]), 4))
+    report = Loop.run(task(repo, %{read_rounds: 1}), opts)
+    assert report.status == :failed
+    assert report.summary =~ "edit_repair_exhausted"
+    assert report.attempts == 1
+    assert report.cost.model_calls == 3
+    assert File.read!(Path.join(report.worktree, "lib/greeting.ex")) == @greeting
+  end
+
+  test "native ranges use the digest delivered by read without recopying source", %{
+    repo: repo,
+    opts: opts
+  } do
+    read =
+      reply("", %{
+        tool_calls: [%{id: "read-hash", name: "read", arguments: ~s({"path":"lib/greeting.ex"})}]
+      })
+
+    submit = fn messages, options ->
+      assert options[:tool_choice] == "required"
+
+      assert options[:tools] ==
+               Trailblazer.Loop.Tools.definitions() ++ [Trailblazer.Loop.Tools.edit_definition()]
+
+      digest = :crypto.hash(:sha256, @greeting) |> Base.encode16(case: :lower)
+
+      assert Enum.find(Enum.reverse(messages), &(&1.role == "tool")).content =~
+               "sha256: #{digest}"
+
+      submitted([
+        %{
+          path: "lib/greeting.ex",
+          sha256: digest,
+          start: 2,
+          end: 2,
+          replace: ~s|  def hello(name), do: "Hello, " <> name\n|
+        }
+      ])
+    end
+
+    script([read, submit, reply("PASS")])
+    report = Loop.run(task(repo, %{read_rounds: 1}), opts)
+    assert report.status == :fixed
+    assert report.attempts == 1
+    assert git(repo, ["show", "#{report.commit}:lib/greeting.ex"]) =~ "Hello, "
   end
 end

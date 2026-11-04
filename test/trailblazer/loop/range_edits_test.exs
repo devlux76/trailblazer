@@ -37,19 +37,25 @@ defmodule Trailblazer.Loop.RangeEditsTest do
       # lines (1-based): 1 defmodule / 2 alpha / 3 beta / 4 blank / 5 alpha / 6 beta / 7 end
       assert {:ok, ["lib/dup.ex"]} =
                Edits.apply(dir, [
-                 %{path: "lib/dup.ex", type: :range, digest: digest, start: 5, end: 6,
-                   replace: "  def alpha, do: \"changed\"\n  def beta, do: \"changed\"\n"}
+                 %{
+                   path: "lib/dup.ex",
+                   type: :range,
+                   digest: digest,
+                   start: 5,
+                   end: 6,
+                   replace: "  def alpha, do: \"changed\"\n  def beta, do: \"changed\"\n"
+                 }
                ])
 
       assert read(dir, "lib/dup.ex") == """
-      defmodule Dup do
-        def alpha, do: "same"
-        def beta, do: "same"
+             defmodule Dup do
+               def alpha, do: "same"
+               def beta, do: "same"
 
-        def alpha, do: "changed"
-        def beta, do: "changed"
-      end
-      """
+               def alpha, do: "changed"
+               def beta, do: "changed"
+             end
+             """
     end
 
     test "a stale digest is refused and nothing is written", %{dir: dir} do
@@ -57,8 +63,14 @@ defmodule Trailblazer.Loop.RangeEditsTest do
 
       assert {:error, failures} =
                Edits.apply(dir, [
-                 %{path: "lib/a.ex", type: :range, digest: String.duplicate("0", 64), start: 1,
-                   end: 1, replace: "una\n"}
+                 %{
+                   path: "lib/a.ex",
+                   type: :range,
+                   digest: String.duplicate("0", 64),
+                   start: 1,
+                   end: 1,
+                   replace: "una\n"
+                 }
                ])
 
       assert [%{reason: :stale_digest}] = failures
@@ -71,10 +83,22 @@ defmodule Trailblazer.Loop.RangeEditsTest do
 
       assert {:error, failures} =
                Edits.apply(dir, [
-                 %{path: "lib/a.ex", type: :range, digest: digest, start: 1, end: 2,
-                   replace: "AB\n"},
-                 %{path: "lib/a.ex", type: :range, digest: digest, start: 2, end: 3,
-                   replace: "BC\n"}
+                 %{
+                   path: "lib/a.ex",
+                   type: :range,
+                   digest: digest,
+                   start: 1,
+                   end: 2,
+                   replace: "AB\n"
+                 },
+                 %{
+                   path: "lib/a.ex",
+                   type: :range,
+                   digest: digest,
+                   start: 2,
+                   end: 3,
+                   replace: "BC\n"
+                 }
                ])
 
       assert [%{reason: :overlapping_ranges}] = failures
@@ -87,10 +111,22 @@ defmodule Trailblazer.Loop.RangeEditsTest do
 
       assert {:error, _failures} =
                Edits.apply(dir, [
-                 %{path: "lib/a.ex", type: :range, digest: digest, start: 1, end: 2,
-                   replace: "AB\n"},
-                 %{path: "lib/a.ex", type: :range, digest: digest, start: 2, end: 1,
-                   replace: "x\n"}
+                 %{
+                   path: "lib/a.ex",
+                   type: :range,
+                   digest: digest,
+                   start: 1,
+                   end: 2,
+                   replace: "AB\n"
+                 },
+                 %{
+                   path: "lib/a.ex",
+                   type: :range,
+                   digest: digest,
+                   start: 2,
+                   end: 1,
+                   replace: "x\n"
+                 }
                ])
 
       assert read(dir, "lib/a.ex") == "a\nb\nc\n"
@@ -102,10 +138,22 @@ defmodule Trailblazer.Loop.RangeEditsTest do
 
       assert {:error, failures} =
                Edits.apply(dir, [
-                 %{path: "lib/a.ex", type: :range, digest: digest, start: 1, end: 0,
-                   replace: "x\n"},
-                 %{path: "lib/a.ex", type: :range, digest: digest, start: 1, end: 0,
-                   replace: "y\n"}
+                 %{
+                   path: "lib/a.ex",
+                   type: :range,
+                   digest: digest,
+                   start: 1,
+                   end: 0,
+                   replace: "x\n"
+                 },
+                 %{
+                   path: "lib/a.ex",
+                   type: :range,
+                   digest: digest,
+                   start: 1,
+                   end: 0,
+                   replace: "y\n"
+                 }
                ])
 
       assert [%{reason: :duplicate_insertion}] = failures
@@ -118,10 +166,22 @@ defmodule Trailblazer.Loop.RangeEditsTest do
 
       assert {:ok, ["lib/a.ex"]} =
                Edits.apply(dir, [
-                 %{path: "lib/a.ex", type: :range, digest: digest, start: 1, end: 1,
-                   replace: "A\n"},
-                 %{path: "lib/a.ex", type: :range, digest: digest, start: 3, end: 3,
-                   replace: "C\n"}
+                 %{
+                   path: "lib/a.ex",
+                   type: :range,
+                   digest: digest,
+                   start: 1,
+                   end: 1,
+                   replace: "A\n"
+                 },
+                 %{
+                   path: "lib/a.ex",
+                   type: :range,
+                   digest: digest,
+                   start: 3,
+                   end: 3,
+                   replace: "C\n"
+                 }
                ])
 
       assert read(dir, "lib/a.ex") == "A\nb\nC\n"
@@ -135,16 +195,28 @@ defmodule Trailblazer.Loop.RangeEditsTest do
 
       assert {:ok, ["lib/empty.ex"]} =
                Edits.apply(dir, [
-                 %{path: "lib/empty.ex", type: :range, digest: empty_digest, start: 1,
-                   end: 0, replace: "first\n"}
+                 %{
+                   path: "lib/empty.ex",
+                   type: :range,
+                   digest: empty_digest,
+                   start: 1,
+                   end: 0,
+                   replace: "first\n"
+                 }
                ])
 
       assert read(dir, "lib/empty.ex") == "first\n"
 
       assert {:ok, ["lib/tail.ex"]} =
                Edits.apply(dir, [
-                 %{path: "lib/tail.ex", type: :range, digest: tail_digest, start: 2,
-                   end: 1, replace: "second\n"}
+                 %{
+                   path: "lib/tail.ex",
+                   type: :range,
+                   digest: tail_digest,
+                   start: 2,
+                   end: 1,
+                   replace: "second\n"
+                 }
                ])
 
       assert read(dir, "lib/tail.ex") == "x\nsecond\n"
@@ -157,8 +229,14 @@ defmodule Trailblazer.Loop.RangeEditsTest do
 
       assert {:ok, ["lib/cr.ex"]} =
                Edits.apply(dir, [
-                 %{path: "lib/cr.ex", type: :range, digest: digest, start: 2, end: 2,
-                   replace: "BETA\r\n"}
+                 %{
+                   path: "lib/cr.ex",
+                   type: :range,
+                   digest: digest,
+                   start: 2,
+                   end: 2,
+                   replace: "BETA\r\n"
+                 }
                ])
 
       assert read(dir, "lib/cr.ex") == "α\r\nBETA\r\nγΔ\r\n"
@@ -171,8 +249,14 @@ defmodule Trailblazer.Loop.RangeEditsTest do
       assert {:error, _failures} =
                Edits.apply(dir, [
                  %{path: "lib/a.ex", type: :search, search: "one\n", replace: "ONE\n"},
-                 %{path: "lib/a.ex", type: :range, digest: digest, start: 2, end: 2,
-                   replace: "TWO\n"}
+                 %{
+                   path: "lib/a.ex",
+                   type: :range,
+                   digest: digest,
+                   start: 2,
+                   end: 2,
+                   replace: "TWO\n"
+                 }
                ])
 
       assert read(dir, "lib/a.ex") == "one\ntwo\n"
@@ -185,10 +269,22 @@ defmodule Trailblazer.Loop.RangeEditsTest do
 
       assert {:error, _failures} =
                Edits.apply(dir, [
-                 %{path: "lib/good.ex", type: :range, digest: digest, start: 1, end: 1,
-                   replace: "X\n"},
-                 %{path: "lib/bad.ex", type: :range, digest: String.duplicate("f", 64),
-                   start: 1, end: 1, replace: "Y\n"}
+                 %{
+                   path: "lib/good.ex",
+                   type: :range,
+                   digest: digest,
+                   start: 1,
+                   end: 1,
+                   replace: "X\n"
+                 },
+                 %{
+                   path: "lib/bad.ex",
+                   type: :range,
+                   digest: String.duplicate("f", 64),
+                   start: 1,
+                   end: 1,
+                   replace: "Y\n"
+                 }
                ])
 
       assert read(dir, "lib/good.ex") == "x\n"
@@ -200,16 +296,18 @@ defmodule Trailblazer.Loop.RangeEditsTest do
       digest = digest(dir, "lib/a.ex")
 
       bad = [
-        %{path: "lib/a.ex", type: :range, digest: "ABCDEF", start: 1, end: 1,
-          replace: "A\n"},
-        %{path: "lib/a.ex", type: :range, digest: String.duplicate("a", 64),
-          start: "1", end: 1, replace: "A\n"},
-        %{path: "lib/a.ex", type: :range, digest: digest, start: 0, end: 1,
-          replace: "A\n"},
-        %{path: "lib/a.ex", type: :range, digest: digest, start: 3, end: 4,
-          replace: "A\n"},
-        %{path: "lib/a.ex", type: "range", digest: digest, start: 1, end: 1,
-          replace: "A\n"}
+        %{path: "lib/a.ex", type: :range, digest: "ABCDEF", start: 1, end: 1, replace: "A\n"},
+        %{
+          path: "lib/a.ex",
+          type: :range,
+          digest: String.duplicate("a", 64),
+          start: "1",
+          end: 1,
+          replace: "A\n"
+        },
+        %{path: "lib/a.ex", type: :range, digest: digest, start: 0, end: 1, replace: "A\n"},
+        %{path: "lib/a.ex", type: :range, digest: digest, start: 3, end: 4, replace: "A\n"},
+        %{path: "lib/a.ex", type: "range", digest: digest, start: 1, end: 1, replace: "A\n"}
       ]
 
       for block <- bad do
@@ -221,8 +319,14 @@ defmodule Trailblazer.Loop.RangeEditsTest do
     test "a range block never creates a missing file", %{dir: dir} do
       assert {:error, [%{reason: :no_such_file}]} =
                Edits.apply(dir, [
-                 %{path: "lib/missing.ex", type: :range, digest: String.duplicate("a", 64),
-                   start: 1, end: 0, replace: "x\n"}
+                 %{
+                   path: "lib/missing.ex",
+                   type: :range,
+                   digest: String.duplicate("a", 64),
+                   start: 1,
+                   end: 0,
+                   replace: "x\n"
+                 }
                ])
 
       refute File.exists?(Path.join(dir, "lib/missing.ex"))
@@ -245,8 +349,14 @@ defmodule Trailblazer.Loop.RangeEditsTest do
 
       assert {:error, [%{reason: :outside_worktree}]} =
                Edits.apply(dir, [
-                 %{path: "lib/link.ex", type: :range, digest: digest, start: 1, end: 1,
-                   replace: "x\n"}
+                 %{
+                   path: "lib/link.ex",
+                   type: :range,
+                   digest: digest,
+                   start: 1,
+                   end: 1,
+                   replace: "x\n"
+                 }
                ])
 
       assert File.read!(Path.join(dir, "secret.txt")) == "password\n"
@@ -259,10 +369,22 @@ defmodule Trailblazer.Loop.RangeEditsTest do
 
       assert {:ok, ["lib/unequal.ex"]} =
                Edits.apply(dir, [
-                 %{path: "lib/unequal.ex", type: :range, digest: digest, start: 1, end: 1,
-                   replace: "LONGA\\nLONGB\\n"},
-                 %{path: "lib/unequal.ex", type: :range, digest: digest, start: 3, end: 3,
-                   replace: "Z"}
+                 %{
+                   path: "lib/unequal.ex",
+                   type: :range,
+                   digest: digest,
+                   start: 1,
+                   end: 1,
+                   replace: "LONGA\nLONGB\n"
+                 },
+                 %{
+                   path: "lib/unequal.ex",
+                   type: :range,
+                   digest: digest,
+                   start: 3,
+                   end: 3,
+                   replace: "Z"
+                 }
                ])
 
       assert read(dir, "lib/unequal.ex") == "LONGA\nLONGB\nbb\nZ"
@@ -274,8 +396,14 @@ defmodule Trailblazer.Loop.RangeEditsTest do
 
       assert {:error, failures} =
                Edits.apply(dir, [
-                 %{path: "lib/three.ex", type: :range, digest: digest, start: 4, end: 4,
-                   replace: "nope\n"}
+                 %{
+                   path: "lib/three.ex",
+                   type: :range,
+                   digest: digest,
+                   start: 4,
+                   end: 4,
+                   replace: "nope\n"
+                 }
                ])
 
       assert [%{reason: :invalid_range}] = failures
@@ -283,8 +411,14 @@ defmodule Trailblazer.Loop.RangeEditsTest do
 
       assert {:ok, ["lib/three.ex"]} =
                Edits.apply(dir, [
-                 %{path: "lib/three.ex", type: :range, digest: digest, start: 4, end: 3,
-                   replace: "d\n"}
+                 %{
+                   path: "lib/three.ex",
+                   type: :range,
+                   digest: digest,
+                   start: 4,
+                   end: 3,
+                   replace: "d\n"
+                 }
                ])
 
       assert read(dir, "lib/three.ex") == "a\nb\nc\nd\n"
@@ -296,10 +430,22 @@ defmodule Trailblazer.Loop.RangeEditsTest do
 
       assert {:ok, ["lib/first.ex"]} =
                Edits.apply(dir, [
-                 %{path: "lib/first.ex", type: :range, digest: digest, start: 1, end: 1,
-                   replace: "REPLACED\n"},
-                 %{path: "lib/first.ex", type: :range, digest: digest, start: 1, end: 0,
-                   replace: "INSERTED\n"}
+                 %{
+                   path: "lib/first.ex",
+                   type: :range,
+                   digest: digest,
+                   start: 1,
+                   end: 1,
+                   replace: "REPLACED\n"
+                 },
+                 %{
+                   path: "lib/first.ex",
+                   type: :range,
+                   digest: digest,
+                   start: 1,
+                   end: 0,
+                   replace: "INSERTED\n"
+                 }
                ])
 
       assert read(dir, "lib/first.ex") == "INSERTED\nREPLACED\nb\n"
@@ -310,11 +456,43 @@ defmodule Trailblazer.Loop.RangeEditsTest do
 
       assert {:error, failures} =
                Edits.apply(dir, [
-                 %{path: "lib/adir", type: :range, digest: String.duplicate("a", 64),
-                   start: 1, end: 1, replace: "x\n"}
+                 %{
+                   path: "lib/adir",
+                   type: :range,
+                   digest: String.duplicate("a", 64),
+                   start: 1,
+                   end: 1,
+                   replace: "x\n"
+                 }
                ])
 
       assert [%{reason: :unreadable}] = failures
     end
+  end
+
+  test "aliases of one file form one atomic range group", %{dir: dir} do
+    write(dir, "lib/a.ex", "a\nb\n")
+    sha = digest(dir, "lib/a.ex")
+
+    blocks = [
+      %{path: "lib/a.ex", type: :range, digest: sha, start: 1, end: 1, replace: "A\n"},
+      %{path: "./lib/a.ex", type: :range, digest: sha, start: 2, end: 2, replace: "B\n"}
+    ]
+
+    assert {:ok, ["lib/a.ex"]} = Edits.apply(dir, blocks)
+    assert read(dir, "lib/a.ex") == "A\nB\n"
+  end
+
+  test "a legacy alias cannot bypass the mixed-mode guard", %{dir: dir} do
+    write(dir, "lib/a.ex", "a\nb\n")
+    sha = digest(dir, "lib/a.ex")
+
+    blocks = [
+      %{path: "lib/a.ex", type: :range, digest: sha, start: 1, end: 1, replace: "A\n"},
+      %{path: "./lib/a.ex", search: "b\n", replace: "B\n"}
+    ]
+
+    assert {:error, [%{reason: :mixed_edits}]} = Edits.apply(dir, blocks)
+    assert read(dir, "lib/a.ex") == "a\nb\n"
   end
 end
