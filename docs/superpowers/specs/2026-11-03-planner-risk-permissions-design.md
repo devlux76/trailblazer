@@ -168,7 +168,7 @@ delivery after a crash, and allow only the single separate reminder. No real
 route or policy is enabled by implementing this helper; live idle-wake and
 authenticated decision acceptance remain required.
 
-### P1 trusted local permission configuration
+### P1 trusted local permission configuration (current low-level validator)
 
 The optional VORTEX `permissions` block contains only `timeout_ms` (positive
 integer, default 14,400,000) and a nonempty `deciders` map. Absent/null keeps
@@ -190,7 +190,69 @@ host must check the rendered sender AND destination, not just an exit status.
 Settings remain cached at boot; configuration edits require a normal idle
 restart. The coordinator/transport/CLI remain separate implementation stages.
 
-### P1 decision wire shape (codec, not authorization)
+### P1 postmaster: repair or reach back (operator revision)
+
+The frontier states intent, not thirteen protocol fields. For example:
+"grant perm-x: the directory mode change is harmless." A lightweight local
+postmaster parses the intent and finds the addressed request. The first model
+candidate is the locally registered `lfm3-1.7b-q8` on :8094; model availability
+and parsing behaviour still need a bounded live trial. This is postal work,
+not delegated risk judgement: the frontier remains the decider in P1.
+
+The host supplies stamps from its own records: authenticated transport
+peer/room, request identity, nonce, hashes and binding. A grant can inherit the
+presented exception ids and required commit paths when the sender clearly
+approves that whole presented scope. The model does not invent identity,
+select newer evidence, enlarge the approval or add a normalization. Qualified,
+partial or contradictory intent gets a question when its meaning cannot be
+resolved; formatting repairs do not become a new approval.
+
+Bind the reply to the evidence version issued to that authenticated decider.
+The show client records an authenticated view receipt after assembling and
+displaying the verified view; an API actor-name argument is not such a receipt.
+This records delivery/display to the client, not proof of human attention.
+The postmaster uses that receipt/reply context to stamp the answer. If there
+is no matching receipt, several possible requests, or newer evidence than the
+viewed version, return the relevant view/question and wait for a fresh answer.
+Never stamp a stale answer against the current request just because it exists.
+
+Addressing follows the same principle. Resolve missing sender labels or
+destinations from the trusted peer/session registry, then validate the stamped
+route. The model can propose a match, not create a peer or silently choose
+among chats. The helper's Claude sender default and mutable thread-pin fallback
+are not trusted addressing. Ask the sender/operator when lookup is ambiguous.
+The route rules above describe the resolved result, not fields a person has to
+remember. A repairable permissions-message/route defect holds that item with a
+visible needs-attention reason; it does not disable unrelated healthy work.
+The current Settings loader still treats a malformed permissions block as
+invalid VORTEX configuration; isolating repairable route defects is part of
+this proposed integration, not a capability already implemented. Trust-critical
+authority configuration remains closed when unresolved. The postmaster cannot
+edit global policy. Unresolved identity/evidence cannot authorize execution.
+
+Keep the original message, interpreted intent, host lookups/stamps, view
+receipt and repair/question history. Structured unambiguous input needs no
+model call; free text gets a bounded parse through existing inference/resource
+limits, not an autonomous conversation loop. A missing model or malformed parse leaves the message/work preserved and
+asks for clarification; it never supplies a default grant. Replies use durable
+correlation/deduplication and the existing bounded notification policy.
+
+`escalate` and `amend_policy` remain preserved, decidable requests. Publish
+blocked(escalated/amend_proposed, reason) on the Planner board immediately,
+and make operator attention explicit in the result returned to the frontier
+chat. No higher tier is silently invented for a Codex-only deployment.
+
+First scope is permission correspondence and its address resolution. Reuse
+the primitive for other tool messages incrementally; this revision does not
+authorize a rewrite of every guard. Core.decide remains the final CAS. Existing
+strict code is retained behind the postmaster, not discarded. Before effects
+wiring, revise the implementation plan and test natural grant/refuse, repaired
+stamps, negation/quotation and ambiguous/conditional intent, stale/missing views, forged identities,
+offline/malformed parsing, visible escalation and duplicate delivery. Then
+prove the actual local parser and one real decider round trip. No new postmaster
+code or model authority is claimed by this design change.
+
+### P1 stamped decision shape (internal codec, not sender requirements)
 
 `permission_decision` retains the 16,384-byte protocol envelope cap. Its payload
 requires exactly request_id, nonce, binding, evidence_sha256, base, policy_hash,
@@ -203,7 +265,9 @@ administration. Missing/unknown fields, identity/tier/command overrides or
 malformed lists are refused. Semantic selection and source freshness still
 belong to the bound request/consumer.
 
-Codec acceptance does NOT authenticate the decider or grant permission. Bridge
+These fields are assembled/checked behind the postmaster; the sender can use
+natural language or an ergonomic CLI reply. Codec acceptance does NOT
+authenticate the decider or grant permission. Bridge
 handling must first verify the real transport peer/direct room against the
 configured and frozen frontier authority, then use the permission CAS. Until
 that integration lands, the existing bridge refuses these as unexpected
