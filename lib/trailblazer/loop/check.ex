@@ -12,6 +12,7 @@ defmodule Trailblazer.Loop.Check do
   # setsid's child identifies its real process group and waits for permission
   # to start. A startup timeout can close stdin without ever running the check.
   @launch ~S(printf '%s %s\n' "$1" "$$"; IFS= read -r go || exit 125; exec sh -c "$2" </dev/null)
+  @launch_argv ~S(printf '%s %s\n' "$1" "$$"; IFS= read -r go || exit 125; shift; exec "$@" </dev/null)
 
   def default(repo) do
     cond do
@@ -68,10 +69,16 @@ defmodule Trailblazer.Loop.Check do
     end
   end
 
+  @doc "Fixed executable/argv with an explicit environment; arguments are never shell source."
+  def run_argv(path, executable, args, opts \\ []) do
+    run(path, {:argv, executable, args, Keyword.get(opts, :env, %{})}, opts)
+  end
+
   defp execute(path, command, limit, owner) do
     Process.flag(:trap_exit, true)
     started = now()
     marker = "trailblazer-" <> Base.url_encode64(:crypto.strong_rand_bytes(12), padding: false)
+    {launch, arguments, env, label} = launch(command, marker)
 
     port =
       Port.open(
@@ -82,8 +89,8 @@ defmodule Trailblazer.Loop.Check do
           :stderr_to_stdout,
           :use_stdio,
           {:cd, path},
-          {:env, environment()},
-          {:args, ["--fork", "--wait", "sh", "-c", @launch, "check", marker, command]}
+          {:env, env},
+          {:args, ["--fork", "--wait", "sh", "-c", launch, "check" | arguments]}
         ]
       )
 
@@ -96,8 +103,7 @@ defmodule Trailblazer.Loop.Check do
       marker: marker,
       owner: owner,
       started: started,
-      backstop:
-        Backstop.arm(:check, command, {:ms, limit}, fn -> %{path: path, command: command} end)
+      backstop: Backstop.arm(:check, label, {:ms, limit}, fn -> %{path: path, command: label} end)
     }
 
     collect(s)
@@ -230,6 +236,16 @@ defmodule Trailblazer.Loop.Check do
          do: true,
          else: (_ -> false)
   end
+
+  defp launch({:argv, executable, args, env}, marker) do
+    # Notifiers do not inherit credentials or release/GUI flags accidentally.
+    removed = Enum.map(Map.keys(System.get_env()), &{String.to_charlist(&1), false})
+    fixed = Map.put_new(env, "PATH", Config.get(:check_path))
+    values = Enum.map(fixed, fn {k, v} -> {String.to_charlist(k), String.to_charlist(v)} end)
+    {@launch_argv, [marker, executable | args], removed ++ values, "trusted argv helper"}
+  end
+
+  defp launch(command, marker), do: {@launch, [marker, command], environment(), command}
 
   defp pytest?(repo) do
     File.regular?(Path.join(repo, "pytest.ini")) or

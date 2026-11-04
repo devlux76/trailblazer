@@ -145,6 +145,29 @@ permission continuation, checking peer/repo/base/policy and response provenance.
 No source-case rewrite or ordinary coder redispatch. This narrow P1 migration
 follows the new lifecycle; the broader 0697491 replay work remains held.
 
+### P1 notifier primitive (not live wake acceptance)
+
+The trusted local route has an absolute `executable` and `cwd`, a literal `args`
+list, an explicit `env` map, and `timeout_ms` (default 60,000; range 1..300,000).
+Unknown fields and malformed values refuse before execution. Append one fixed
+message containing only the validated request id, binding/evidence digests and
+notice ordinal (0 initial, 1 reminder); build output never enters the command.
+The existing Check process-group supervisor has a fixed-argv entry: its shell
+handshake executes `"$@"` as literal data, not shell source. The child receives
+only the configured environment plus the check PATH default. Timeout or caller
+death kills its process group; output is bounded and never copied into the
+notification journal.
+
+Normalize the helper's JSON receipt: `started` or `steered` WITH a bounded turn
+id means host-admitted, `queued` stays queued, and generic/malformed success or
+timeout is unknown. A nonzero exit records helper failure, not proof that no
+notification happened. Neither host admission nor exit zero proves the frontier
+read or decided. The primitive makes one attempt and has no retries; the later
+coordinator must record an ordinal claim before effects, preserve unknown
+delivery after a crash, and allow only the single separate reminder. No real
+route or policy is enabled by implementing this helper; live idle-wake and
+authenticated decision acceptance remain required.
+
 ## Proposed authority floor — explicitly subject to operator review
 
 Risk grants cannot change authenticated principal/repository, choose a new
