@@ -114,7 +114,7 @@ defmodule Trailblazer.Loop.Permission do
   def decide(id, peer, decision, now) when is_integer(now) do
     with {:ok, decision} <- data(decision), true <- is_map(decision) do
       change(id, fn conn, r ->
-        signature = digest([peer, decision])
+        answer_digest = digest([peer, decision])
 
         cond do
           peer not in r["frontiers"] ->
@@ -123,7 +123,7 @@ defmodule Trailblazer.Loop.Permission do
           r["state"] == "expired" ->
             {{:error, :expired}, nil}
 
-          Enum.any?(r["answers"], &(&1["sha256"] == signature)) ->
+          Enum.any?(r["answers"], &(&1["sha256"] == answer_digest)) ->
             {{:ok, r}, nil}
 
           r["state"] != "waiting" ->
@@ -145,7 +145,13 @@ defmodule Trailblazer.Loop.Permission do
                 _ -> "waiting"
               end
 
-            answer = %{"peer" => peer, "decision" => decision, "at" => now, "sha256" => signature}
+            answer = %{
+              "peer" => peer,
+              "decision" => decision,
+              "at" => now,
+              "sha256" => answer_digest
+            }
+
             next = r |> Map.put("state", state) |> Map.put("answers", r["answers"] ++ [answer])
             save(conn, next, now, &{:ok, &1})
         end
@@ -166,28 +172,29 @@ defmodule Trailblazer.Loop.Permission do
     end)
   end
 
-  def claim_resume(id) do
+  def claim_resume(id, now \\ System.os_time(:millisecond)) when is_integer(now) do
     change(id, fn conn, r ->
       if r["state"] == "granted",
         do:
           save(
             conn,
             Map.put(r, "state", "resuming"),
-            System.os_time(:millisecond),
+            now,
             &{:ok, &1["checkpoint"]}
           ),
         else: {{:error, :not_granted}, nil}
     end)
   end
 
-  def finish_resume(id, outcome) when is_binary(outcome) do
+  def finish_resume(id, outcome, now \\ System.os_time(:millisecond))
+      when is_binary(outcome) and is_integer(now) do
     change(id, fn conn, r ->
       if r["state"] == "resuming",
         do:
           save(
             conn,
             Map.merge(r, %{"state" => "resumed", "resume_outcome" => outcome}),
-            System.os_time(:millisecond),
+            now,
             &{:ok, &1}
           ),
         else: {{:error, :not_resuming}, nil}
@@ -275,8 +282,14 @@ defmodule Trailblazer.Loop.Permission do
       ]
     )
 
-    [[1]] = query(conn, :permission_changes, "SELECT changes()", [])
+    if query(conn, :permission_changes, "SELECT changes()", []) == [[1]] do
+      journal(conn, next, now, reply)
+    else
+      {{:error, :conflict}, nil}
+    end
+  end
 
+  defp journal(conn, next, now, reply) do
     [[seq]] =
       query(
         conn,

@@ -217,4 +217,44 @@ defmodule Trailblazer.Loop.PermissionTest do
     assert Permission.get(id) == expected
     assert CaseRecord.get(c.case_id).status == "open"
   end
+
+  test "resume transitions use the supplied clock in their atomic journal events", c do
+    {:ok, id} = open(c)
+    {:ok, _} = Permission.decide(id, "frontier-a", answer(Permission.get(id)), 2000)
+    assert {:ok, _} = Permission.claim_resume(id, 2100)
+    assert {:ok, _} = Permission.finish_resume(id, "checked", 2200)
+    transitions = CaseRecord.get(c.case_id).events |> Enum.take(-2)
+    assert Enum.map(transitions, & &1.at) == [2100, 2200]
+    assert Enum.map(transitions, & &1.data["state"]) == ["resuming", "resumed"]
+  end
+
+  test "a lost permission CAS returns conflict without an event or writer restart", c do
+    {:ok, id} = open(c)
+    before = Permission.get(id)
+    writer = Process.whereis(Trailblazer.CaseStore)
+    trigger = "permission_cas_test"
+
+    sql =
+      "CREATE TRIGGER #{trigger} BEFORE UPDATE ON permission_request WHEN OLD.id = '#{id}' BEGIN SELECT RAISE(IGNORE); END"
+
+    Trailblazer.CaseStore.transaction(fn conn ->
+      Exqlite.prepare_execute!(conn, :permission_test_trigger, sql, [])
+    end)
+
+    on_exit(fn ->
+      Trailblazer.CaseStore.transaction(fn conn ->
+        Exqlite.prepare_execute!(
+          conn,
+          :permission_test_drop,
+          "DROP TRIGGER IF EXISTS #{trigger}",
+          []
+        )
+      end)
+    end)
+
+    assert {:error, :conflict} = Permission.expire(id, 5000)
+    assert Process.whereis(Trailblazer.CaseStore) == writer
+    assert Permission.get(id) == before
+    assert length(CaseRecord.get(c.case_id).events) == 1
+  end
 end

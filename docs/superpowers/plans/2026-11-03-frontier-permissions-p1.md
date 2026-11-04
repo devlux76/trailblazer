@@ -43,7 +43,7 @@
 
 **Files:** create `lib/trailblazer/loop/permission.ex`, `permission_checkpoint.ex` and their tests; modify `priv/migrations/002_cases.sql`. The existing `CaseStore.transaction/1` already provides the serialized writer contract; no CaseStore refactor is needed.
 
-**Interfaces:** `Permission.open(case_id, consumer, evidence, checkpoint, opts)` -> `{:ok, request_id}`; `get/1`, `for_case/1`; `decide(request_id, authenticated_peer, decision, now_ms)`; `expire(request_id, now_ms)`; `claim_resume(request_id)` -> `{:ok, checkpoint}` once; `finish_resume(request_id, outcome)`. No function takes a model-chosen executable.
+**Interfaces:** `Permission.open(case_id, consumer, evidence, checkpoint, opts)` -> `{:ok, request_id}`; `get/1`, `for_case/1`; `decide(request_id, authenticated_peer, decision, now_ms)`; `expire(request_id, now_ms)`; `claim_resume(request_id, now_ms \\ system_clock)` -> `{:ok, checkpoint}` once; `finish_resume(request_id, outcome, now_ms \\ system_clock)`. The optional clock is supplied by the host, never the decision payload. A lost row CAS returns `{:error, :conflict}` without a journal event or writer restart. No function takes a model-chosen executable.
 
 - [ ] Write failures proving atomic request+event creation; case remains open; immutable before/after evidence/checkpoint digests; frontier binding includes case/base/policy/source/exception digest and request nonce.
 - [ ] Test grant/refuse/escalate/amend_policy, unauthenticated peer, changed evidence, duplicate/late grant, grant/expiry race, and expired request followed by a NEW request reusing the checkpoint. Expiry must retain authored/untracked/binary files, modes and partial response bytes.
