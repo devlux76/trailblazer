@@ -112,6 +112,33 @@ Re-entry resumes the correct stage or selects useful saved work for correction;
 checks and fresh review still decide correctness. Neither an expiry nor a
 confounded answer implies starting from scratch.
 
+### P1 preservation helper (storage, not runtime acceptance)
+
+`PermissionCheckpoint.capture(case_id, workspace, payload)` validates the owned
+worktree against the case repository and actual HEAD, then saves private
+content-addressed blobs plus a digest-bound manifest under the case directory.
+The small reference contains version and manifest SHA-256 only. The payload and
+case journal are separate verified blobs; case spill files and partial streams
+are included alongside worktree files. Ignored files and caches are included,
+not silently dropped. Git administrative files are excluded; the manifest
+records repository/worktree/base identity and the original index digest.
+
+Capture compares a second inventory, journal and Git state before issuing a
+verified reference. This requires a quiescent writer and detects changes; it
+does not provide a sandbox or protection against a hostile concurrent writer.
+Files retain bytes and modes, directories retain modes, symlinks retain link
+text without traversal. Unsupported special files cause refusal, leaving the
+original work intact. Blob/manifest writes are synchronized and read back;
+this is not a machine-power-loss durability guarantee.
+
+`verify` checks the bound manifest and every blob. `restore` verifies first and
+materializes `worktree/` and `case/` only under a new destination with real
+directory ancestors. Existing destinations are refused. A failed capture or
+restore retains its partial material and never deletes the original checkout.
+Restoration does not install Git administrative references or resume execution;
+managed Git reattachment, source freshness and actual pause/release/continuation
+belong to the later runtime integration. No automatic cleanup is enabled here.
+
 F15 already ended under the old guard. P1 must preserve that closed source case
 and explicitly adopt its verified saved response/checkpoint into a new
 permission continuation, checking peer/repo/base/policy and response provenance.

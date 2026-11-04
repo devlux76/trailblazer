@@ -41,7 +41,7 @@
 
 ### Task 1: Durable generic permission contract and preservation
 
-**Files:** create `lib/trailblazer/loop/permission.ex`, `test/trailblazer/loop/permission_test.exs`; modify `lib/trailblazer/case_store.ex`, `priv/migrations/002_cases.sql`.
+**Files:** create `lib/trailblazer/loop/permission.ex`, `permission_checkpoint.ex` and their tests; modify `priv/migrations/002_cases.sql`. The existing `CaseStore.transaction/1` already provides the serialized writer contract; no CaseStore refactor is needed.
 
 **Interfaces:** `Permission.open(case_id, consumer, evidence, checkpoint, opts)` -> `{:ok, request_id}`; `get/1`, `for_case/1`; `decide(request_id, authenticated_peer, decision, now_ms)`; `expire(request_id, now_ms)`; `claim_resume(request_id)` -> `{:ok, checkpoint}` once; `finish_resume(request_id, outcome)`. No function takes a model-chosen executable.
 
