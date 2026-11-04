@@ -206,3 +206,18 @@ blocked. It is idempotent while verifying or already verified, refuses open or
 failed coding cases, and does not dispatch a coder, replay a model, merge, or
 push. Verification evidence and the planner result follow the normal durable
 companion path. Do not edit the assignment database to force completion.
+
+## Compiling code is committed even when tests fail
+
+The locally trusted peer policy can map each admitted repository/check to a
+separate compiler command:
+`"compilation": {"/path/to/worktree": {"full trusted check": "compiler command"}}`.
+The worker freezes that command into the admitted task; remote payloads cannot
+set it. Populate it for compiled-language checks instead of guessing whether a
+failed combined command reached its test phase.
+
+A successful compilation creates a normal hooked commit in the case's private
+compiled-checkpoint branch before tests/review. The checkpoint has its own
+refreshed index and recorded pending-vector count, and survives execution retries.
+Failed tests produce a linked Git-bug report; a final checked/reviewed candidate
+resolves reports. A compiling commit does not merge itself or pass review.

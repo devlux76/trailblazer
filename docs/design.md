@@ -385,6 +385,38 @@ reversing their order. Zero-read, missing-file and unspecified-file tasks keep
 the compatible dual schema. Host decoding still accepts both; schemas stay
 stable throughout each attempt. The format choice is recorded as `edit_format`.
 
+### Compiling checkpoints (operator rule, 2026-11-04; bug:67ba062)
+
+Compilation is a separate, locally configured gate, bound to the admitted
+repository and test/check command in the peer policy's `compilation` map.
+The peer/model cannot supply a compilation command. Absence means compilation
+has not been separately established; it is never inferred from a failed test
+command. Configure this gate for the current compiled-language queue.
+
+Order: artifact preparation, compilation, **commit the exact compiling tree**,
+refresh its index, then run tests and independent review. Failed tests do not
+veto or erase the compiling commit. Each case keeps a private `-compiled`
+worktree/branch with normal commit hooks and issue references. Identical trees
+reuse their commit; later compiling versions are additional commits. Source
+worktree resets never delete these commits. The execution worktree, approved
+candidate lifecycle and primary branch remain separate: a compiling checkpoint
+is neither review approval nor permission to merge.
+
+The compiled worktree's graph is explicitly refreshed after its commit. Its
+indexed HEAD and pending-vector count are recorded with the checkpoint; graph
+freshness is distinct from asynchronous embedding completion. Existing global
+content-addressed embedding cache entries can be reused for unchanged source.
+The original worktree's index continues to describe its own original source.
+Do not silently return compiled/unreviewed source as primary-branch results.
+
+A failed test/check creates a Git-bug report linked to the compiling commit,
+source card/case, exact command, exit status and bounded failure output. Repeated
+failure of the identical checkpoint and command reuses that report. Reports are
+resolved only when a later candidate passes tests and independent review. Until
+then the commits and reports remain inspectable. All these stages share the
+existing 15-minute verification allowance; no deadline is renewed. Candidate
+reports expose `compiled` commits independently from the reviewed `commit`.
+
 ### 7.4 Review against the design
 
 After the check passes, an independent model reviews the diff against the

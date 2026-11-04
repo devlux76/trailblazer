@@ -1,7 +1,7 @@
 defmodule Trailblazer.Vortex.Protocol do
   @moduledoc "Versioned task messages; authority is local policy, never body-supplied identity."
   alias Trailblazer.Files
-  alias Trailblazer.Loop.{Artifacts, Workspace}
+  alias Trailblazer.Loop.{Artifacts, CompiledCheckpoint, Workspace}
   @types ~w(task accepted report escalation receipt claim returned_fix rejected cancel)
   @keys ~w(protocol type id request_id payload)
 
@@ -111,6 +111,12 @@ defmodule Trailblazer.Vortex.Protocol do
           frozen -> Map.put(task, :artifacts, frozen)
         end
 
+      task =
+        case CompiledCheckpoint.select(Map.get(policy, :compilation, %{}), repo, check) do
+          nil -> task
+          command -> Map.put(task, :compilation, command)
+        end
+
       {:ok, if(planner, do: Map.put(task, :planner, planner), else: task)}
     else
       _ -> {:error, :unauthorized_task}
@@ -145,7 +151,9 @@ defmodule Trailblazer.Vortex.Protocol do
   # Outside a git repository the directory name stands, as before.
   @doc false
   def repo_name(repo) do
-    case System.cmd("git", ["-C", repo, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+    case System.cmd(
+           "git",
+           ["-C", repo, "rev-parse", "--path-format=absolute", "--git-common-dir"],
            stderr_to_stdout: true
          ) do
       {common, 0} ->

@@ -33,6 +33,7 @@ defmodule Trailblazer.Loop do
     Artifacts,
     CaseRecord,
     Check,
+    CompiledCheckpoint,
     Edits,
     Lifecycle,
     Prompts,
@@ -62,7 +63,9 @@ defmodule Trailblazer.Loop do
       check: nil,
       ws: nil,
       workspace_closed: false,
-      verification_ms: 0
+      verification_ms: 0,
+      compiled: nil,
+      test_bugs: %{}
     })
 
     id =
@@ -373,6 +376,7 @@ defmodule Trailblazer.Loop do
 
         result =
           with :ok <- prepare_artifacts(st),
+               :ok <- compile_checkpoint(st),
                :ok <- run_check(st, check),
                :ok <- review(st),
                do: {:ok, reply}
@@ -963,6 +967,130 @@ defmodule Trailblazer.Loop do
     end
   end
 
+  defp compile_checkpoint(%{task: %{compilation: nil}}), do: :ok
+
+  defp compile_checkpoint(st) do
+    tree = Lifecycle.tree(st.ws, tally(:changed))
+    result = mod(st, :check, Check).run(st.ws.path, st.task.compilation, verification_opts(st))
+
+    record(
+      st,
+      :check,
+      Map.merge(result, %{phase: :compilation, tree: tree, command: st.task.compilation})
+    )
+
+    budget_remaining!()
+
+    cond do
+      result.status != :pass ->
+        {:retry, :compilation_failed,
+         "Compilation failed; correct the code before a checkpoint can be committed.\n" <>
+           result.output_tail}
+
+      Lifecycle.tree(st.ws, tally(:changed)) != tree ->
+        {:stop,
+         report(
+           st,
+           :failed,
+           "Compilation changed the candidate tree; no unchecked snapshot was committed."
+         )}
+
+      true ->
+        with {:ok, message} <- commit_message(st.task.request) do
+          opts =
+            Keyword.put(Keyword.get(st.opts, :checkpoint_opts, []), :timeout, budget_remaining!())
+
+          record(st, :attempt, %{
+            stage: :compiled_checkpoint_pending,
+            tree: tree,
+            worktree: st.ws.path <> "-compiled"
+          })
+
+          changed = tally(:changed)
+          previous = tally(:compiled)
+
+          published =
+            Backstop.guard(
+              :compiled_checkpoint,
+              st.id,
+              {:ms, budget_remaining!()},
+              fn -> %{tree: tree} end,
+              fn ->
+                CompiledCheckpoint.publish(
+                  st.id,
+                  st.ws,
+                  tree,
+                  changed,
+                  message,
+                  previous,
+                  opts
+                )
+              end
+            )
+
+          case published do
+            {:ok, {:ok, cp}} ->
+              tally(:compiled, cp)
+              record(st, :attempt, Map.merge(Map.drop(cp, [:ws]), %{stage: :compiled_checkpoint}))
+              budget_remaining!()
+              :ok
+
+            error ->
+              record(st, :error, %{stage: :compiled_checkpoint, reason: inspect(error)})
+
+              {:stop,
+               report(
+                 st,
+                 :failed,
+                 "Compiled checkpoint could not be completed; source and checkpoint intent are retained.",
+                 %{reason: :compiled_checkpoint_failed}
+               )}
+          end
+        else
+          {:error, reason} ->
+            {:stop, report(st, :failed, "Compile checkpoint refused: #{describe(reason)}.")}
+        end
+    end
+  end
+
+  defp test_failure_report(_st, %{status: :pass}), do: :ok
+
+  defp test_failure_report(st, result) do
+    case tally(:compiled) do
+      nil ->
+        :ok
+
+      cp ->
+        key = {cp.commit, result.command}
+
+        unless Map.has_key?(tally(:test_bugs), key) do
+          opts =
+            Keyword.put(
+              Keyword.get(st.opts, :checkpoint_opts, []),
+              :timeout,
+              min(30_000, budget_remaining!())
+            )
+
+          case CompiledCheckpoint.report_failure(st.task.repo, st.id, cp, result, opts) do
+            {:ok, ref} ->
+              tally(:test_bugs, Map.put(tally(:test_bugs), key, ref))
+              record(st, :attempt, %{stage: :test_failure_bug, ref: ref, commit: cp.commit})
+
+            error ->
+              record(st, :error, %{
+                stage: :test_failure_bug,
+                reason: inspect(error),
+                commit: cp.commit
+              })
+
+              throw({:lifecycle_error, {:test_failure_bug, error}})
+          end
+        end
+    end
+
+    :ok
+  end
+
   defp run_check(_st, nil), do: :ok
 
   defp run_check(st, command) do
@@ -975,6 +1103,7 @@ defmodule Trailblazer.Loop do
     record(st, :check, result)
     lifecycle(Lifecycle.record_check(st.id, result))
     tally(:check, result)
+    test_failure_report(st, result)
     budget_remaining!()
 
     case result.status do
@@ -1174,6 +1303,20 @@ defmodule Trailblazer.Loop do
             journal = lifecycle(Lifecycle.reconcile(st.id))
 
             if journal["candidate"] == sha do
+              refs = Map.values(tally(:test_bugs)) |> Enum.uniq()
+
+              if refs != [] do
+                resolved =
+                  CompiledCheckpoint.resolve(
+                    st.task.repo,
+                    refs,
+                    sha,
+                    Keyword.get(st.opts, :checkpoint_opts, [])
+                  )
+
+                record(st, :attempt, %{stage: :test_bugs_resolved, results: resolved})
+              end
+
               summary =
                 case close_candidate(st, workspace) do
                   :ok ->
@@ -1228,7 +1371,8 @@ defmodule Trailblazer.Loop do
                 report[:reason] in [
                   :edit_repair_exhausted,
                   :source_context_missing,
-                  :decomposition_required
+                  :decomposition_required,
+                  :compiled_checkpoint_failed
                 ] ->
               {:ok, %{"stage" => "retained"}}
 
@@ -1391,11 +1535,20 @@ defmodule Trailblazer.Loop do
         seconds: div(now() - st.started, 1000)
       },
       case: st.id,
-      verification_deadline_at: System.os_time(:millisecond) + verification_remaining(st)
+      verification_deadline_at: System.os_time(:millisecond) + verification_remaining(st),
+      compiled: compiled_report(),
+      test_bugs: Map.values(tally(:test_bugs)) |> Enum.uniq()
     }
 
     report = Map.merge(report, Map.take(extra, [:reason]))
     if extra[:dossier], do: Map.put(report, :dossier, extra[:dossier]), else: report
+  end
+
+  defp compiled_report do
+    case tally(:compiled) do
+      nil -> nil
+      cp -> cp |> Map.drop([:ws, :source, :case]) |> Map.put(:base, cp.ws.base)
+    end
   end
 
   ## Helpers
@@ -1508,6 +1661,7 @@ defmodule Trailblazer.Loop do
       primary: get.(:primary),
       # Atom-only internal metadata; JSON request fields cannot grant commands.
       artifacts: Map.get(task, :artifacts),
+      compilation: Map.get(task, :compilation),
       read_rounds: read_rounds,
       reasoning_budget_tokens: reasoning_budget,
       replay_reply_from: replay,

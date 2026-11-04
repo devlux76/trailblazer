@@ -1713,4 +1713,86 @@ defmodule Trailblazer.LoopTest do
     assert git(repo, ["show", ref <> ":lib/greeting.ex"]) =~ "Hello; "
     assert git(repo, ["show", report.commit <> ":lib/greeting.ex"]) =~ "Hello, "
   end
+
+  defmodule CheckpointIndex do
+    def watch(_), do: {:ok, self()}
+
+    def fresh(path) do
+      {sha, 0} = System.cmd("git", ["rev-parse", "HEAD"], cd: path)
+      {:ok, %{head: String.trim(sha), generation: 1}}
+    end
+
+    def status(_), do: %{pending_vectors: 0}
+  end
+
+  @tag :compiled_checkpoint
+  test "compilation commits despite failing tests and files one bug for identical code", %{
+    repo: repo,
+    opts: opts
+  } do
+    parent = self()
+
+    command = fn exe, args ->
+      send(parent, {:failure_command, exe, args})
+      {~s({"ref":"vortex:abcdef1"}), 0}
+    end
+
+    script([reply(@fix), reply(@fix), reply(@fix)])
+
+    report =
+      Loop.run(
+        task(repo, %{request: "Greet with comma bug:abcdef1", compilation: "true", check: "false"}),
+        opts ++ [checkpoint_opts: [indexer: CheckpointIndex, command: command]]
+      )
+
+    assert report.status == :failed
+    assert report.check.status == :fail
+    assert report.compiled.commit != nil
+    assert git(repo, ["show", report.compiled.commit <> ":lib/greeting.ex"]) =~ "Hello, "
+    assert git(repo, ["rev-parse", "main"]) |> String.trim() == report.compiled.base
+    assert report.test_bugs == ["vortex:abcdef1"]
+    assert_received {:failure_command, "planner", args}
+    assert "add" == hd(args)
+    assert Enum.any?(args, &String.contains?(&1, report.compiled.commit))
+    refute_received {:failure_command, _, _}
+    assert File.dir?(report.compiled.worktree)
+  end
+
+  @tag :compiled_checkpoint
+  test "failed compilation cannot produce a compiling checkpoint", %{repo: repo, opts: opts} do
+    script([reply(@fix), reply(@fix), reply(@fix)])
+
+    report =
+      Loop.run(
+        task(repo, %{compilation: "false"}),
+        opts ++ [checkpoint_opts: [indexer: CheckpointIndex]]
+      )
+
+    assert report.status == :failed
+    assert report.compiled == nil
+
+    refute Enum.any?(
+             CaseRecord.get(report.case).events,
+             &(&1.data["stage"] == "compiled_checkpoint")
+           )
+  end
+
+  @tag :compiled_checkpoint
+  test "a waiting reviewer still leaves the compiling code committed and indexed", %{
+    repo: repo,
+    opts: opts
+  } do
+    script([reply(@fix), {:error, :model_down}, {:error, :model_down}, {:error, :model_down}])
+
+    report =
+      Loop.run(
+        task(repo, %{request: "Greet with comma bug:abcdef1", compilation: "true"}),
+        opts ++ [checkpoint_opts: [indexer: CheckpointIndex]]
+      )
+
+    assert report.status == :awaiting_review
+    assert report.commit == nil
+    assert report.compiled.index.head == report.compiled.commit
+    assert git(repo, ["show", report.compiled.commit <> ":lib/greeting.ex"]) =~ "Hello, "
+  end
 end

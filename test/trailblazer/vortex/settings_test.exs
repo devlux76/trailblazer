@@ -81,4 +81,34 @@ defmodule Trailblazer.Vortex.SettingsTest do
       assert {:error, :invalid_config} = Settings.load(path)
     end
   end
+
+  test "a compilation command is locally bound to an admitted repo and check" do
+    path =
+      Path.join(System.tmp_dir!(), "compile-policy-#{System.unique_integer([:positive])}.json")
+
+    on_exit(fn -> File.rm(path) end)
+
+    peer = %{
+      "peer" => "caller",
+      "room" => Jason.encode!(["app", "caller"]),
+      "role" => "caller",
+      "repos" => %{"/tmp" => ["tests"]},
+      "compilation" => %{"/tmp" => %{"tests" => "compile"}}
+    }
+
+    config = %{"endpoint" => "/tmp/endpoint", "owner_peer" => "app", "peers" => [peer]}
+    File.write!(path, Jason.encode!(config))
+    assert Settings.load!(path)[:peers]["caller"].compilation["/tmp"]["tests"] == "compile"
+
+    File.write!(
+      path,
+      Jason.encode!(
+        put_in(config, ["peers"], [
+          put_in(peer, ["compilation", "/tmp"], %{"unadmitted" => "compile"})
+        ])
+      )
+    )
+
+    assert {:error, :invalid_config} = Settings.load(path)
+  end
 end
