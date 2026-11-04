@@ -495,7 +495,7 @@ defmodule Trailblazer.LoopTest do
     script([
       reply(wrong <> new_test),
       fn [_, %{content: user}], _ ->
-        assert user =~ "previous edits were discarded"
+        assert user =~ "previous edits remain in the attempt checkpoint"
         assert user =~ "original files"
         assert user =~ "Previous submitted edit blocks"
         assert user =~ "Hello; "
@@ -741,7 +741,7 @@ defmodule Trailblazer.LoopTest do
     refute Keyword.has_key?(coder_opts, :model)
     assert reviewer_opts[:model] == "nemotron-3.5-bolt-e4b:q4"
     assert reviewer_opts[:model_url] == "http://127.0.0.1:8098/v1"
-    assert reviewer_opts[:backstop_ms] == 900_000
+    assert reviewer_opts[:backstop_ms] in 1..900_000
     assert reviewer_opts[:role] == :reviewer
   end
 
@@ -1573,5 +1573,144 @@ defmodule Trailblazer.LoopTest do
       script([first, reply("PASS")])
       assert Loop.run(task(repo, extra), opts).status == :fixed
     end
+  end
+
+  @tag :hour_of_code
+  test "hour of code expires three fresh contexts and preserves every partial", %{
+    repo: repo,
+    opts: opts
+  } do
+    timeout = fn _messages, call_opts ->
+      assert is_integer(call_opts[:backstop_ms])
+      assert call_opts[:backstop_ms] <= 200
+      {:ok, partial} = reply("unfinished code", %{finish_reason: nil})
+      call_opts[:on_partial].(partial)
+      Process.sleep(call_opts[:backstop_ms] + 5)
+      {:error, {:backstop, :generation_test}}
+    end
+
+    script(List.duplicate(timeout, 3))
+    report = Loop.run(task(repo, %{primary: "main"}), opts ++ [generation_limit_ms: 200])
+    assert report.status == :failed
+    assert report.reason == :decomposition_required
+    assert report.attempts == 3
+    assert File.dir?(report.worktree)
+    events = CaseRecord.get(report.case).events
+    assert Enum.count(events, &(&1.kind == "reply" and &1.data["partial"] == true)) == 3
+    checkpoints = Enum.filter(events, &(&1.data["stage"] == "attempt_checkpoint"))
+    assert length(checkpoints) == 3
+
+    for e <- checkpoints do
+      assert String.trim(git(repo, ["rev-parse", e.data["ref"]])) == e.data["tree"]
+    end
+
+    for _ <- 1..3 do
+      assert_received {:asked, messages, _}
+      refute Enum.any?(messages, &(&1.role == "assistant"))
+    end
+
+    refute_received {:asked, _, _}
+  end
+
+  @tag :hour_of_code
+  test "read exchanges share the same generation deadline instead of resetting it", %{
+    repo: repo,
+    opts: opts
+  } do
+    script([
+      fn _, call_opts ->
+        assert call_opts[:backstop_ms] <= 400
+        Process.sleep(160)
+
+        reply("", %{
+          tool_calls: [%{id: "read1", name: "read", arguments: ~s({"path":"lib/greeting.ex"})}]
+        })
+      end,
+      fn _, call_opts ->
+        assert call_opts[:backstop_ms] < 250
+        Process.sleep(call_opts[:backstop_ms] + 5)
+        {:error, {:backstop, :generation_test}}
+      end,
+      reply(@fix),
+      reply("PASS")
+    ])
+
+    report = Loop.run(task(repo), opts ++ [generation_limit_ms: 400])
+    assert report.status == :fixed
+    assert report.attempts == 2
+  end
+
+  @tag :hour_of_code
+  test "verification has one budget and preserves a checked tree when review expires", %{
+    repo: repo,
+    opts: opts
+  } do
+    script([
+      reply(@fix),
+      fn _, call_opts ->
+        assert call_opts[:backstop_ms] <= 200
+        Process.sleep(call_opts[:backstop_ms] + 5)
+        {:error, {:backstop, :review_test}}
+      end
+    ])
+
+    report = Loop.run(task(repo), opts ++ [verification_limit_ms: 200])
+    assert report.status == :awaiting_review
+    assert report.reason == :verification_budget_exhausted
+    assert report.check.status == :pass
+    assert report.commit == nil
+    assert File.read!(Path.join(report.worktree, "lib/greeting.ex")) =~ "Hello, "
+    assert_received {:asked, _, _}
+    assert_received {:asked, _, _}
+    refute_received {:asked, _, _}
+  end
+
+  @tag :hour_of_code
+  test "checks cannot consume a new verification allowance on each attempt", %{
+    repo: repo,
+    opts: opts
+  } do
+    script([reply(@fix), reply(@fix), reply(@fix)])
+    report = Loop.run(task(repo, %{check: "sleep 2"}), opts ++ [verification_limit_ms: 100])
+    assert report.status == :awaiting_review
+    assert report.reason == :verification_budget_exhausted
+    assert report.check.status == :timeout
+    assert report.attempts == 1
+  end
+
+  defmodule StalledRead do
+    def call(_, _, _, _) do
+      Process.sleep(5000)
+      "too late"
+    end
+  end
+
+  @tag :hour_of_code
+  test "a stuck read is interrupted by the same generation timer", %{repo: repo, opts: opts} do
+    read =
+      reply("", %{
+        tool_calls: [%{id: "read1", name: "read", arguments: ~s({"path":"lib/greeting.ex"})}]
+      })
+
+    script([read, read, read])
+    started = System.monotonic_time(:millisecond)
+    report = Loop.run(task(repo), opts ++ [tools: StalledRead, generation_limit_ms: 100])
+    assert System.monotonic_time(:millisecond) - started < 2500
+    assert report.reason == :decomposition_required
+    assert report.attempts == 3
+  end
+
+  @tag :hour_of_code
+  test "generated code remains reachable after the next attempt resets the checkout", %{
+    repo: repo,
+    opts: opts
+  } do
+    wrong = String.replace(@fix, ~s("Hello, " <> name), ~s("Hello; " <> name))
+    script([reply(wrong), reply(@fix), reply("PASS")])
+    report = Loop.run(task(repo), opts)
+    assert report.status == :fixed
+    ref = "refs/trailblazer/attempts/#{report.case}/1"
+    assert git(repo, ["show", ref <> ":lib/greeting.ex"]) =~ "Hello; "
+    assert git(repo, ["show", report.commit <> ":lib/greeting.ex"]) =~ "Hello, "
   end
 end

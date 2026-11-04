@@ -269,6 +269,11 @@ defmodule Trailblazer.Planner.Companion do
     commit = field(record.report, :commit)
     branch = "trailblazer/" <> record.id
 
+    deadline =
+      field(record.report, :verification_deadline_at) || System.os_time(:millisecond) + limit
+
+    check_opts = [timeout: limit, deadline_at: deadline]
+
     with true <- is_binary(commit) and Regex.match?(~r/\A[0-9a-f]{40}\z/, commit),
          {:ok, ^commit} <- git(repo, ["rev-parse", "refs/heads/" <> branch]) do
       root = Path.join([Config.get(:state_dir), "planner-verification", record.id])
@@ -278,8 +283,8 @@ defmodule Trailblazer.Planner.Companion do
              :ok <- remove_interrupted_worktree(repo, root),
              {:ok, _} <- git(repo, ["worktree", "add", "--detach", root, commit]),
              :ok <- Workspace.provision_checkout(root, repo),
-             :ok <- verify_artifacts(root, field(task, :artifacts), limit) do
-          result = Check.run(root, command, timeout: limit)
+             :ok <- verify_artifacts(root, field(task, :artifacts), check_opts) do
+          result = Check.run(root, command, check_opts)
 
           tail =
             result.output_tail
@@ -325,8 +330,8 @@ defmodule Trailblazer.Planner.Companion do
 
   defp verify_artifacts(_root, nil, _limit), do: :ok
 
-  defp verify_artifacts(root, policy, limit) do
-    case Artifacts.verify(root, policy, timeout: limit) do
+  defp verify_artifacts(root, policy, opts) do
+    case Artifacts.verify(root, policy, opts) do
       {:ok, _} -> :ok
       {:error, evidence} -> {:error, {:artifact_verification, evidence}}
     end

@@ -27,7 +27,7 @@ defmodule Trailblazer.Loop do
 
   require Logger
 
-  alias Trailblazer.{Anomaly, Config, EmbedGate, Files, Model, Trail}
+  alias Trailblazer.{Anomaly, Backstop, Config, EmbedGate, Files, Model, Trail}
 
   alias Trailblazer.Loop.{
     Artifacts,
@@ -61,7 +61,8 @@ defmodule Trailblazer.Loop do
       changed: [],
       check: nil,
       ws: nil,
-      workspace_closed: false
+      workspace_closed: false,
+      verification_ms: 0
     })
 
     id =
@@ -326,12 +327,14 @@ defmodule Trailblazer.Loop do
         # the last attempt's edits stay in the worktree for inspection
         retry? = n < @attempts and is_nil(st.task.replay_reply_from)
 
-        case if(retry?, do: mod(st, :workspace, Workspace).reset(st.ws), else: :ok) do
+        reset = fn -> if retry?, do: mod(st, :workspace, Workspace).reset(st.ws), else: :ok end
+
+        case with :ok <- checkpoint_attempt(st, n), do: reset.() do
           :ok ->
             next_feedback =
               if retry? do
                 next_feedback <>
-                  "\n\nThe worktree was reset to its original files; all previous edits were discarded. " <>
+                  "\n\nThe worktree was reset to its original files; previous edits remain in the attempt checkpoint and case record. " <>
                   "Apply your complete corrected change to the original files shown above."
               else
                 next_feedback
@@ -355,14 +358,87 @@ defmodule Trailblazer.Loop do
     end
   end
 
+  # A generation deadline spans every read, correction and model call in one
+  # fresh conversation. Verification time is shared across all three attempts.
   defp attempt(st, trail, files, check, feedback) do
-    with {:ok, reply} <- coder_reply(st, trail, files, feedback),
+    with {:ok, reply} <- generate(st, trail, files, feedback),
          {:ok, blocks} <- blocks(st, reply),
-         :ok <- apply_edits(st, blocks),
-         :ok <- prepare_artifacts(st),
-         :ok <- run_check(st, check),
-         :ok <- review(st) do
-      {:ok, reply}
+         :ok <- apply_edits(st, blocks) do
+      started = now()
+      remaining = verification_remaining(st)
+      tally(:phase, {:verification, started + remaining})
+
+      try do
+        budget_remaining!()
+
+        result =
+          with :ok <- prepare_artifacts(st),
+               :ok <- run_check(st, check),
+               :ok <- review(st),
+               do: {:ok, reply}
+
+        budget_remaining!()
+        result
+      catch
+        :throw, {:budget_expired, :verification} ->
+          {:awaiting_review, :verification_budget_exhausted}
+      after
+        tally(:verification_ms, tally(:verification_ms) + now() - started)
+        tally(:phase, nil)
+      end
+    end
+  end
+
+  defp generate(st, trail, files, feedback) do
+    limit = Keyword.get(st.opts, :generation_limit_ms, 900_000)
+    tally(:phase, {:generation, now() + limit})
+    record(st, :attempt, %{stage: :generation_budget, limit_ms: limit})
+
+    try do
+      result = coder_reply(st, trail, files, feedback)
+      budget_remaining!()
+      result
+    catch
+      :throw, {:budget_expired, :generation} ->
+        record(st, :error, %{stage: :generation, reason: :generation_timeout})
+
+        {:retry, :generation_timeout,
+         "The 15-minute generation window expired. Start in a fresh context and submit a smaller complete change. Partial output is preserved in the case record."}
+    after
+      tally(:phase, nil)
+    end
+  end
+
+  defp verification_remaining(st),
+    do: max(0, Keyword.get(st.opts, :verification_limit_ms, 900_000) - tally(:verification_ms))
+
+  defp budget_remaining! do
+    {phase, deadline} = tally(:phase)
+    remaining = deadline - now()
+    if remaining <= 0, do: throw({:budget_expired, phase})
+    remaining
+  end
+
+  defp verification_opts(st) do
+    remaining = budget_remaining!()
+    opts = Keyword.get(st.opts, :check_opts, [])
+
+    opts
+    |> Keyword.put(:timeout, min(remaining, opts[:timeout] || Config.get(:backstop_check_ms)))
+    |> Keyword.put(:deadline_at, System.os_time(:millisecond) + remaining)
+  end
+
+  defp checkpoint_attempt(st, n) do
+    tree = Lifecycle.tree(st.ws, tally(:changed))
+    ref = "refs/trailblazer/attempts/#{st.id}/#{n}"
+
+    case git(st.ws.path, ["update-ref", ref, tree]) do
+      {:ok, _} ->
+        record(st, :attempt, %{stage: :attempt_checkpoint, n: n, tree: tree, ref: ref})
+        :ok
+
+      {:error, reason} ->
+        {:error, {:checkpoint_failed, reason}}
     end
   end
 
@@ -617,7 +693,24 @@ defmodule Trailblazer.Loop do
 
   defp answer_tool(st, call) do
     target = %{repo: st.task.repo, worktree: st.ws.path}
-    result = mod(st, :tools, Tools).call(target, call.name, call.arguments, query_opts(st))
+    remaining = budget_remaining!()
+
+    result =
+      case Backstop.guard(
+             :generation_tool,
+             st.id,
+             {:ms, remaining},
+             fn -> %{tool: call.name} end,
+             fn ->
+               mod(st, :tools, Tools).call(target, call.name, call.arguments, query_opts(st))
+             end
+           ) do
+        {:ok, result} -> result
+        {:error, {:backstop, _}} -> throw({:budget_expired, :generation})
+        {:error, reason} -> "Tool failed: #{inspect(reason)}"
+      end
+
+    budget_remaining!()
 
     record(st, :tool_call, %{
       id: call.id,
@@ -676,18 +769,39 @@ defmodule Trailblazer.Loop do
     opts = role_opts ++ opts
     opts = opts ++ Keyword.get(st.opts, :model_opts, [])
 
-    case with_gate(st, fn -> mod(st, :model, Model).chat(messages, opts) end) do
+    result =
+      with_gate(st, fn ->
+        remaining = budget_remaining!()
+        timeout = min(remaining, opts[:backstop_ms] || Config.get(:backstop_model_ms))
+        mod(st, :model, Model).chat(messages, Keyword.put(opts, :backstop_ms, timeout))
+      end)
+
+    # Preserve a complete late reply too; a deadline never erases work.
+    case result do
+      {:ok, reply} -> record(st, :reply, Map.put(reply, :role, role))
+      _ -> :ok
+    end
+
+    tally(:model_calls, tally(:model_calls) + 1)
+
+    case result do
       {:ok, reply} ->
-        record(st, :reply, Map.put(reply, :role, role))
         usage = Map.get(reply, :usage) || %{}
-        tally(:model_calls, tally(:model_calls) + 1)
         tally(:prompt_tokens, tally(:prompt_tokens) + (usage[:prompt_tokens] || 0))
         tally(:completion_tokens, tally(:completion_tokens) + (usage[:completion_tokens] || 0))
+
+      _ ->
+        :ok
+    end
+
+    budget_remaining!()
+
+    case result do
+      {:ok, reply} ->
         {:ok, reply}
 
       {:error, reason} when role == :reviewer ->
         record(st, :error, %{stage: :reviewer, reason: reason})
-        tally(:model_calls, tally(:model_calls) + 1)
         {:review_error, reason}
 
       {:error, :model_down} ->
@@ -695,7 +809,6 @@ defmodule Trailblazer.Loop do
         {:stop, report(st, :failed, "The code model is not running.")}
 
       {:error, :output_limit} ->
-        tally(:model_calls, tally(:model_calls) + 1)
         record(st, :error, %{stage: role, reason: :output_limit})
 
         {:stop,
@@ -710,7 +823,6 @@ defmodule Trailblazer.Loop do
         {:stop, report(st, :failed, "The code model answered HTTP #{status}.")}
 
       {:error, reason} ->
-        tally(:model_calls, tally(:model_calls) + 1)
         record(st, :error, %{stage: role, reason: reason})
 
         {:retry, {:model, reason},
@@ -816,7 +928,7 @@ defmodule Trailblazer.Loop do
   defp prepare_artifacts(%{task: %{artifacts: nil}}), do: :ok
 
   defp prepare_artifacts(st) do
-    case Artifacts.prepare(st.ws.path, st.task.artifacts, Keyword.get(st.opts, :check_opts, [])) do
+    case Artifacts.prepare(st.ws.path, st.task.artifacts, verification_opts(st)) do
       {:ok, evidence} ->
         record(st, :attempt, Map.put(evidence, :stage, :artifacts))
         tally(:artifacts, evidence)
@@ -846,12 +958,13 @@ defmodule Trailblazer.Loop do
     tree = Lifecycle.tree(st.ws, tally(:changed))
 
     result =
-      mod(st, :check, Check).run(st.ws.path, command, Keyword.get(st.opts, :check_opts, []))
+      mod(st, :check, Check).run(st.ws.path, command, verification_opts(st))
 
     result = Map.merge(result, %{command: command, tree: tree})
     record(st, :check, result)
     lifecycle(Lifecycle.record_check(st.id, result))
     tally(:check, result)
+    budget_remaining!()
 
     case result.status do
       :pass ->
@@ -974,16 +1087,27 @@ defmodule Trailblazer.Loop do
     })
 
     note =
-      "The reviewer could not produce a verdict (#{describe(reason)}). " <>
-        "The checked tree is pinned at #{ref} (tree #{tree}); " <>
-        "the worktree and branch are retained; no commit was made and " <>
-        "the coder was not asked again. The frontier reviews; nothing is re-coded."
+      if reason == :verification_budget_exhausted do
+        "The shared 15-minute verification budget expired. The tree at #{ref} is preserved; check status is #{inspect(tally(:check) && tally(:check).status)}. Frontier verification is required; no automatic coder retry."
+      else
+        "The reviewer could not produce a verdict (#{describe(reason)}). " <>
+          "The checked tree is pinned at #{ref} (tree #{tree}); " <>
+          "the worktree and branch are retained; no commit was made and " <>
+          "the coder was not asked again. The frontier reviews; nothing is re-coded."
+      end
 
     report(
       st,
       :awaiting_review,
       note,
-      %{files: tally(:changed), tree: tree, ref: ref, reason: reason, pinned: pinned}
+      %{
+        files: tally(:changed),
+        tree: tree,
+        ref: ref,
+        reason: reason,
+        pinned: pinned,
+        attempts: length(st.failures) + 1
+      }
     )
     |> Map.put(:awaiting_review, %{ref: ref, tree: tree, reason: reason, pinned: pinned})
   end
@@ -1085,10 +1209,16 @@ defmodule Trailblazer.Loop do
         result =
           cond do
             report.status == :fixed ->
-              coordinator.accept(id, Keyword.take(opts, [:check_opts]))
+              checks = Keyword.get(opts, :check_opts, [])
+              checks = Keyword.put(checks, :deadline_at, report.verification_deadline_at)
+              coordinator.accept(id, check_opts: checks)
 
             report.status == :awaiting_review or
-                report[:reason] in [:edit_repair_exhausted, :source_context_missing] ->
+                report[:reason] in [
+                  :edit_repair_exhausted,
+                  :source_context_missing,
+                  :decomposition_required
+                ] ->
               {:ok, %{"stage" => "retained"}}
 
             true ->
@@ -1207,10 +1337,11 @@ defmodule Trailblazer.Loop do
     report(
       st,
       :failed,
-      "#{attempts} attempts failed: #{diagnosis}. The dossier says what was tried.",
+      "#{attempts} attempts failed: #{diagnosis}. Decompose this card into smaller tasks; preserved attempt checkpoints and the dossier show what was tried.",
       %{
         attempts: attempts,
         dossier: dossier,
+        reason: :decomposition_required,
         files: tally(:changed)
       }
     )
@@ -1248,7 +1379,8 @@ defmodule Trailblazer.Loop do
         completion_tokens: tally(:completion_tokens),
         seconds: div(now() - st.started, 1000)
       },
-      case: st.id
+      case: st.id,
+      verification_deadline_at: System.os_time(:millisecond) + verification_remaining(st)
     }
 
     report = Map.merge(report, Map.take(extra, [:reason]))

@@ -391,10 +391,11 @@ first anti-goal: code that passes the tests and breaks the design.
 The reviewer is a different model than the coder, on its own router;
 Spark never reviews Spark. The configured reviewer is Nemotron
 (`nemotron-3.5-bolt-e4b:q4`, iGPU router `http://127.0.0.1:8098/v1`).
-Up to three passes, each under its own 15-minute Backstop — a retry
-never inherits or resets a budget — and each unusable pass (timeout,
-unavailable route, malformed verdict) retries the reviewer with a
-fresh call and budget; the third parks the case. A clear FAIL returns
+Up to three review passes fit within the card's shared 15-minute verification
+allowance (operator hour-of-code rule, 2026-11-04). Each call's Backstop is
+clamped to the remaining allowance; an unusable verdict may retry, but never
+renews that allowance. Expiry immediately preserves the candidate for frontier
+verification; the third unusable pass also parks the case. A clear FAIL returns
 findings to the coder; an unclear, timed-out,
 unavailable or unusable review is never fed to the coder and never
 fails a tree that passed its check: the case closes as `awaiting_review`,
@@ -404,6 +405,41 @@ compile/run regression evidence (Nemotron; Codex, or Claude when Codex
 authored the change).
 
 ### 7.5 Three attempts, then phone a friend
+
+**Hour of code (operator, 2026-11-04; bug:dfc3bd9).** Each fresh coder context
+has a hard 900,000 ms generation window, starting before its prompt is built.
+Read/search calls, reasoning, prompt evaluation, edit submissions and same-context
+corrections all share this deadline; individual model-call limits cannot renew
+it. The existing Backstop stops inference and bounds read/search work. Partial
+responses are recorded synchronously. A complete late response is retained but
+cannot proceed as a successful generation.
+
+Before any failed attempt is reset, pin its generated tree at
+`refs/trailblazer/attempts/<case>/<attempt>`. Original replies, submitted blocks,
+compiler failures and partial output remain in the case record. The next attempt
+starts from the original source in a fresh conversation with the failure feedback;
+no previous chat history is resumed. After three unsuccessful attempts, return
+`failed` with reason `decomposition_required`, a dossier and retained workspace.
+The planner blocks the parent for decomposition; do not automatically readmit the
+same card. Smaller child tasks must have their own checks and acceptance scope.
+
+Artifact preparation, checks and independent review share a cumulative 900,000 ms
+verification allowance across the three attempts. Generation time does not
+consume it. An exhausted allowance retains the tree as `awaiting_review`, with
+explicit check status (which can be unverified or timed out); it never authorizes
+a commit or another coder retry. Remaining verification time follows a fixed
+candidate into coordinator/Companion detached checks as an absolute deadline;
+those checks cannot each obtain a fresh allowance. Tests use shorter trusted
+limits; task payloads cannot widen them. Thus scheduled generation is at most
+3 x 15 minutes, with at most 15 minutes of verification. Admission, dependency
+provisioning, preservation and cleanup remain separately supervised overhead;
+report them separately rather than claiming a strict one-hour end-to-end SLA.
+
+DSpark was previously measured by the operator to improve 5 to 6 TPS. Current
+case traces at 1.6–1.9 TPS are a regression to investigate, not evidence that the
+original comparison was absent. Apply the time-box rule first; if a bounded run
+still cannot deliver, compare one representative edit with minimal context against
+the full harness before making further tool changes.
 
 The operator's rule: **at most three local attempts, then escalate.** There
 is no judgement of whether a task "looks trivial" and no fourth local

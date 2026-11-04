@@ -463,4 +463,25 @@ defmodule Trailblazer.Planner.CompanionTest do
       GenServer.stop(pid)
     end
   end
+
+  test "detached verification cannot renew an expired card budget", ctx do
+    {repo, git} = repo(ctx.dir)
+    marker = Path.join(ctx.dir, "must-not-run")
+    id = admit(repo, %{ref: "vortex:abcdef1", deadline_ms: nil}, "touch " <> marker)
+    git.(["branch", "trailblazer/" <> id])
+    {sha, 0} = System.cmd("git", ["rev-parse", "HEAD"], cd: repo)
+    start(ctx)
+
+    CaseRecord.close(id, %{
+      case: id,
+      status: :fixed,
+      commit: String.trim(sha),
+      summary: "ok",
+      verification_deadline_at: System.os_time(:millisecond) - 1
+    })
+
+    eventually(fn -> row(id).state == "block" end)
+    refute File.exists?(marker)
+    assert CaseRecord.get(id).report["commit"] == String.trim(sha)
+  end
 end

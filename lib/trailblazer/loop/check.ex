@@ -42,6 +42,23 @@ defmodule Trailblazer.Loop.Check do
   def run(%{path: path}, command, opts), do: run(path, command, opts)
 
   def run(path, command, opts) do
+    limit = Keyword.get(opts, :timeout, Config.get(:backstop_check_ms))
+    deadline = Keyword.get(opts, :deadline_at, System.os_time(:millisecond) + limit)
+    remaining = min(limit, deadline - System.os_time(:millisecond))
+
+    if remaining <= 0 do
+      %{
+        status: :timeout,
+        exit: nil,
+        output_tail: "Verification budget exhausted; command not started.",
+        ms: 0
+      }
+    else
+      run_bounded(path, command, Keyword.put(opts, :timeout, remaining))
+    end
+  end
+
+  defp run_bounded(path, command, opts) do
     caller = self()
     token = make_ref()
 

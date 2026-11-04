@@ -151,4 +151,26 @@ defmodule Trailblazer.Loop.CheckTest do
           eventually(fun, left - 1)
         )
   end
+
+  test "an expired shared deadline never starts another command", %{root: root} do
+    result =
+      Check.run(root, "touch should-not-exist",
+        timeout: 1000,
+        deadline_at: System.os_time(:millisecond) - 1
+      )
+
+    assert result.status == :timeout
+    refute File.exists?(Path.join(root, "should-not-exist"))
+  end
+
+  test "commands share an absolute deadline rather than renewing their allowance", %{root: root} do
+    deadline = System.os_time(:millisecond) + 300
+    assert Check.run(root, "sleep 0.15", timeout: 1000, deadline_at: deadline).status == :pass
+
+    result =
+      Check.run(root, "sleep 1; touch should-not-exist", timeout: 1000, deadline_at: deadline)
+
+    assert result.status == :timeout
+    refute File.exists?(Path.join(root, "should-not-exist"))
+  end
 end

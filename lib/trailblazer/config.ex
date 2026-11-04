@@ -162,7 +162,7 @@ defmodule Trailblazer.Config do
   # fail the checked case.
   defp default(:review_model), do: "nemotron-3.5-bolt-e4b:q4"
   defp default(:review_model_url), do: "http://127.0.0.1:8098/v1"
-  # One review pass gets fifteen minutes, like a coder pass.
+  # A review call is additionally clamped to the card's shared verification allowance.
   defp default(:review_backstop_ms), do: 900_000
   defp default(:code_model_max_tokens), do: 16_384
   # Backstops (design §13.2): set from measurements with a wide margin, so

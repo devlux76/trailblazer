@@ -162,7 +162,13 @@ For supervised work that should continue while progressing, call
 assignment's result deadline, including across recovery, and preserves automatic
 independent verification when the case closes. It never stops the worker.
 The local checked launcher uses this mode and a cleanup-only native observer;
-30 minutes is the coordinator's review interval, not an automatic runtime cap.
+This disables only the assignment result alarm. It does not disable the
+hour-of-code execution limits: three fresh coder contexts, at most 15 minutes
+each including all read/correction calls, plus one shared 15-minute verification
+allowance. Preserve partial replies and pin each failed tree before reset. Three
+unsuccessful attempts return decomposition_required and block the parent for
+smaller tasks, rather than silently readmitting it. Verification expiry preserves
+the tree for frontier checks; no new coder run is authorized.
 
 After a failed check or review, the next coder prompt includes the exact latest
 applied edit blocks as reference, captured before the check ran. The worktree
