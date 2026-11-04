@@ -60,15 +60,18 @@ defmodule Trailblazer.Loop.PermissionCheckpoint do
       private_write!(Path.join(staging, "manifest.json"), bytes)
       final = Path.join(store, sha)
 
-      case File.rename(staging, final) do
-        :ok -> :ok
-        {:error, reason} when reason in [:eexist, :enotempty] -> :ok
-        {:error, _} -> fail(:storage_failed)
-      end
+      duplicate? =
+        case File.rename(staging, final) do
+          :ok -> false
+          {:error, reason} when reason in [:eexist, :enotempty] -> true
+          {:error, _} -> fail(:storage_failed)
+        end
 
       ref = %{"version" => 1, "sha256" => sha}
       # A reference is issued only after reading back the published copy.
       load!(case_id, ref)
+      # Only a verified redundant copy is discarded, never unfinished work.
+      if duplicate?, do: File.rm_rf!(staging)
       {:ok, ref}
     end)
   end

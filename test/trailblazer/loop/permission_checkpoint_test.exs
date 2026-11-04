@@ -233,4 +233,15 @@ defmodule Trailblazer.Loop.PermissionCheckpointTest do
     {index, 0} = System.cmd("git", ["show", ":staged"], cd: c.ws.path)
     assert index == "retain this too"
   end
+
+  test "a duplicate verified capture leaves no redundant staging copy", c do
+    {:ok, ref} = PermissionCheckpoint.capture(c.case_id, c.ws, %{})
+    assert {:ok, ^ref} = PermissionCheckpoint.capture(c.case_id, c.ws, %{})
+
+    assert File.ls!(Path.join(CaseRecord.dir(c.case_id), "permission-checkpoints")) == [
+             ref["sha256"]
+           ]
+
+    assert {:ok, _} = PermissionCheckpoint.verify(c.case_id, ref)
+  end
 end
