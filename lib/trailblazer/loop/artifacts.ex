@@ -208,7 +208,7 @@ defmodule Trailblazer.Loop.Artifacts do
     outside =
       Enum.reject(changed, fn path ->
         path in allowed or
-          (before[path] == nil and match?({:directory, _}, after_build[path]) and
+          (parent_directory?(before[path], after_build[path]) and
              Enum.any?(allowed, &String.starts_with?(&1, path <> "/")))
       end)
 
@@ -216,6 +216,13 @@ defmodule Trailblazer.Loop.Artifacts do
       do: {:ok, Enum.filter(changed, &(&1 in allowed))},
       else: {:error, %{reason: :outside_outputs, paths: outside}}
   end
+
+  defp parent_directory?(nil, {:directory, _}), do: true
+
+  defp parent_directory?({:directory, before}, {:directory, after_mode}),
+    do: :erlang.band(after_mode, :erlang.bnot(before)) == 0
+
+  defp parent_directory?(_, _), do: false
 
   defp clean(:verify, [_ | _]), do: {:error, :regeneration_required}
   defp clean(_, _), do: :ok

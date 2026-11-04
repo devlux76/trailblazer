@@ -50,6 +50,12 @@ an arbitrary preparation command through request fields.
    Cache exclusions are root-only: nested dependency/cache writes are guarded
    and fail closed. Policy authors must avoid undeclared cache writes, including
    gitignored caches; this stage is not a package installer.
+   A real directory that is an ancestor of a declared output may remain a real
+   directory while its mode loses permission bits (for example, a build's
+   `rm/mkdir` changes 0775 to 0755). It may not gain any permission/special bits.
+   Parent deletion/type replacement and unrelated directory changes remain
+   outside scope. Existing new-parent creation behaviour is unchanged. Parent
+   directories never become committed paths merely because their modes changed.
 3. Include changed declared outputs in the candidate's changed paths, review and
    commit. Record preparation command, exit/status, output tail and generated
    paths. Inform the reviewer which changes came from trusted generation and

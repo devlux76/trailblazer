@@ -216,4 +216,32 @@ defmodule Trailblazer.Loop.ArtifactsTest do
     git(root, ["-c", "core.hooksPath=/dev/null", "commit", "-qm", "explicit regeneration"])
     assert {:ok, _} = Artifacts.verify(root, p)
   end
+
+  test "recreated output parents may narrow modes without entering committed paths", %{root: root} do
+    File.mkdir_p!(Path.join(root, "dist"))
+    File.chmod!(Path.join(root, "dist"), 0o775)
+    File.write!(Path.join(root, "dist/bundle"), "old")
+
+    p =
+      policy(root, "rm -rf dist && mkdir -m 755 dist && printf new > dist/bundle", ["dist/bundle"])
+
+    assert {:ok, result} = Artifacts.prepare(root, p)
+    assert result.paths == ["dist/bundle"]
+    assert {:ok, _} = Artifacts.verify(root, p)
+    File.mkdir_p!(Path.join(root, "unrelated"))
+    p = policy(root, "chmod 700 unrelated", ["dist/bundle"])
+
+    assert {:error, %{reason: :outside_outputs, paths: ["unrelated"]}} =
+             Artifacts.prepare(root, p)
+  end
+
+  test "existing output-parent permissions cannot widen", %{root: root} do
+    File.mkdir_p!(Path.join(root, "dist"))
+
+    for {before, after_mode} <- [{0o775, "777"}, {0o755, "775"}, {0o750, "755"}, {0o755, "2755"}] do
+      File.chmod!(Path.join(root, "dist"), before)
+      p = policy(root, "chmod #{after_mode} dist; printf new > dist/bundle", ["dist/bundle"])
+      assert {:error, %{reason: :outside_outputs, paths: ["dist"]}} = Artifacts.prepare(root, p)
+    end
+  end
 end
