@@ -389,6 +389,8 @@ defmodule Trailblazer.Vortex.Store do
       "summary" => String.slice(report["summary"] || "", 0, 300),
       "attempts" => report["attempts"] || 0,
       "commit" => report["commit"],
+      "compiled" => report["compiled"],
+      "test_bugs" => report["test_bugs"] || [],
       "files" => report["files"] || [],
       "check" => report["check"],
       "branch" => report["branch"],

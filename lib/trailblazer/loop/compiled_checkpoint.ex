@@ -92,16 +92,23 @@ defmodule Trailblazer.Loop.CompiledCheckpoint do
   def report_failure(repo, id, checkpoint, result, opts \\ []) do
     name = Trailblazer.Vortex.Protocol.repo_name(repo)
 
+    identity = checkpoint.commit || checkpoint.tree
+
+    compilation =
+      if checkpoint.commit,
+        do: "compiled commit #{checkpoint.commit}",
+        else: "tree #{checkpoint.tree}; compilation not separately established"
+
     body =
-      "Failing tests on compiled candidate #{checkpoint.commit}.\nCase: #{id}\n" <>
-        "Source card is in the case record. Compiled branch: #{checkpoint.branch}\n" <>
+      "Failing tests on #{compilation}.\nCase: #{id}\n" <>
+        "Source card: #{String.slice(Keyword.get(opts, :source_request, "see case record"), 0, 255)}\nCompiled branch: #{checkpoint.branch}\n" <>
         "Check: #{result.command}\nExit: #{inspect(result.exit)}\n\n#{result.output_tail}"
 
     args = [
       "add",
       name,
       "--title",
-      "Tests fail on compiled candidate #{String.slice(checkpoint.commit, 0, 12)}",
+      "Tests fail on candidate #{String.slice(identity, 0, 12)}",
       "--plan",
       body,
       "--priority",
@@ -123,19 +130,20 @@ defmodule Trailblazer.Loop.CompiledCheckpoint do
   def resolve(repo, refs, commit, opts \\ []) do
     Enum.map(refs, fn ref ->
       [_, bug] = String.split(ref, ":", parts: 2)
-      evidence = "Resolved by independently checked and reviewed candidate #{commit}."
+      evidence = "Checks pass on candidate #{commit}; see the case record for review evidence."
 
       with {:ok, {_, 0}} <-
              command(
                repo,
                "git",
-               ["bug", "comment", "new", bug, "-m", evidence, "--non-interactive"],
+               ["bug", "bug", "comment", "new", bug, "-m", evidence, "--non-interactive"],
                opts
              ),
            {:ok, {_, 0}} <- command(repo, "git", ["bug", "bug", "status", "close", bug], opts),
-           {:ok, {_, 0}} <- command(repo, "git", ["bug", "label", "rm", bug, "status:todo"], opts),
            {:ok, {_, 0}} <-
-             command(repo, "git", ["bug", "label", "new", bug, "status:done"], opts),
+             command(repo, "git", ["bug", "bug", "label", "rm", bug, "status:todo"], opts),
+           {:ok, {_, 0}} <-
+             command(repo, "git", ["bug", "bug", "label", "new", bug, "status:done"], opts),
            do: {:ok, ref},
            else: (error -> {:error, ref, error})
     end)
@@ -145,7 +153,8 @@ defmodule Trailblazer.Loop.CompiledCheckpoint do
     run =
       Keyword.get(opts, :command, fn exe, argv ->
         path = Path.expand("~/.local/bin") <> ":" <> (System.get_env("PATH") || "")
-        System.cmd(exe, argv, cd: repo, stderr_to_stdout: true, env: [{"PATH", path}])
+        program = if exe == "planner", do: Path.expand("~/.local/bin/planner"), else: exe
+        System.cmd(program, argv, cd: repo, stderr_to_stdout: true, env: [{"PATH", path}])
       end)
 
     Backstop.guard(

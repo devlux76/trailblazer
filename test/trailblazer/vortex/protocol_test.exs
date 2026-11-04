@@ -55,9 +55,19 @@ defmodule Trailblazer.Vortex.ProtocolTest do
         {_, 0} = System.cmd("git", ["init", "-q"], cd: dir)
 
         {_, 0} =
-          System.cmd("git", ["-c", "user.name=t", "-c", "user.email=t@e", "commit", "-q", "--allow-empty", "-m", "base"],
-            cd: dir
-          )
+          System.cmd(
+            "git",
+            [
+              "-c",
+              "user.name=t",
+              "-c",
+              "user.email=t@e",
+              "commit",
+              "-q",
+              "--allow-empty",
+              "-m",
+              "base"
+            ], cd: dir)
       end
 
       {_, 0} = System.cmd("git", ["worktree", "add", "-q", "-b", "side", linked], cd: main)
@@ -67,12 +77,22 @@ defmodule Trailblazer.Vortex.ProtocolTest do
 
       {:ok, canonical} = Trailblazer.Files.canonical_path(linked)
       policy = %{room: "room", role: :caller, repos: %{canonical => ["bun test"]}}
-      planned = fn ref -> %{@envelope | "payload" => %{@task | "repo" => linked} |> Map.put("planner", %{"ref" => ref})} end
+
+      planned = fn ref ->
+        %{
+          @envelope
+          | "payload" => %{@task | "repo" => linked} |> Map.put("planner", %{"ref" => ref})
+        }
+      end
 
       assert {:ok, task} = Protocol.task(planned.("vortex:abcdef1"), policy, "caller")
       assert task.planner.ref == "vortex:abcdef1"
-      assert {:error, :unauthorized_task} = Protocol.task(planned.("v6-impl:abcdef1"), policy, "caller")
-      assert {:error, :unauthorized_task} = Protocol.task(planned.("elsewhere:abcdef1"), policy, "caller")
+
+      assert {:error, :unauthorized_task} =
+               Protocol.task(planned.("v6-impl:abcdef1"), policy, "caller")
+
+      assert {:error, :unauthorized_task} =
+               Protocol.task(planned.("elsewhere:abcdef1"), policy, "caller")
     after
       File.rm_rf!(tmp)
     end
@@ -118,6 +138,7 @@ defmodule Trailblazer.Vortex.ProtocolTest do
       assert {:error, :unauthorized_task} = Protocol.task(message, @policy, "caller")
     end
   end
+
   test "artifact selection is internal; peer and model cannot override it" do
     body = %{"prepare" => "cp source bundle", "paths" => ["bundle"], "definitions" => []}
 
@@ -134,5 +155,22 @@ defmodule Trailblazer.Vortex.ProtocolTest do
       forged = %{@envelope | "payload" => Map.put(@task, key, body)}
       assert {:error, :unauthorized_task} = Protocol.task(forged, policy, "caller")
     end
+  end
+
+  test "compilation authority is frozen from policy and cannot be supplied by the peer" do
+    policy = %{
+      role: :caller,
+      repos: %{"/tmp" => ["tests"]},
+      compilation: %{"/tmp" => %{"tests" => "compile"}}
+    }
+
+    message = %{
+      "type" => "task",
+      "payload" => %{"repo" => "/tmp", "request" => "fix", "check" => "tests"}
+    }
+
+    assert {:ok, %{compilation: "compile"}} = Protocol.task(message, policy, "caller")
+    forged = put_in(message, ["payload", "compilation"], "untrusted")
+    assert {:error, :unauthorized_task} = Protocol.task(forged, policy, "caller")
   end
 end

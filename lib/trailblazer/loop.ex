@@ -1056,36 +1056,40 @@ defmodule Trailblazer.Loop do
   defp test_failure_report(_st, %{status: :pass}), do: :ok
 
   defp test_failure_report(st, result) do
-    case tally(:compiled) do
-      nil ->
-        :ok
+    cp = tally(:compiled) || %{commit: nil, tree: result.tree, branch: st.ws.branch}
+    key = {cp.commit || cp.tree, result.command}
 
-      cp ->
-        key = {cp.commit, result.command}
+    unless Map.has_key?(tally(:test_bugs), key) do
+      opts = Keyword.get(st.opts, :checkpoint_opts, [])
+      opts = Keyword.put(opts, :timeout, min(30_000, budget_remaining!()))
 
-        unless Map.has_key?(tally(:test_bugs), key) do
-          opts =
-            Keyword.put(
-              Keyword.get(st.opts, :checkpoint_opts, []),
-              :timeout,
-              min(30_000, budget_remaining!())
-            )
+      opts =
+        Keyword.put(
+          opts,
+          :source_request,
+          st.task.request |> String.split("\n", parts: 2) |> hd()
+        )
 
-          case CompiledCheckpoint.report_failure(st.task.repo, st.id, cp, result, opts) do
-            {:ok, ref} ->
-              tally(:test_bugs, Map.put(tally(:test_bugs), key, ref))
-              record(st, :attempt, %{stage: :test_failure_bug, ref: ref, commit: cp.commit})
+      case CompiledCheckpoint.report_failure(st.task.repo, st.id, cp, result, opts) do
+        {:ok, ref} ->
+          tally(:test_bugs, Map.put(tally(:test_bugs), key, ref))
 
-            error ->
-              record(st, :error, %{
-                stage: :test_failure_bug,
-                reason: inspect(error),
-                commit: cp.commit
-              })
+          record(st, :attempt, %{
+            stage: :test_failure_bug,
+            ref: ref,
+            commit: cp.commit,
+            tree: cp.tree
+          })
 
-              throw({:lifecycle_error, {:test_failure_bug, error}})
-          end
-        end
+        error ->
+          record(st, :error, %{
+            stage: :test_failure_bug,
+            reason: inspect(error),
+            commit: cp.commit
+          })
+
+          throw({:lifecycle_error, {:test_failure_bug, error}})
+      end
     end
 
     :ok

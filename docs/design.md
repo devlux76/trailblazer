@@ -409,7 +409,8 @@ content-addressed embedding cache entries can be reused for unchanged source.
 The original worktree's index continues to describe its own original source.
 Do not silently return compiled/unreviewed source as primary-branch results.
 
-A failed test/check creates a Git-bug report linked to the compiling commit,
+A failed test/check creates a Git-bug report linked to the compiling commit (or
+the exact candidate tree if compilation was not separately established),
 source card/case, exact command, exit status and bounded failure output. Repeated
 failure of the identical checkpoint and command reuses that report. Reports are
 resolved only when a later candidate passes tests and independent review. Until

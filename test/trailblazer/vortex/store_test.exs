@@ -97,6 +97,8 @@ defmodule Trailblazer.Vortex.StoreTest do
         status: :fixed,
         attempts: 1,
         commit: String.duplicate("a", 40),
+        compiled: %{commit: String.duplicate("b", 40), index: %{pending_vectors: 0}},
+        test_bugs: ["vortex:abcdef1"],
         files: ["lib/mirai.ex"],
         check: %{exit: 0, output: "1 test, 0 failures"}
       })
@@ -105,6 +107,8 @@ defmodule Trailblazer.Vortex.StoreTest do
     message = Enum.find(Store.outbox(), &(&1.type == "report"))
     {:ok, wire} = Trailblazer.Vortex.Protocol.decode(message.body)
     assert wire["payload"]["commit"] == String.duplicate("a", 40)
+    assert wire["payload"]["compiled"]["commit"] == String.duplicate("b", 40)
+    assert wire["payload"]["test_bugs"] == ["vortex:abcdef1"]
     assert wire["payload"]["files"] == ["lib/mirai.ex"]
     assert wire["payload"]["check"]["exit"] == 0
     refute wire["payload"]["dossier"] =~ "Interrupted"

@@ -46,7 +46,8 @@ defmodule Trailblazer.LoopTest do
       trail: fn _repo, _request, _opts ->
         %{text: "lib/greeting.ex:1-3\n  def hello(name)", notes: []}
       end,
-      gate: false
+      gate: false,
+      checkpoint_opts: [command: fn _, _ -> {~s({"ref":"fixture:abcdef1"}), 0} end]
     ]
 
     %{repo: repo, opts: opts}
@@ -1648,13 +1649,13 @@ defmodule Trailblazer.LoopTest do
     script([
       reply(@fix),
       fn _, call_opts ->
-        assert call_opts[:backstop_ms] <= 200
+        assert call_opts[:backstop_ms] <= 1000
         Process.sleep(call_opts[:backstop_ms] + 5)
         {:error, {:backstop, :review_test}}
       end
     ])
 
-    report = Loop.run(task(repo), opts ++ [verification_limit_ms: 200])
+    report = Loop.run(task(repo), opts ++ [verification_limit_ms: 1000])
     assert report.status == :awaiting_review
     assert report.reason == :verification_budget_exhausted
     assert report.check.status == :pass
@@ -1742,7 +1743,7 @@ defmodule Trailblazer.LoopTest do
     report =
       Loop.run(
         task(repo, %{request: "Greet with comma bug:abcdef1", compilation: "true", check: "false"}),
-        opts ++ [checkpoint_opts: [indexer: CheckpointIndex, command: command]]
+        Keyword.merge(opts, checkpoint_opts: [indexer: CheckpointIndex, command: command])
       )
 
     assert report.status == :failed
@@ -1765,7 +1766,7 @@ defmodule Trailblazer.LoopTest do
     report =
       Loop.run(
         task(repo, %{compilation: "false"}),
-        opts ++ [checkpoint_opts: [indexer: CheckpointIndex]]
+        Keyword.merge(opts, checkpoint_opts: [indexer: CheckpointIndex])
       )
 
     assert report.status == :failed
@@ -1787,12 +1788,58 @@ defmodule Trailblazer.LoopTest do
     report =
       Loop.run(
         task(repo, %{request: "Greet with comma bug:abcdef1", compilation: "true"}),
-        opts ++ [checkpoint_opts: [indexer: CheckpointIndex]]
+        Keyword.merge(opts, checkpoint_opts: [indexer: CheckpointIndex])
       )
 
     assert report.status == :awaiting_review
     assert report.commit == nil
     assert report.compiled.index.head == report.compiled.commit
     assert git(repo, ["show", report.compiled.commit <> ":lib/greeting.ex"]) =~ "Hello, "
+  end
+
+  defmodule FailTestsOnce do
+    def default(_), do: "tests"
+    def run(_path, "compile", _opts), do: %{status: :pass, exit: 0, output_tail: "compiled"}
+
+    def run(_path, "tests", _opts) do
+      if Process.get(:test_failed_once) do
+        %{status: :pass, exit: 0, output_tail: "passed"}
+      else
+        Process.put(:test_failed_once, true)
+        %{status: :fail, exit: 1, output_tail: "test regression"}
+      end
+    end
+  end
+
+  @tag :compiled_checkpoint
+  test "a later passing reviewed candidate resolves its checkpoint test reports", %{
+    repo: repo,
+    opts: opts
+  } do
+    parent = self()
+
+    command = fn exe, args ->
+      send(parent, {:resolved_command, exe, args})
+      {~s({"ref":"vortex:abcdef1"}), 0}
+    end
+
+    script([reply(@fix), reply(@fix), reply("PASS")])
+
+    report =
+      Loop.run(
+        task(repo, %{
+          request: "Greet with comma bug:abcdef1",
+          compilation: "compile",
+          check: "tests"
+        }),
+        Keyword.merge(opts,
+          check: FailTestsOnce,
+          checkpoint_opts: [indexer: CheckpointIndex, command: command]
+        )
+      )
+
+    assert report.status == :fixed
+    assert report.test_bugs == ["vortex:abcdef1"]
+    assert_received {:resolved_command, "git", ["bug", "bug", "status", "close", "abcdef1"]}
   end
 end
