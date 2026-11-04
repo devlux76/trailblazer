@@ -353,11 +353,13 @@ requires a unique target; it never guesses between repeated matches or repairs
 punctuation automatically. Preview and actual application share the same
 atomic validation and path resolution; preview writes no files or directories.
 
-Tool schemas stay identical throughout native reading and submission so the
-system prefix remains reusable. The pinned DSpark server supports string
-`tool_choice = "required"`, not named-function objects. Trailblazer enforces
-submit-only mode on the host after reading ends and during correction; forbidden
-read calls are never executed.
+During reading the advertised toolset stays stable. When reading ends or a
+correction begins, only `submit_edits` is advertised. The pinned DSpark server
+supports string `tool_choice = "required"`, not named-function objects; required
+with reading tools still advertised allowed forbidden searches in a real probe.
+The edit schema itself remains unchanged. This one toolset transition can
+invalidate the prompt prefix cache; correctness takes priority over that cache.
+The host also rejects forbidden read calls without executing them.
 
 A native submission miss, malformed arguments, mixed calls or forbidden reads
 returns a compact tool result in the same conversation, with the original
@@ -382,8 +384,9 @@ For explicitly named existing-file tasks with read rounds, the native schema
 advertises only the range shape. A bounded Spark conformance test accepted this
 shape but selected empty SEARCH when both shapes were advertised, even after
 reversing their order. Zero-read, missing-file and unspecified-file tasks keep
-the compatible dual schema. Host decoding still accepts both; schemas stay
-stable throughout each attempt. The format choice is recorded as `edit_format`.
+the compatible dual schema. Host decoding still accepts both; the selected edit schema stays
+stable throughout each attempt, while the reading tools are removed at the
+submission boundary. The format choice is recorded as `edit_format`.
 
 ### Compiling checkpoints (operator rule, 2026-11-04; bug:67ba062)
 

@@ -106,9 +106,11 @@ cannot silently append duplicate code.
 
 Both forms share atomic preview/application, project checks, independent
 review and candidate verification. Preview writes nothing, including directories.
-At the read budget, schemas stay present for prefix caching; the host permits
-only submission. The DSpark backend accepts `tool_choice: "required"`; a named
-function-choice object is unsupported and must not be relied on.
+At the read budget or during correction, only the unchanged `submit_edits`
+schema remains advertised; the host also permits only submission. This one
+toolset transition can invalidate the prompt prefix cache. The DSpark backend
+accepts `tool_choice: "required"`; a named function-choice object is unsupported
+and must not be relied on.
 
 For native calls, a missed batch or malformed/mixed/forbidden call gets a compact
 tool result in the same conversation. Its original arguments remain in history;
@@ -124,8 +126,9 @@ For explicitly named existing-file tasks with read rounds, the native schema
 advertises only the range shape. A bounded Spark conformance test accepted this
 shape but selected empty SEARCH when both shapes were advertised, even after
 reversing their order. Zero-read, missing-file and unspecified-file tasks keep
-the compatible dual schema. Host decoding still accepts both; schemas stay
-stable throughout each attempt. The format choice is recorded as `edit_format`.
+the compatible dual schema. Host decoding still accepts both; the selected edit schema stays
+stable throughout each attempt. Reading tools are removed from the advertised
+toolset once reading ends or a correction begins; only `submit_edits` remains. The format choice is recorded as `edit_format`.
 
 A complete whole-message JSON edit array or `{ "blocks": [...] }` object,
 optionally inside one `json` fence, also uses that exact validator and pipeline.
@@ -143,7 +146,7 @@ Unambiguous Markdown verdict headings use the existing exact PASS/FAIL rules.
 
 An explicit assignment can set `planner assign ... --read-rounds N` (0 through
 6, default 6). The validated task field survives admission and persisted case
-recovery. Zero permits only `submit_edits` from the first coder call while retaining stable schemas;
+recovery. Zero advertises only `submit_edits` from the first coder call;
 use it when the supplied implementation plan resolves every needed edit. Other
 tasks can retain a small read budget. Repeating an existing assignment with a
 different budget is refused; reconcile it before starting a fresh task. Reading,

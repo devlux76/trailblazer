@@ -727,6 +727,13 @@ defmodule Trailblazer.Loop do
   end
 
   defp chat(st, messages, tools, role, submit_only) do
+    # The pinned server's required choice allows any advertised tool. Remove
+    # reading tools when the host no longer permits them, including corrections.
+    tools =
+      if submit_only,
+        do: Enum.filter(tools, &(&1.function.name == "submit_edits")),
+        else: tools
+
     record(st, :prompt, %{role: role, messages: messages, tools: tools != nil})
 
     # a call that fails part way keeps what it had (E5)
