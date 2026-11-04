@@ -470,7 +470,21 @@ defmodule Trailblazer.Loop.Edits do
 
         false ->
           b_end = Enum.at(offsets, b.end)
-          binary_part(acc, 0, a) <> b.replace <> binary_part(acc, b_end, byte_size(acc) - b_end)
+
+          replacement =
+            if b_end < byte_size(text) and b.replace != "" and
+                 not String.ends_with?(b.replace, "\n") do
+              separator =
+                if b_end >= 2 and binary_part(text, b_end - 2, 2) == "\r\n",
+                  do: "\r\n",
+                  else: "\n"
+
+              b.replace <> separator
+            else
+              b.replace
+            end
+
+          binary_part(acc, 0, a) <> replacement <> binary_part(acc, b_end, byte_size(acc) - b_end)
       end
     end)
   end

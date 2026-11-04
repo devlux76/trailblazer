@@ -335,7 +335,12 @@ Native `submit_edits` accepts either SEARCH/REPLACE blocks or read-backed line
 ranges. The legacy text and whole-message JSON forms remain accepted (see
 `local-planner.md`). Reading returns the full original file's SHA-256 and
 numbered source. A range identifies that version and inclusive 1-based lines;
-it replaces only those original bytes, without retyping the old source.
+it replaces those original lines without retyping the old source. A nonempty
+replacement without a final newline inherits the replaced range's LF/CRLF
+separator when an untouched following line remains, preventing accidental joins.
+An explicit replacement newline remains unchanged; empty text deletes the range;
+a replacement reaching EOF stays byte-exact. This boundary rule also applies to
+dry-run previews (bug:fae87c7).
 EOF/before-line insertions use `end = start - 1`.
 
 Ranges use original coordinates, are grouped by canonical file identity, and

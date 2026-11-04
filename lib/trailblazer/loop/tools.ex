@@ -132,7 +132,10 @@ defmodule Trailblazer.Loop.Tools do
                       description:
                         "Last line of the range, inclusive; end = start - 1 inserts before that line"
                     },
-                    replace: string("Replacement text for the range; empty to delete it")
+                    replace:
+                      string(
+                        "Replacement whole lines; empty deletes. A missing final LF/CRLF is retained before an untouched following line. EOF text stays exact"
+                      )
                   },
                   required: ["path", "sha256", "start", "end", "replace"]
                 }
