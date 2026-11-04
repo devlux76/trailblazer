@@ -417,7 +417,15 @@ defmodule Trailblazer.Loop do
   defp coder_reply(st, trail, files, feedback) do
     messages = Prompts.coder(st.task, trail, files, feedback, Map.get(st, :head, %{}))
     record(st, :attempt, %{stage: :prompt_size, bytes: prompt_sizes(messages)})
-    converse(st, messages, Tools.definitions() ++ [Tools.edit_definition()], :coder)
+
+    format =
+      if st.task.read_rounds > 0 and st.task.files != [] and
+           Enum.all?(files, fn {_, size} -> size != :missing end),
+         do: :ranges,
+         else: :both
+
+    record(st, :attempt, %{stage: :edit_format, format: format})
+    converse(st, messages, Tools.definitions() ++ [Tools.edit_definition(format)], :coder)
   end
 
   ## The model

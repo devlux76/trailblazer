@@ -87,60 +87,74 @@ defmodule Trailblazer.Loop.Tools do
   end
 
   @doc "Native submission of edits; applying them remains the loop's responsibility."
-  def edit_definition do
-    tool(
-      "submit_edits",
-      "Submit all code changes for checking and review. Two block kinds are accepted. Range block: path (repository-relative), sha256 (lowercase hex), start and end (1-based line numbers, inclusive; set end to start-1 to insert before that line), replace. Use an empty search string for a new file. Do not call read/search in the same response.",
-      %{
-        blocks: %{
-          type: "array",
-          minItems: 1,
-          items: %{
-            anyOf: [
-              %{
-                type: "object",
-                additionalProperties: false,
-                properties: %{
-                  path: string("Repository-relative file path"),
-                  search:
-                    string(
-                      "Exact existing text including whitespace; empty only for a new or empty file"
-                    ),
-                  replace: string("Replacement text, or entire contents of a new file")
+  def edit_definition(mode \\ :both) when mode in [:both, :ranges] do
+    definition =
+      tool(
+        "submit_edits",
+        "Submit all code changes for checking and review. Two block kinds are accepted. Range block: path (repository-relative), sha256 (lowercase hex), start and end (1-based line numbers, inclusive; set end to start-1 to insert before that line), replace. Use an empty search string for a new file. Do not call read/search in the same response.",
+        %{
+          blocks: %{
+            type: "array",
+            minItems: 1,
+            items: %{
+              anyOf: [
+                %{
+                  type: "object",
+                  additionalProperties: false,
+                  properties: %{
+                    path: string("Repository-relative file path"),
+                    search:
+                      string(
+                        "Exact existing text including whitespace; empty only for a new or empty file"
+                      ),
+                    replace: string("Replacement text, or entire contents of a new file")
+                  },
+                  required: ["path", "search", "replace"]
                 },
-                required: ["path", "search", "replace"]
-              },
-              %{
-                type: "object",
-                additionalProperties: false,
-                properties: %{
-                  path: string("Repository-relative file path"),
-                  sha256: %{
-                    type: "string",
-                    pattern: "^[0-9a-f]{64}$",
-                    description: "SHA-256 of the file's full bytes, exactly as read from disk"
+                %{
+                  type: "object",
+                  additionalProperties: false,
+                  properties: %{
+                    path: string("Repository-relative file path"),
+                    sha256: %{
+                      type: "string",
+                      pattern: "^[0-9a-f]{64}$",
+                      description: "SHA-256 of the file's full bytes, exactly as read from disk"
+                    },
+                    start: %{
+                      type: "integer",
+                      minimum: 1,
+                      description: "First line of the range, 1-based and inclusive"
+                    },
+                    end: %{
+                      type: "integer",
+                      minimum: 0,
+                      description:
+                        "Last line of the range, inclusive; end = start - 1 inserts before that line"
+                    },
+                    replace: string("Replacement text for the range; empty to delete it")
                   },
-                  start: %{
-                    type: "integer",
-                    minimum: 1,
-                    description: "First line of the range, 1-based and inclusive"
-                  },
-                  end: %{
-                    type: "integer",
-                    minimum: 0,
-                    description:
-                      "Last line of the range, inclusive; end = start - 1 inserts before that line"
-                  },
-                  replace: string("Replacement text for the range; empty to delete it")
-                },
-                required: ["path", "sha256", "start", "end", "replace"]
-              }
-            ]
+                  required: ["path", "sha256", "start", "end", "replace"]
+                }
+              ]
+            }
           }
-        }
-      },
-      [:blocks]
-    )
+        },
+        [:blocks]
+      )
+
+    if mode == :ranges do
+      items = definition.function.parameters.properties.blocks.items
+      range = Enum.find(items.anyOf, &Map.has_key?(&1.properties, :sha256))
+      definition = put_in(definition.function.parameters.properties.blocks.items, range)
+
+      put_in(
+        definition.function.description,
+        "Submit the complete batch of read-backed range edits for the existing named files. Copy sha256 from read; start/end are original inclusive lines; end=start-1 inserts. No SEARCH blocks in this format. Do not call read/search in the same response."
+      )
+    else
+      definition
+    end
   end
 
   @doc "Validates model arguments before the existing all-or-nothing edit application."

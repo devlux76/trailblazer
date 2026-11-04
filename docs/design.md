@@ -372,6 +372,14 @@ coding attempt from the original base with its submitted blocks as reference.
 Legacy text/JSON misses retain the original outer-attempt behavior.
 Source issue: trailblazer:9ae2ace.
 
+
+For explicitly named existing-file tasks with read rounds, the native schema
+advertises only the range shape. A bounded Spark conformance test accepted this
+shape but selected empty SEARCH when both shapes were advertised, even after
+reversing their order. Zero-read, missing-file and unspecified-file tasks keep
+the compatible dual schema. Host decoding still accepts both; schemas stay
+stable throughout each attempt. The format choice is recorded as `edit_format`.
+
 ### 7.4 Review against the design
 
 After the check passes, an independent model reviews the diff against the

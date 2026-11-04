@@ -1490,7 +1490,8 @@ defmodule Trailblazer.LoopTest do
       assert options[:tool_choice] == "required"
 
       assert options[:tools] ==
-               Trailblazer.Loop.Tools.definitions() ++ [Trailblazer.Loop.Tools.edit_definition()]
+               Trailblazer.Loop.Tools.definitions() ++
+                 [Trailblazer.Loop.Tools.edit_definition(:ranges)]
 
       digest = :crypto.hash(:sha256, @greeting) |> Base.encode16(case: :lower)
 
@@ -1544,5 +1545,33 @@ defmodule Trailblazer.LoopTest do
     assert report.attempts == 1
     assert report.cost.model_calls == 3
     assert git(repo, ["show", "#{report.commit}:lib/greeting.ex"]) == replacement
+  end
+
+  test "existing named files with read rounds advertise an unambiguous range schema", %{
+    repo: repo,
+    opts: opts
+  } do
+    first = fn _messages, options ->
+      items = List.last(options[:tools]).function.parameters.properties.blocks.items
+      refute Map.has_key?(items, :anyOf)
+      assert "sha256" in items.required
+      submitted([greeting_block()])
+    end
+
+    script([first, reply("PASS")])
+    assert Loop.run(task(repo, %{read_rounds: 1}), opts).status == :fixed
+  end
+
+  test "zero-read and new-file tasks keep the compatible dual schema", %{repo: repo, opts: opts} do
+    for extra <- [%{read_rounds: 0}, %{files: ["lib/greeting.ex", "notes.txt"], read_rounds: 1}] do
+      first = fn _messages, options ->
+        items = List.last(options[:tools]).function.parameters.properties.blocks.items
+        assert length(items.anyOf) == 2
+        submitted([greeting_block()])
+      end
+
+      script([first, reply("PASS")])
+      assert Loop.run(task(repo, extra), opts).status == :fixed
+    end
   end
 end

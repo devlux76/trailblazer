@@ -119,6 +119,14 @@ A zero-read miss with no recoverable source stops immediately. Error feedback
 does not repeat replacement code and bounds the complete feedback to 12,000 characters.
 Tool submission alone is not success. Legacy Aider text remains supported.
 
+
+For explicitly named existing-file tasks with read rounds, the native schema
+advertises only the range shape. A bounded Spark conformance test accepted this
+shape but selected empty SEARCH when both shapes were advertised, even after
+reversing their order. Zero-read, missing-file and unspecified-file tasks keep
+the compatible dual schema. Host decoding still accepts both; schemas stay
+stable throughout each attempt. The format choice is recorded as `edit_format`.
+
 A complete whole-message JSON edit array or `{ "blocks": [...] }` object,
 optionally inside one `json` fence, also uses that exact validator and pipeline.
 Extra fields, malformed/partial JSON and surrounding prose are rejected; code
