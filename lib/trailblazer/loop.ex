@@ -831,12 +831,23 @@ defmodule Trailblazer.Loop do
   end
 
   defp with_gate(st, fun) do
-    case Keyword.get(st.opts, :gate, {&EmbedGate.hold/0, &EmbedGate.release/0}) do
+    case Keyword.get(
+           st.opts,
+           :gate,
+           {fn -> EmbedGate.hold(EmbedGate, budget_remaining!()) end, &EmbedGate.release/0}
+         ) do
       false ->
         fun.()
 
       {hold, release} ->
-        :ok = hold.()
+        case hold.() do
+          :ok ->
+            :ok
+
+          {:error, :timeout} ->
+            {phase, _} = tally(:phase)
+            throw({:budget_expired, phase})
+        end
 
         try do
           fun.()

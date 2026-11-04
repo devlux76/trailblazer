@@ -161,4 +161,22 @@ defmodule Trailblazer.EmbedGateTest do
           eventually(check, tries - 1)
         )
   end
+
+  test "a timed out hold leaves no ghost reservation while its owner stays alive" do
+    gate = start_supervised!({EmbedGate, name: nil})
+    :ok = EmbedGate.hold(gate)
+    parent = self()
+
+    waiter =
+      spawn(fn ->
+        send(parent, {:hold_result, EmbedGate.hold(gate, 30)})
+        receive do: (:stop -> :ok)
+      end)
+
+    on_exit(fn -> Process.exit(waiter, :kill) end)
+    assert_receive {:hold_result, {:error, :timeout}}, 1000
+    :ok = EmbedGate.release(gate)
+    assert :ok = EmbedGate.hold(gate, 200)
+    :ok = EmbedGate.release(gate)
+  end
 end

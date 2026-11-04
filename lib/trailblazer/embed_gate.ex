@@ -24,7 +24,18 @@ defmodule Trailblazer.EmbedGate do
   def acquire(owner, server \\ __MODULE__),
     do: GenServer.call(server, {:acquire, owner}, :infinity)
 
-  def hold(server \\ __MODULE__), do: GenServer.call(server, :hold, :infinity)
+  def hold(server \\ __MODULE__, timeout \\ :infinity) do
+    try do
+      GenServer.call(server, :hold, timeout)
+    catch
+      :exit, {:timeout, _} ->
+        # The request may have been granted as the call timed out. Cancel both
+        # a queued and an already-granted hold before the live owner retries.
+        GenServer.call(server, :cancel_hold, :infinity)
+        {:error, :timeout}
+    end
+  end
+
   def release(server \\ __MODULE__), do: GenServer.call(server, :release, :infinity)
   def queued?(job, server \\ __MODULE__), do: GenServer.call(server, {:queued?, job}, :infinity)
 
@@ -56,6 +67,23 @@ defmodule Trailblazer.EmbedGate do
   def handle_call(:hold, {job, _} = from, s) do
     hold = %{job: job, from: from, ref: Process.monitor(job)}
     {:noreply, grant(%{s | holds: s.holds ++ [hold]})}
+  end
+
+  def handle_call(:cancel_hold, {job, _}, s) do
+    {mine, holds} = Enum.split_with(s.holds, &(&1.job == job))
+    for hold <- mine, do: Process.demonitor(hold.ref, [:flush])
+
+    s =
+      case s.holder do
+        {^job, ref} ->
+          Process.demonitor(ref, [:flush])
+          %{s | holder: nil}
+
+        _ ->
+          s
+      end
+
+    {:reply, :ok, grant(%{s | holds: holds})}
   end
 
   def handle_call(:release, {job, _}, %{holder: {job, ref}} = s) do

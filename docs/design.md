@@ -408,7 +408,7 @@ authored the change).
 
 **Hour of code (operator, 2026-11-04; bug:dfc3bd9).** Each fresh coder context
 has a hard 900,000 ms generation window, starting before its prompt is built.
-Read/search calls, reasoning, prompt evaluation, edit submissions and same-context
+Waiting for the embedding gate, read/search calls, reasoning, prompt evaluation, edit submissions and same-context
 corrections all share this deadline; individual model-call limits cannot renew
 it. The existing Backstop stops inference and bounds read/search work. Partial
 responses are recorded synchronously. A complete late response is retained but
