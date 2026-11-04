@@ -396,7 +396,8 @@ command. Configure this gate for the current compiled-language queue.
 Order: artifact preparation, compilation, **commit the exact compiling tree**,
 refresh its index, then run tests and independent review. Failed tests do not
 veto or erase the compiling commit. Each case keeps a private `-compiled`
-worktree/branch with normal commit hooks and issue references. Identical trees
+worktree/branch with normal commit hooks, the same provisioned dependencies,
+and issue references. Identical trees
 reuse their commit; later compiling versions are additional commits. Source
 worktree resets never delete these commits. The execution worktree, approved
 candidate lifecycle and primary branch remain separate: a compiling checkpoint

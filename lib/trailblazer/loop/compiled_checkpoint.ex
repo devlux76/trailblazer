@@ -35,6 +35,7 @@ defmodule Trailblazer.Loop.CompiledCheckpoint do
     with {:ok, ws} <- workspace(id, source, previous),
          {:ok, _identity} <- Workspace.identity(ws, source.path),
          {:ok, _} <- git(ws.path, ["read-tree", "--reset", "-u", tree]),
+         :ok <- Workspace.provision(ws, source.path),
          {:ok, head_tree} <- git(ws.path, ["rev-parse", "HEAD^{tree}"]),
          {:ok, sha} <-
            if(head_tree == tree,
@@ -140,10 +141,6 @@ defmodule Trailblazer.Loop.CompiledCheckpoint do
                opts
              ),
            {:ok, {_, 0}} <- command(repo, "git", ["bug", "bug", "status", "close", bug], opts),
-           {:ok, {_, 0}} <-
-             command(repo, "git", ["bug", "bug", "label", "rm", bug, "status:todo"], opts),
-           {:ok, {_, 0}} <-
-             command(repo, "git", ["bug", "bug", "label", "new", bug, "status:done"], opts),
            do: {:ok, ref},
            else: (error -> {:error, ref, error})
     end)

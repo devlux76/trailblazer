@@ -46,6 +46,12 @@ defmodule Trailblazer.Loop.CompiledCheckpointTest do
   end
 
   test "compiling work gets a normal hooked commit before tests and review", ctx do
+    File.mkdir_p!(Path.join(ctx.ws.path, "node_modules/pkg"))
+    File.write!(Path.join(ctx.ws.path, "node_modules/pkg/ready"), "installed")
+    File.write!(Path.join(ctx.repo, ".git/info/exclude"), "node_modules/\n")
+    hook = Path.join(ctx.repo, ".git/hooks/pre-commit")
+    File.write!(hook, "#!/bin/sh\ntest -f node_modules/pkg/ready\n")
+    File.chmod!(hook, 0o700)
     File.write!(Path.join(ctx.ws.path, "a.txt"), "compiled but tests fail\n")
     {:ok, tree} = Workspace.tree(ctx.ws, ["a.txt"])
 
