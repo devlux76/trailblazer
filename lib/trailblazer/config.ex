@@ -164,9 +164,6 @@ defmodule Trailblazer.Config do
   defp default(:review_model_url), do: "http://127.0.0.1:8098/v1"
   # One review pass gets fifteen minutes, like a coder pass.
   defp default(:review_backstop_ms), do: 900_000
-  # One review pass per Backstop, and three passes at most per case; a retry
-  # does not inherit or reset a larger budget.
-  defp default(:review_backstop_ms), do: 900_000
   defp default(:code_model_max_tokens), do: 16_384
   # Backstops (design §13.2): set from measurements with a wide margin, so
   # firing means something is wrong. A model call can read an 11-minute

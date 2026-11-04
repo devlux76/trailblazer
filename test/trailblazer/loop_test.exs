@@ -701,14 +701,28 @@ defmodule Trailblazer.LoopTest do
     repo: repo,
     opts: opts
   } do
-    script([reply(@fix), {:error, :model_down}])
+    script([reply(@fix), {:error, :model_down}, {:error, :model_down}, {:error, :model_down}])
     report = Loop.run(task(repo), opts)
     assert report.status == :awaiting_review
     assert report.commit == nil
-    assert report.cost.model_calls == 2
+    assert report.cost.model_calls == 4
     assert git(repo, ["rev-parse", report.branch]) == git(repo, ["rev-parse", "main"])
     assert report.check == %{status: :pass}
     assert File.dir?(report.worktree)
+  end
+
+  test "a timed-out first review pass is retried and a later passing pass commits", %{
+    repo: repo,
+    opts: opts
+  } do
+    script([reply(@fix), {:error, :model_down}, reply("PASS")])
+    report = Loop.run(task(repo), opts)
+
+    assert report.status == :fixed
+    assert report.commit != nil
+    assert report.check == %{status: :pass}
+    assert report.cost.model_calls == 3
+    assert git(repo, ["show", "#{report.branch}:lib/greeting.ex"]) =~ "Hello, "
   end
 
   test "the reviewer is a dedicated model on its own router with its own 15-minute backstop",
@@ -768,7 +782,7 @@ defmodule Trailblazer.LoopTest do
 
   test "an awaiting_review case with an admitted primary is not retired; worktree and branch survive",
        %{repo: repo, opts: opts} do
-    script([reply(@fix), {:error, :model_down}])
+    script([reply(@fix), {:error, :model_down}, {:error, :model_down}, {:error, :model_down}])
     report = Loop.run(task(repo, %{primary: "main"}), opts)
 
     assert report.status == :awaiting_review

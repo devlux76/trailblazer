@@ -732,11 +732,10 @@ defmodule Trailblazer.Loop do
   end
 
   # The review, in a fresh context: the request, the design, the diff only.
-  # The reviewer is a different model than the coder on its own router:
-  # Spark never reviews Spark. Up to three passes, each under its own
-  # 15-minute Backstop — a retry never inherits or resets a budget. An
-  # unclear, timed-out, unavailable or unusable review is never fed back
-  # to the coder and never fails a tree that passed its check.
+  # Spark never reviews Spark; the reviewer is a different model on its
+  # own router. An unclear, timed-out, unavailable or unusable review is
+  # never fed back to the coder and never fails a tree that passed its
+  # check.
   defp review(st) do
     if Config.get(:review_model) == Config.get(:code_model) do
       record(st, :review, %{verdict: :refused, reason: :same_model})
@@ -767,6 +766,10 @@ defmodule Trailblazer.Loop do
     end
   end
 
+  # One review pass per Backstop, and three passes at most per case; a
+  # retry never inherits or resets a larger budget. An error or timeout
+  # consumes a pass like an unclear verdict, and the pass after the
+  # third parks the case for the frontier.
   defp review_passes(st, messages, pass) when pass <= 3 do
     case converse(st, messages, nil, :reviewer) do
       {:ok, reply} ->
@@ -792,7 +795,12 @@ defmodule Trailblazer.Loop do
 
       {:review_error, reason} ->
         record(st, :review, %{verdict: :unavailable, pass: pass, reason: reason})
-        {:awaiting_review, reason}
+
+        if pass < 3 do
+          review_passes(st, messages, pass + 1)
+        else
+          {:awaiting_review, reason}
+        end
     end
   end
 
