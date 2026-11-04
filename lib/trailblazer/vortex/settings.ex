@@ -18,7 +18,7 @@ defmodule Trailblazer.Vortex.Settings do
 
   defp decode!(path) do
     with {:ok, bytes} <- File.read(path),
-         {:ok, %{"endpoint" => endpoint, "owner_peer" => owner, "peers" => peers}} <-
+         {:ok, %{"endpoint" => endpoint, "owner_peer" => owner, "peers" => peers} = config} <-
            Jason.decode(bytes),
          true <- is_binary(endpoint) and Path.type(endpoint) == :absolute,
          true <- is_binary(owner) and is_list(peers) do
@@ -50,7 +50,12 @@ defmodule Trailblazer.Vortex.Settings do
 
       options = [endpoint: endpoint, owner_peer: owner, peers: policies, listen: true]
 
-      case Map.get(Jason.decode!(bytes), "resource_mode") do
+      {:ok, permissions} =
+        Trailblazer.Planner.PermissionPolicy.parse(config["permissions"], policies)
+
+      options = if permissions, do: Keyword.put(options, :permissions, permissions), else: options
+
+      case config["resource_mode"] do
         nil ->
           options
 

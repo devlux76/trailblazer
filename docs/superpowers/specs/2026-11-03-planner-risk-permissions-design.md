@@ -168,6 +168,28 @@ delivery after a crash, and allow only the single separate reminder. No real
 route or policy is enabled by implementing this helper; live idle-wake and
 authenticated decision acceptance remain required.
 
+### P1 trusted local permission configuration
+
+The optional VORTEX `permissions` block contains only `timeout_ms` (positive
+integer, default 14,400,000) and a nonempty `deciders` map. Absent/null keeps
+existing behaviour. Each alias contains exactly `peer`, `host`, `endpoint` and
+`notifier`: the peer must already be a locally configured frontier (not a task collaborator or caller),
+its direct room is taken from that same frozen peer policy, and the endpoint is
+an absolute path to that decider's OWN service (never started automatically).
+Duplicate peers under different aliases are refused. `host` is `codex` or
+`claude` in P1; it does not select a local judgement model or confer authority.
+
+The notifier uses the strict route above. For Codex, its explicit environment
+MUST include `PING_FROM=Trailblazer` and a fixed UUID `CODEX_THREAD`. This avoids
+the installed helper's default sender of Claude and its mutable pinned-thread
+fallback. Unknown fields, caller-only/unknown peers, invalid routes or invalid
+timeouts reject the configuration through the existing fail-closed loader.
+Configuration parsing itself sends nothing. The Claude route must target a
+fixed live session through its configured argv/env; live acceptance for either
+host must check the rendered sender AND destination, not just an exit status.
+Settings remain cached at boot; configuration edits require a normal idle
+restart. The coordinator/transport/CLI remain separate implementation stages.
+
 ## Proposed authority floor — explicitly subject to operator review
 
 Risk grants cannot change authenticated principal/repository, choose a new
