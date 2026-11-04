@@ -273,7 +273,7 @@ defmodule Trailblazer.LoopTest do
 
     final = fn _messages, options ->
       assert Enum.map(options[:tools], & &1.function.name) ==
-               ~w(where uses impact read search submit_edits)
+               ~w(submit_edits)
 
       assert options[:tool_choice] == "required"
       submitted([greeting_block()])
@@ -290,7 +290,7 @@ defmodule Trailblazer.LoopTest do
        } do
     first = fn _messages, options ->
       assert Enum.map(options[:tools], & &1.function.name) ==
-               ~w(where uses impact read search submit_edits)
+               ~w(submit_edits)
 
       assert options[:tool_choice] == "required"
       assert options[:reasoning_budget_tokens] == 1024
@@ -322,7 +322,7 @@ defmodule Trailblazer.LoopTest do
 
     second = fn _messages, options ->
       assert Enum.map(options[:tools], & &1.function.name) ==
-               ~w(where uses impact read search submit_edits)
+               ~w(submit_edits)
 
       assert options[:tool_choice] == "required"
       submitted([greeting_block()])
@@ -1426,7 +1426,8 @@ defmodule Trailblazer.LoopTest do
     bad =
       reply("", %{tool_calls: [%{id: "bad-json", name: "submit_edits", arguments: "{not json"}]})
 
-    correction = fn messages, _ ->
+    correction = fn messages, options ->
+      assert Enum.map(options[:tools], & &1.function.name) == ["submit_edits"]
       assert Enum.at(messages, -1).role == "tool"
       assert Enum.at(messages, -1).tool_call_id == "bad-json"
       assert Enum.at(messages, -1).content =~ "submit_edits"
@@ -1491,8 +1492,7 @@ defmodule Trailblazer.LoopTest do
       assert options[:tool_choice] == "required"
 
       assert options[:tools] ==
-               Trailblazer.Loop.Tools.definitions() ++
-                 [Trailblazer.Loop.Tools.edit_definition(:ranges)]
+               [Trailblazer.Loop.Tools.edit_definition(:ranges)]
 
       digest = :crypto.hash(:sha256, @greeting) |> Base.encode16(case: :lower)
 
