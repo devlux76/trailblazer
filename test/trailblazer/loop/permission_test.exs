@@ -257,4 +257,77 @@ defmodule Trailblazer.Loop.PermissionTest do
     assert Permission.get(id) == before
     assert length(CaseRecord.get(c.case_id).events) == 1
   end
+
+  defp notification_policy do
+    %{
+      "timeout_ms" => 4000,
+      "deciders" => %{
+        "codex" => %{
+          "peer" => "frontier-a",
+          "room" => "fixed-room",
+          "host" => "codex",
+          "endpoint" => "/tmp/decider.json",
+          "notifier" => %{
+            "executable" => "/bin/true",
+            "cwd" => "/tmp",
+            "args" => [],
+            "env" => %{"PRIVATE_SENTINEL" => "never-in-public-evidence"}
+          }
+        }
+      }
+    }
+  end
+
+  test "notification policy is frozen into binding without exposing it in the case journal", c do
+    policy = notification_policy()
+    {:ok, id} = open(c, frontiers: ["frontier-a"], notification_policy: policy)
+    r = Permission.get(id)
+    assert r["notification_policy"] == policy
+    assert byte_size(r["notification_policy_hash"]) == 64
+    changed = put_in(policy, ["deciders", "codex", "notifier", "cwd"], "/different")
+
+    assert {:error, :pending_changed} =
+             open(c, frontiers: ["frontier-a"], notification_policy: changed)
+
+    assert {:error, :invalid_request} =
+             Permission.open(c.case_id, "artifact_scope", c.evidence, c.checkpoint,
+               frontiers: ["stranger"],
+               notification_policy: policy
+             )
+
+    refute Jason.encode!(CaseRecord.get(c.case_id).events) =~ "never-in-public-evidence"
+  end
+
+  test "notification ordinals require release, are once-only, and retain unknown delivery", c do
+    {:ok, id} = open(c, frontiers: ["frontier-a"], notification_policy: notification_policy())
+    binding = Permission.get(id)["binding"]
+    assert {:error, :not_ready} = Permission.claim_notification(id, "frontier-a", 0, 1500)
+    assert {:ok, _} = Permission.notifications_ready(id, 1600)
+
+    assert {:error, :unauthorized_decider} =
+             Permission.claim_notification(id, "stranger", 0, 1700)
+
+    assert {:ok, _} = Permission.claim_notification(id, "frontier-a", 0, 1800)
+    assert {:error, :already_claimed} = Permission.claim_notification(id, "frontier-a", 0, 1900)
+    assert {:error, :not_due} = Permission.claim_notification(id, "frontier-a", 1, 2999)
+    assert {:ok, _} = Permission.claim_notification(id, "frontier-a", 1, 3000)
+    result = %{"delivery" => "unknown", "exit" => nil, "ms" => 100}
+    assert {:ok, _} = Permission.record_notification(id, "frontier-a", 1, result, 3100)
+    assert {:ok, _} = Permission.record_notification(id, "frontier-a", 1, result, 3200)
+
+    assert {:error, :invalid_delivery} =
+             Permission.record_notification(
+               id,
+               "frontier-a",
+               0,
+               Map.put(result, "raw_output", "secret"),
+               3300
+             )
+
+    r = Permission.get(id)
+    assert r["binding"] == binding
+    assert Enum.find(r["notifications"], &(&1["ordinal"] == 0))["state"] == "claimed"
+    assert Enum.find(r["notifications"], &(&1["ordinal"] == 1))["result"] == result
+    assert CaseRecord.get(c.case_id).status == "open"
+  end
 end
