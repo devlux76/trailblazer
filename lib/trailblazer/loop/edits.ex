@@ -27,7 +27,16 @@ defmodule Trailblazer.Loop.Edits do
   @updated ~r/^>{5,9} REPLACE\s*$/
   @fence "```"
 
-  @type block :: %{path: String.t(), search: String.t(), replace: String.t()}
+  @type block ::
+          %{path: String.t(), type: :search, search: String.t(), replace: String.t()}
+          | %{
+              path: String.t(),
+              type: :range,
+              digest: String.t(),
+              start: integer(),
+              end: integer(),
+              replace: String.t()
+            }
   @type failure :: %{block: block(), reason: atom(), closest: String.t()}
 
   ## Parsing
@@ -154,10 +163,28 @@ defmodule Trailblazer.Loop.Edits do
   def apply(worktree, blocks, opts \\ []) do
     files = Keyword.get(opts, :files, [])
     shown = Keyword.get(opts, :shown, [])
+    blocks = Enum.map(blocks, &normalize/1)
+
+    case split_by_kind(blocks) do
+      {:error, failures} ->
+        {:error, failures}
+
+      {:ok, range_blocks, legacy_blocks} ->
+        case apply_ranges(worktree, range_blocks) do
+          {:error, failures} ->
+            {:error, failures}
+
+          {:ok, contents} ->
+            apply(worktree, legacy_blocks, contents, files, shown, opts)
+        end
+    end
+  end
+
+  defp apply(worktree, blocks, contents, files, shown, opts) do
     blocks = Enum.map(blocks, &resolve(&1, worktree, files, shown))
 
     {contents, failures} =
-      Enum.reduce(blocks, {%{}, []}, fn block, {contents, failures} ->
+      Enum.reduce(blocks, {contents, []}, fn block, {contents, failures} ->
         case edit(worktree, block, contents) do
           {:ok, path, text} -> {Map.put(contents, path, text), failures}
           {:error, failure} -> {contents, [failure | failures]}
@@ -165,16 +192,210 @@ defmodule Trailblazer.Loop.Edits do
       end)
 
     if failures == [] do
-      for {path, text} <- contents do
-        full = Path.join(worktree, path)
-        File.mkdir_p!(Path.dirname(full))
-        File.write!(full, text)
+      unless opts[:dry_run] do
+        for {path, text} <- contents do
+          full = Path.join(worktree, path)
+          File.mkdir_p!(Path.dirname(full))
+          File.write!(full, text)
+        end
       end
 
       {:ok, contents |> Map.keys() |> Enum.sort()}
     else
       {:error, Enum.reverse(failures)}
     end
+  end
+
+  # A block is either a legacy SEARCH block or a read-backed range block.
+  defp normalize(%{type: :search} = block), do: block
+  defp normalize(%{type: :range} = block), do: block
+
+  defp normalize(%{path: _, search: _, replace: _} = block),
+    do: Map.put(block, :type, :search)
+
+  defp normalize(block), do: block
+
+  defp split_by_kind(blocks) do
+    {range_blocks, legacy_blocks, unknown_blocks} =
+      Enum.reduce(blocks, {[], [], []}, fn block, {r, l, u} ->
+        case block.type do
+          :range -> {[block | r], l, u}
+          :search -> {r, [block | l], u}
+          _ -> {r, l, [block | u]}
+        end
+      end)
+
+    unknown_tmp = Enum.reverse(unknown_blocks)
+
+    cond do
+      unknown_tmp != [] ->
+        {:error, Enum.map(unknown_tmp, &failure(&1, :invalid_range, "unknown block type"))}
+
+      true ->
+        range_paths =
+          blocks |> Enum.filter(&(&1.type == :range)) |> Enum.map(& &1.path) |> MapSet.new()
+
+        search_paths =
+          blocks |> Enum.filter(&(&1.type == :search)) |> Enum.map(& &1.path) |> MapSet.new()
+
+        case MapSet.intersection(range_paths, search_paths) |> Enum.to_list() do
+          [] ->
+            {:ok, Enum.reverse(range_blocks), Enum.reverse(legacy_blocks)}
+
+          mixed ->
+            {:error,
+             Enum.map(mixed, fn p ->
+               failure(%{path: p, type: :search, search: "", replace: ""}, :mixed_edits, "")
+             end)}
+        end
+    end
+  end
+
+  ## Read-backed range edits
+
+  defp apply_ranges(_worktree, []), do: {:ok, %{}}
+
+  defp apply_ranges(worktree, blocks) do
+    blocks
+    |> Enum.group_by(& &1.path)
+    |> Enum.reduce_while({:ok, %{}}, fn {path, group}, {:ok, contents} ->
+      case apply_range_group(worktree, path, group) do
+        {:ok, rel, text} -> {:cont, {:ok, Map.put(contents, rel, text)}}
+        {:error, failures} -> {:halt, {:error, failures}}
+      end
+    end)
+  end
+
+  defp apply_range_group(worktree, path, blocks) do
+    case contained(worktree, path) do
+      {:error, reason} when is_atom(reason) ->
+        {:error, Enum.map(blocks, &failure(&1, reason, ""))}
+
+      {:ok, rel} ->
+        with {:ok, text} <- read_full(Path.join(worktree, rel)),
+             :ok <- check_digests(blocks, text),
+             {:ok, offsets} <- line_offsets(text),
+             :ok <- validate_ranges(blocks, length(offsets) - 1, text),
+             :ok <- check_spans(blocks, offsets) do
+          {:ok, rel, splice_all(text, blocks, offsets)}
+        else
+          {:error, :no_such_file} -> {:error, Enum.map(blocks, &failure(&1, :no_such_file, ""))}
+          {:error, failures} -> {:error, failures}
+        end
+    end
+  end
+
+  defp read_full(full) do
+    case File.read(full) do
+      {:ok, text} -> {:ok, text}
+      {:error, :enoent} -> {:error, :no_such_file}
+      {:error, _} -> {:error, :unreadable}
+    end
+  end
+
+  defp check_digests(blocks, text) do
+    sha = sha256(text)
+    mismatched = Enum.reject(blocks, &(&1.digest == sha))
+
+    case mismatched do
+      [] -> :ok
+      _ -> {:error, Enum.map(mismatched, &failure(&1, :stale_digest, ""))}
+    end
+  end
+
+  defp sha256(text), do: :crypto.hash(:sha256, text) |> Base.encode16(case: :lower)
+
+  defp line_offsets(text) do
+    if text == "" do
+      {:ok, [0]}
+    else
+      pieces = String.split(text, ~r/(?<=\n)/)
+      offsets = pieces |> Enum.map(&byte_size/1) |> Enum.scan(0, fn size, acc -> acc + size end)
+      {:ok, [0 | offsets]}
+    end
+  end
+
+  defp validate_ranges(blocks, len, _text) do
+    Enum.reduce_while(blocks, :ok, fn block, :ok ->
+      cond do
+        not is_integer(block.start) or not is_integer(block.end) ->
+          {:halt,
+           {:error,
+            Enum.map(blocks, &failure(&1, :invalid_range, "start and end must be integers"))}}
+
+        block.digest == nil ->
+          {:halt,
+           {:error, Enum.map(blocks, &failure(&1, :invalid_range, "a digest is required"))}}
+
+        block.start < 1 or block.start > len + 1 ->
+          {:halt,
+           {:error, Enum.map(blocks, &failure(&1, :invalid_range, "start is out of the file"))}}
+
+        block.end < block.start - 1 ->
+          {:halt,
+           {:error, Enum.map(blocks, &failure(&1, :invalid_range, "end precedes start - 1"))}}
+
+        block.end > len ->
+          {:halt,
+           {:error, Enum.map(blocks, &failure(&1, :invalid_range, "end is out of the file"))}}
+
+        true ->
+          {:cont, :ok}
+      end
+    end)
+  end
+
+  # Sort by byte span ascending; reject interleaving spans and duplicate insertions.
+  defp check_spans(blocks, offsets) do
+    sorted = Enum.sort_by(blocks, fn b -> {b.start, if(b.end == b.start - 1, do: 1, else: 0)} end)
+
+    Enum.reduce_while(sorted, {:ok, 0, MapSet.new()}, fn b, {:ok, max_end, insert_points} ->
+      a = Enum.at(offsets, b.start - 1)
+      b_end = Enum.at(offsets, b.end)
+
+      cond do
+        a < max_end ->
+          reason = if b.end == b.start - 1, do: :duplicate_insertion, else: :overlapping_ranges
+          {:halt, {:error, [failure(b, reason, "")]}}
+
+        b.end == b.start - 1 and MapSet.member?(insert_points, a) ->
+          {:halt, {:error, [failure(b, :duplicate_insertion, "")]}}
+
+        true ->
+          insert_points =
+            if b.end == b.start - 1, do: MapSet.put(insert_points, a), else: insert_points
+
+          {:cont, {:ok, max(max_end, b_end), insert_points}}
+      end
+    end)
+    |> case do
+      {:ok, _, _} -> :ok
+      {:error, failures} -> {:error, failures}
+    end
+  end
+
+  defp splice_all(text, blocks, offsets) do
+    sorted = Enum.sort_by(blocks, & &1.start, :desc)
+
+    Enum.reduce(sorted, {text, 0}, fn b, {acc, shift} ->
+      a = Enum.at(offsets, b.start - 1) + shift
+
+      case b.end == b.start - 1 do
+        true ->
+          b_end = a
+          _ = b_end
+
+          {binary_part(acc, 0, a) <> b.replace <> binary_part(acc, a, byte_size(acc) - a),
+           shift + byte_size(b.replace)}
+
+        false ->
+          b_end = Enum.at(offsets, b.end) + shift
+
+          {binary_part(acc, 0, a) <> b.replace <> binary_part(acc, b_end, byte_size(acc) - b_end),
+           shift + byte_size(b.replace) - (b_end - a)}
+      end
+    end)
+    |> elem(0)
   end
 
   defp edit(worktree, block, contents) do
