@@ -359,6 +359,8 @@ defmodule Trailblazer.Loop.Edits do
   # miscounted line number would otherwise splice silently over the wrong
   # lines (the range was valid, just not the one meant). Compared trimmed, so
   # dropped indentation is tolerated; internal blocks without quotes skip it.
+  # A multi-line quote (models often copy the old code) must match line by
+  # line: first from line start downward, last upward ending at line end.
   defp check_anchors(blocks, text) do
     lines = source_lines(text)
 
@@ -366,7 +368,7 @@ defmodule Trailblazer.Loop.Edits do
     |> Enum.flat_map(fn block ->
       [{:first, block.start}, {:last, block.end}]
       |> Enum.filter(fn {key, _} -> is_binary(Map.get(block, key)) end)
-      |> Enum.reject(fn {key, n} -> same?(Map.fetch!(block, key), line_at(lines, n)) end)
+      |> Enum.reject(fn {key, n} -> quoted_at?(lines, Map.fetch!(block, key), key, n) end)
       |> case do
         [] -> []
         misses -> [failure(block, :anchor_mismatch, anchor_hint(block, misses, lines, text))]
@@ -389,21 +391,43 @@ defmodule Trailblazer.Loop.Edits do
 
   defp same?(quoted, actual), do: String.trim(quoted) == String.trim(actual)
 
+  # The quote's lines, a trailing newline not counting as an extra empty line.
+  defp quote_lines(quoted) do
+    case String.split(quoted, ~r/\r?\n/) do
+      [only] -> [only]
+      parts -> if List.last(parts) == "", do: Enum.drop(parts, -1), else: parts
+    end
+  end
+
+  # first: quote line i is line n + i; last: the final quote line is line n.
+  defp quoted_at?(lines, quoted, key, n) do
+    q = quote_lines(quoted)
+    from = if key == :first, do: n, else: n - length(q) + 1
+
+    q
+    |> Enum.with_index(from)
+    |> Enum.all?(fn {line, at} -> same?(line, line_at(lines, at)) end)
+  end
+
   defp anchor_hint(block, misses, lines, text) do
     notes =
       Enum.map_join(misses, "", fn {key, n} ->
         quoted = Map.fetch!(block, key)
+        q = quote_lines(quoted)
+        span = length(q) - 1
 
+        # Where the quote does sit, reported at the line it would name.
         found =
-          for {line, i} <- Enum.with_index(lines, 1),
+          for i <- 1..max(length(lines), 1)//1,
               String.trim(quoted) != "",
-              same?(quoted, line),
+              quoted_at?(lines, quoted, key, i),
               do: i
 
         where =
-          case Enum.take(found, 5) do
-            [] -> "it is not a line of the current file"
-            at -> "it is line #{Enum.join(at, ", ")}"
+          case {Enum.take(found, 5), span} do
+            {[], 0} -> "it is not a line of the current file"
+            {[], _} -> "those #{span + 1} lines do not appear consecutively in the current file"
+            {at, _} -> "it fits #{key} = line #{Enum.join(at, ", ")}"
           end
 
         "#{key} quotes #{inspect(quoted)} but line #{n} is #{inspect(line_at(lines, n))}; #{where}.\n"
@@ -904,7 +928,10 @@ defmodule Trailblazer.Loop.Edits do
     body = Enum.map_join(failures, "", &failure_note/1)
 
     footer =
-      "\nResubmit the complete corrected batch. Each SEARCH must identify one location; use more context or a read-backed range for repeated text.\n"
+      if Enum.all?(failures, &(Map.get(&1.block, :type) == :range)),
+        do: "\nResubmit the complete corrected batch of range edits.\n",
+        else:
+          "\nResubmit the complete corrected batch. Each SEARCH must identify one location; use more context or a read-backed range for repeated text.\n"
 
     budget = 12_000 - String.length(header <> footer)
     notice = "\n... feedback truncated; use a smaller range.\n"

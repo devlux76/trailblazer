@@ -114,7 +114,8 @@ defmodule Trailblazer.Loop.ReadBackedToolsTest do
     assert failure.reason == :anchor_mismatch
     feedback = Edits.feedback([failure])
     assert feedback =~ "line 12 is \"export function encodeContact"
-    assert feedback =~ "it is line 20"
+    assert feedback =~ "it fits first = line 20"
+    refute feedback =~ "Each SEARCH"
     refute feedback =~ "return 2"
     assert File.read!(Path.join(dir, "contact.ts")) == text
 
@@ -124,6 +125,52 @@ defmodule Trailblazer.Loop.ReadBackedToolsTest do
     assert {:ok, ["contact.ts"]} = Edits.apply(dir, blocks)
     assert File.read!(Path.join(dir, "contact.ts")) =~ "export function encodeContact"
     assert File.read!(Path.join(dir, "contact.ts")) =~ "return 2"
+  end
+
+  # Replays qual3 turn 1: the model quoted the whole old range as first and
+  # its last two lines as last. Correct multi-line quotes apply; a quote that
+  # is one line off is refused and located.
+  test "multi-line quotes are checked line by line from start and up to end", %{dir: dir} do
+    text = "a\n/**\n * doc\n */\nfn x {\n  return addrs\n}\nz\n"
+    File.write!(Path.join(dir, "m.txt"), text)
+    sha = :crypto.hash(:sha256, text) |> Base.encode16(case: :lower)
+
+    block = fn start, last_line, first, last ->
+      %{
+        path: "m.txt",
+        sha256: sha,
+        start: start,
+        end: last_line,
+        first: first,
+        last: last,
+        replace: "R\n"
+      }
+    end
+
+    whole = "/**\n * doc\n */\nfn x {\n  return addrs\n}\n"
+
+    assert {:ok, blocks} =
+             Tools.edit_blocks(Jason.encode!(%{blocks: [block.(2, 7, whole, "return addrs\n}")]}))
+
+    assert {:ok, ["m.txt"]} = Edits.apply(dir, blocks, dry_run: true)
+
+    assert {:ok, blocks} = Tools.edit_blocks(Jason.encode!(%{blocks: [block.(1, 7, whole, "}")]}))
+    assert {:error, [failure]} = Edits.apply(dir, blocks)
+    assert failure.reason == :anchor_mismatch
+    assert Edits.feedback([failure]) =~ "it fits first = line 2"
+
+    assert {:ok, blocks} =
+             Tools.edit_blocks(Jason.encode!(%{blocks: [block.(2, 8, "/**", "return addrs\n}")]}))
+
+    assert {:error, [failure]} = Edits.apply(dir, blocks)
+    assert Edits.feedback([failure]) =~ "it fits last = line 7"
+
+    assert {:ok, blocks} =
+             Tools.edit_blocks(Jason.encode!(%{blocks: [block.(2, 7, "/**\n * nope", "}")]}))
+
+    assert {:error, [failure]} = Edits.apply(dir, blocks)
+    assert Edits.feedback([failure]) =~ "do not appear consecutively"
+    assert File.read!(Path.join(dir, "m.txt")) == text
   end
 
   test "insertion quotes the neighbouring lines; past either end quotes empty", %{dir: dir} do
