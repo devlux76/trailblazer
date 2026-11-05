@@ -90,6 +90,30 @@ defmodule Trailblazer.LoopTest do
 
   @check "grep -q 'Hello, ' lib/greeting.ex"
 
+  # A retry continues from the previous attempt's edits, so corrections are
+  # made against them (not against the original file).
+  @correct """
+  lib/greeting.ex
+  ```elixir
+  <<<<<<< SEARCH
+    def hello(name), do: "Hello; " <> name
+  =======
+    def hello(name), do: "Hello, " <> name
+  >>>>>>> REPLACE
+  ```
+  """
+
+  @exclaim """
+  lib/greeting.ex
+  ```elixir
+  <<<<<<< SEARCH
+    def hello(name), do: "Hello, " <> name
+  =======
+    def hello(name), do: "Hello, " <> name <> "!"
+  >>>>>>> REPLACE
+  ```
+  """
+
   defp task(repo, extra \\ %{}),
     do:
       Map.merge(
@@ -455,10 +479,10 @@ defmodule Trailblazer.LoopTest do
     assert second_user =~ ~s|def hello(name), do: "Hello " <> name|
   end
 
-  test "a failed check is fed back with its output, and the worktree is reset between attempts",
+  test "a failed check is fed back with its output, and the retry continues from those edits",
        %{repo: repo, opts: opts} do
     wrong = String.replace(@fix, ~s("Hello, " <> name), ~s("Hello; " <> name))
-    script([reply(wrong), reply(@fix), reply("PASS")])
+    script([reply(wrong), reply(@correct), reply("PASS")])
 
     report =
       Loop.run(
@@ -474,11 +498,12 @@ defmodule Trailblazer.LoopTest do
     assert second_user =~ "the greeting has no comma"
     assert second_user =~ "Previous submitted edit blocks"
     assert second_user =~ "Hello; "
-    # the second attempt's SEARCH matched, so the first attempt's edit was undone
+    assert second_user =~ "Your previous edits are still applied"
+    # the correction matched the carried edit, so the output refers to real code
     assert git(repo, ["show", "#{report.branch}:lib/greeting.ex"]) =~ ~s("Hello, ")
   end
 
-  test "a retry explains the reset and recreates a test discarded with the failed edit",
+  test "a retry keeps the previous edits, including a created test file",
        %{repo: repo, opts: opts} do
     new_test = """
 
@@ -496,8 +521,7 @@ defmodule Trailblazer.LoopTest do
     script([
       reply(wrong <> new_test),
       fn [_, %{content: user}], _ ->
-        assert user =~ "previous edits remain in the attempt checkpoint"
-        assert user =~ "original files"
+        assert user =~ "Your previous edits are still applied"
         assert user =~ "Previous submitted edit blocks"
         assert user =~ "Hello; "
         assert user =~ "test/greeting.txt"
@@ -513,9 +537,9 @@ defmodule Trailblazer.LoopTest do
             end
           end)
 
-        assert File.read!(Path.join(worktree, "lib/greeting.ex")) == @greeting
-        refute File.exists?(Path.join(worktree, "test/greeting.txt"))
-        reply(@fix <> new_test)
+        assert File.read!(Path.join(worktree, "lib/greeting.ex")) =~ "Hello; "
+        assert File.read!(Path.join(worktree, "test/greeting.txt")) == "Hello, Ada\n"
+        reply(@correct)
       end,
       reply("PASS")
     ])
@@ -558,8 +582,8 @@ defmodule Trailblazer.LoopTest do
       fn [_, %{content: user}], _ ->
         assert user =~ "Previous submitted edit blocks"
         assert user =~ "Hi "
-        refute user =~ "Hello; "
-        reply(@fix)
+        refute user =~ "CHECK_MUTATION_MUST_NOT_BE_CONTEXT"
+        reply(@correct)
       end,
       reply("PASS")
     ])
@@ -603,7 +627,7 @@ defmodule Trailblazer.LoopTest do
       end,
       fn [_, %{content: user}], _ ->
         assert user =~ "Clamp(value: number)"
-        reply(@fix)
+        reply(@correct)
       end,
       fn [_, %{content: user}], _ ->
         assert user =~ "Clamp(value: number)"
@@ -633,7 +657,7 @@ defmodule Trailblazer.LoopTest do
     script([
       reply(@fix),
       reply("FAIL: lib/greeting.ex:2 the design wants an exclamation mark"),
-      reply(@fix),
+      reply(@exclaim),
       reply("PASS")
     ])
 
@@ -1278,7 +1302,14 @@ defmodule Trailblazer.LoopTest do
 
   test "ordinary build failure gets bounded feedback and a reset", %{repo: repo, opts: opts} do
     policy = artifact_policy(repo, "false")
-    script(List.duplicate(submitted([greeting_block()]), 3))
+
+    again = %{
+      path: "lib/greeting.ex",
+      search: ~s|  def hello(name), do: "Hello, " <> name\n|,
+      replace: ~s|  def hello(name), do: "Hello, " <> name\n|
+    }
+
+    script([submitted([greeting_block()]), submitted([again]), submitted([again])])
     report = Loop.run(task(repo, %{artifacts: policy}), opts)
     assert report.status == :failed
     assert report.attempts == 3
@@ -1692,7 +1723,14 @@ defmodule Trailblazer.LoopTest do
                &(&1.content =~ "range 1-2 in lib/greeting.ex was applied as lines 2-2")
              )
 
-      submitted([block.(2, ~s|  def hello(name), do: "Hello, " <> name\n|)])
+      # the relocated edit is still applied: correct it, not the original
+      submitted([
+        %{
+          path: "lib/greeting.ex",
+          search: ~s|  def hello(name), do: "Hi " <> name\n|,
+          replace: ~s|  def hello(name), do: "Hello, " <> name\n|
+        }
+      ])
     end
 
     script([first, second, reply("PASS")])
@@ -1942,12 +1980,12 @@ defmodule Trailblazer.LoopTest do
   end
 
   @tag :hour_of_code
-  test "generated code remains reachable after the next attempt resets the checkout", %{
+  test "generated code remains reachable after the next attempt continues from it", %{
     repo: repo,
     opts: opts
   } do
     wrong = String.replace(@fix, ~s("Hello, " <> name), ~s("Hello; " <> name))
-    script([reply(wrong), reply(@fix), reply("PASS")])
+    script([reply(wrong), reply(@correct), reply("PASS")])
     report = Loop.run(task(repo), opts)
     assert report.status == :fixed
     ref = "refs/trailblazer/attempts/#{report.case}/1"
@@ -2063,7 +2101,7 @@ defmodule Trailblazer.LoopTest do
       {~s({"ref":"vortex:abcdef1"}), 0}
     end
 
-    script([reply(@fix), reply(@fix), reply("PASS")])
+    script([reply(@fix), reply(@exclaim), reply("PASS")])
 
     report =
       Loop.run(

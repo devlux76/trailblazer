@@ -196,10 +196,15 @@ smaller tasks, rather than silently readmitting it. Verification expiry preserve
 the tree for frontier checks; no new coder run is authorized.
 
 After a failed check or review, the next coder prompt includes the exact latest
-applied edit blocks as reference, captured before the check ran. The worktree
-still resets to its original base, so the worker must submit the whole corrected
-change. Check-induced mutations and earlier stale edits are excluded. This lets
-the worker correct its actual code instead of guessing from compiler lines alone.
+applied edit blocks as reference, captured before the check ran. The next
+attempt continues from those edits (2026-11-05, operator): the worktree resets
+to its base, which discards check- and tool-induced mutations, and is then
+restored to the tree the model's own edits produced, so compiler lines and test
+failures refer to the files the worker now sees and it makes corrective edits.
+An attempt that wrote nothing carries the previous attempt's tree. Changed paths
+accumulate across attempts, and each attempt's checkpoint ref is unchanged.
+Resetting to the original base instead made the feedback describe code that no
+longer existed.
 
 Spark requests follow its model card: thinking enabled with `high` (its highest
 supported effort), temperature 1.0, top-p 0.95, top-k disabled, repeat penalty 1.0,

@@ -147,6 +147,17 @@ defmodule Trailblazer.Loop.Workspace do
          do: :ok
   end
 
+  @doc """
+  Puts the worktree's tracked files exactly at `tree` (a tree written by
+  `tree/2`), after a `reset/1`: index and files both match it.
+  """
+  def restore(ws, tree) do
+    with :ok <- validate(ws),
+         {:ok, _} <- git(ws.path, ["read-tree", tree]),
+         {:ok, _} <- git(ws.path, ["checkout-index", "-a", "-f"]),
+         do: :ok
+  end
+
   @doc "Shares dependency contents, preserves private workspace link layouts, and copies build outputs."
   # Bun monorepos install node_modules beside each package manifest. Copy their
   # directory/symlink layout so relative workspace aliases resolve this candidate,

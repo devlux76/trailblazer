@@ -326,7 +326,8 @@ defmodule Trailblazer.Loop do
 
   defp attempts(st, trail, files, check, n, feedback) do
     record(st, :attempt, %{stage: :attempt, n: n})
-    tally(:changed, [])
+    tally(:changed, Map.get(st, :carried_paths, []))
+    tally(:edit_tree, nil)
     tally(:previous_edits, nil)
     tally(:relocations, [])
     tally(:artifacts, nil)
@@ -361,15 +362,42 @@ defmodule Trailblazer.Loop do
         # the last attempt's edits stay in the worktree for inspection
         retry? = n < @attempts and is_nil(st.task.replay_reply_from)
 
-        reset = fn -> if retry?, do: mod(st, :workspace, Workspace).reset(st.ws), else: :ok end
+        # The next attempt continues from the model's own edits (as written,
+        # before any check or tool ran), so errors refer to the files it sees.
+        edited = tally(:edit_tree)
+        edited = if is_binary(edited), do: edited, else: nil
+        carried = edited || Map.get(st, :carried_tree)
+        paths = if edited, do: tally(:changed), else: Map.get(st, :carried_paths, [])
+        st = st |> Map.put(:carried_tree, carried) |> Map.put(:carried_paths, paths)
+
+        reset = fn ->
+          cond do
+            not retry? ->
+              :ok
+
+            is_nil(carried) ->
+              mod(st, :workspace, Workspace).reset(st.ws)
+
+            true ->
+              with :ok <- mod(st, :workspace, Workspace).reset(st.ws),
+                   do: Workspace.restore(st.ws, carried)
+          end
+        end
 
         case with :ok <- checkpoint_attempt(st, n), do: reset.() do
           :ok ->
             next_feedback =
               if retry? do
                 next_feedback <>
-                  "\n\nThe worktree was reset to its original files; previous edits remain in the attempt checkpoint and case record. " <>
-                  "Apply your complete corrected change to the original files shown above."
+                  if(carried,
+                    do:
+                      "\n\nYour previous edits are still applied; any changes made by checks or tools were discarded. " <>
+                        "The output above refers to the current files: make corrective edits to them (read them again for exact text and lines), " <>
+                        "and do not re-apply changes that are already there.",
+                    else:
+                      "\n\nThe worktree was reset to its original files; previous edits remain in the attempt checkpoint and case record. " <>
+                        "Apply your complete corrected change to the original files shown above."
+                  )
               else
                 next_feedback
               end
@@ -1011,7 +1039,8 @@ defmodule Trailblazer.Loop do
          ) do
       {:ok, paths} ->
         record(st, :edit, %{status: :applied, blocks: blocks, paths: paths})
-        tally(:changed, paths)
+        tally(:changed, Enum.uniq(tally(:changed) ++ paths))
+        tally(:edit_tree, Lifecycle.tree(st.ws, tally(:changed)))
         :ok
 
       {:error, failures} ->
@@ -1732,7 +1761,7 @@ defmodule Trailblazer.Loop do
   defp replay_blocks(content) do
     case Tools.text_edit_blocks(content) do
       :none ->
-        case Edits.parse(content || "") do
+        case Edits.parse(content) do
           {:ok, [_ | _] = blocks} -> {:ok, blocks}
           _ -> :error
         end
