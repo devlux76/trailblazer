@@ -473,6 +473,17 @@ defmodule Trailblazer.Loop.Tools do
     end
   end
 
+  defp answer("search", t, args, opts) do
+    with {:ok, query} <- required_string(args, "search", "query"),
+         {:ok, limit} <- optional_integer(args, "search", "limit", 8, 1..20) do
+      t.repo
+      |> Query.search(query, limit, opts)
+      |> lines("nothing matches #{inspect(query)}", fn h ->
+        "#{:erlang.float_to_binary(h.score / 1, decimals: 2)} #{h.via}  #{definition(h.node)}"
+      end)
+    end
+  end
+
   # Small models invent absolute roots (e.g. /home/x/workspace/src/a.ts): name
   # the longest tail of the path that is a real repository file.
   defp relative_hint(root, path) do
@@ -484,17 +495,6 @@ defmodule Trailblazer.Loop.Tools do
     |> case do
       nil -> "paths are repository-relative"
       found -> "paths are repository-relative; did you mean #{found}?"
-    end
-  end
-
-  defp answer("search", t, args, opts) do
-    with {:ok, query} <- required_string(args, "search", "query"),
-         {:ok, limit} <- optional_integer(args, "search", "limit", 8, 1..20) do
-      t.repo
-      |> Query.search(query, limit, opts)
-      |> lines("nothing matches #{inspect(query)}", fn h ->
-        "#{:erlang.float_to_binary(h.score / 1, decimals: 2)} #{h.via}  #{definition(h.node)}"
-      end)
     end
   end
 

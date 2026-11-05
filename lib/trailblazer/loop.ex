@@ -93,8 +93,20 @@ defmodule Trailblazer.Loop do
     report = coordinate(id, report, opts)
 
     case CaseRecord.close(id, report) do
-      :ok -> Logger.info("trailblazer: case #{id} report #{brief(:report, report)}")
-      error -> Logger.error("trailblazer: case #{id} could not be closed: #{inspect(error)}")
+      :ok ->
+        Logger.info("trailblazer: case #{id} report #{brief(:report, report)}")
+
+        # Outcome memory: recorded in the background, never affects the case.
+        # (read directly: Config.get treats a configured false as unset)
+        if Application.get_env(:trailblazer, :memory_record, true) do
+          Trailblazer.Memory.record_async(id, %{
+            model: Config.get(:code_model),
+            reviewer: Config.get(:review_model)
+          })
+        end
+
+      error ->
+        Logger.error("trailblazer: case #{id} could not be closed: #{inspect(error)}")
     end
 
     Process.delete(@tally)

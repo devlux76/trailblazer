@@ -17,5 +17,5 @@ end
 # shared EmbedHealth never probes the real embedder: it stays down until a test
 # says otherwise.
 if config_env() == :test do
-  config :trailblazer, investigate_transport: :none, embed_probe: :down
+  config :trailblazer, investigate_transport: :none, embed_probe: :down, memory_record: false
 end
