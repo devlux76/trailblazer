@@ -439,7 +439,7 @@ defmodule Trailblazer.Loop.Edits do
         where =
           case {Enum.take(found, 5), span} do
             {_, _} when range > 0 and span + 1 > range ->
-              "it has #{span + 1} lines but the range #{block.start}-#{block.end} has #{range}; recount end"
+              "it has #{span + 1} lines but the range #{block.start}-#{block.end} has #{range}; recount start/end"
 
             {[], 0} ->
               "it is not a line of the current file"
