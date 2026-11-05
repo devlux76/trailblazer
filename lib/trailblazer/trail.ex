@@ -102,12 +102,14 @@ defmodule Trailblazer.Trail do
   # what the change needs: the explicitly named (files, names, places) always
   # stay, the top non-pinned definitions are filtered, the rest drop, design
   # sections and file nodes pass through (pack places them). Any failure
-  # leaves the ranking as it was. On by default; :rerank false (or the
-  # :trail_rerank env, false in tests) turns it off.
+  # leaves the ranking as it was. Only with `rerank: true` (the coding loop,
+  # unless its :loop_rerank env is false).
   @rerank_candidates 40
 
   defp rerank(ranked, pinned, request, sims, opts) do
-    enabled? = Keyword.get(opts, :rerank, Application.get_env(:trailblazer, :trail_rerank, true))
+    # Opt-in: the coding loop asks for it; the API/CLI trail stays fast and
+    # never takes the shared router.
+    enabled? = Keyword.get(opts, :rerank, false)
 
     if enabled? do
       pinned = MapSet.new(pinned)

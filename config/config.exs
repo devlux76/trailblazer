@@ -21,5 +21,5 @@ if config_env() == :test do
     investigate_transport: :none,
     embed_probe: :down,
     memory_record: false,
-    trail_rerank: false
+    loop_rerank: false
 end

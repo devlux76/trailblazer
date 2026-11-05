@@ -67,9 +67,13 @@ defmodule Trailblazer.Trail.Rerank do
   defp parse(content, numbered) do
     by_n = Map.new(numbered, fn {c, n} -> {n, c.id} end)
 
+    # The numbers of the first line that has any: an echoed "path:12-30"
+    # further on must not add candidates.
+    line = content |> String.split("\n") |> Enum.find("", &(&1 =~ ~r/\d/))
+
     ids =
       ~r/\d+/
-      |> Regex.scan(content)
+      |> Regex.scan(line)
       |> Enum.map(fn [d] -> String.to_integer(d) end)
       |> Enum.flat_map(&List.wrap(by_n[&1]))
       |> Enum.uniq()

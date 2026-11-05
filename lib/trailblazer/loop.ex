@@ -222,7 +222,10 @@ defmodule Trailblazer.Loop do
     # it like any other: a file is never sent whole, the model reads the rest
     opts =
       query_opts(st)
-      |> Keyword.merge(files: files)
+      |> Keyword.merge(
+        files: files,
+        rerank: Application.get_env(:trailblazer, :loop_rerank, true)
+      )
       |> Keyword.put_new(:budget, Config.get(:trail_tokens))
 
     case build.(st.task.repo, st.task.request, opts) do
