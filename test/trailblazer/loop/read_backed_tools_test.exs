@@ -18,7 +18,16 @@ defmodule Trailblazer.Loop.ReadBackedToolsTest do
     assert read =~ "lines: 3"
     assert read =~ "3| same"
 
-    block = %{path: "a.txt", sha256: digest, start: 3, end: 3, replace: "last\r\n"}
+    block = %{
+      path: "a.txt",
+      sha256: digest,
+      start: 3,
+      end: 3,
+      first: "same",
+      last: "same",
+      replace: "last\r\n"
+    }
+
     assert {:ok, blocks} = Tools.edit_blocks(Jason.encode!(%{blocks: [block]}))
     assert {:ok, ["a.txt"]} = Edits.apply(dir, blocks, dry_run: true)
     assert File.read!(Path.join(dir, "a.txt")) == text
@@ -30,16 +39,39 @@ defmodule Trailblazer.Loop.ReadBackedToolsTest do
     File.write!(Path.join(dir, "empty"), "")
     digest = :crypto.hash(:sha256, "") |> Base.encode16(case: :lower)
     assert Tools.call(dir, "read", ~s({"path":"empty"})) =~ "sha256: #{digest}\nlines: 0"
-    block = %{path: "empty", sha256: digest, start: 1, end: 0, replace: "new"}
+
+    block = %{
+      path: "empty",
+      sha256: digest,
+      start: 1,
+      end: 0,
+      first: "",
+      last: "",
+      replace: "new"
+    }
+
     assert {:ok, blocks} = Tools.edit_blocks(Jason.encode!(%{blocks: [block]}))
     assert {:ok, _} = Edits.apply(dir, blocks)
     assert File.read!(Path.join(dir, "empty")) == "new"
   end
 
   test "strict range decoding refuses mixed modes and malformed fields" do
-    valid = %{path: "a", sha256: String.duplicate("a", 64), start: 1, end: 0, replace: "✓\n"}
+    valid = %{
+      path: "a",
+      sha256: String.duplicate("a", 64),
+      start: 1,
+      end: 0,
+      first: "",
+      last: "",
+      replace: "✓\n"
+    }
+
+    assert {:ok, [%{first: "", last: ""}]} = Tools.edit_blocks(Jason.encode!(%{blocks: [valid]}))
 
     for invalid <- [
+          Map.delete(valid, :first),
+          Map.delete(valid, :last),
+          %{valid | last: nil},
           Map.put(valid, :search, ""),
           Map.put(valid, :extra, true),
           %{valid | sha256: String.duplicate("A", 64)},
@@ -50,6 +82,76 @@ defmodule Trailblazer.Loop.ReadBackedToolsTest do
         ] do
       assert {:error, _} = Tools.edit_blocks(Jason.encode!(%{blocks: [invalid]}))
     end
+  end
+
+  # Replays qual2 turn 3: openContact began at line 20, the model sent start 12
+  # and silently deleted encodeContact (lines 12-19). Quoting line start makes
+  # the miscount a refusal that names the real line.
+  test "a miscounted range is refused by its quoted first line, naming the real one", %{
+    dir: dir
+  } do
+    text =
+      Enum.map_join(1..11, "", &"// header #{&1}\n") <>
+        "export function encodeContact (addrs: string[]): Uint8Array {\n" <>
+        "  return Contact.encode({ addrs })\n}\n\n/**\n * doc\n * more\n */\n" <>
+        "export function openContact (contact: Uint8Array, peer: string) {\n  return 1\n}\n"
+
+    File.write!(Path.join(dir, "contact.ts"), text)
+    sha = :crypto.hash(:sha256, text) |> Base.encode16(case: :lower)
+
+    block = %{
+      path: "contact.ts",
+      sha256: sha,
+      start: 12,
+      end: 22,
+      first: "export function openContact (contact: Uint8Array, peer: string) {",
+      last: "}",
+      replace: "export function openContact () {\n  return 2\n}\n"
+    }
+
+    assert {:ok, blocks} = Tools.edit_blocks(Jason.encode!(%{blocks: [block]}))
+    assert {:error, [failure]} = Edits.apply(dir, blocks)
+    assert failure.reason == :anchor_mismatch
+    feedback = Edits.feedback([failure])
+    assert feedback =~ "line 12 is \"export function encodeContact"
+    assert feedback =~ "it is line 20"
+    refute feedback =~ "return 2"
+    assert File.read!(Path.join(dir, "contact.ts")) == text
+
+    # Recounted, with indentation dropped from the quote: accepted.
+    fixed = %{block | start: 20, last: "}"}
+    assert {:ok, blocks} = Tools.edit_blocks(Jason.encode!(%{blocks: [fixed]}))
+    assert {:ok, ["contact.ts"]} = Edits.apply(dir, blocks)
+    assert File.read!(Path.join(dir, "contact.ts")) =~ "export function encodeContact"
+    assert File.read!(Path.join(dir, "contact.ts")) =~ "return 2"
+  end
+
+  test "insertion quotes the neighbouring lines; past either end quotes empty", %{dir: dir} do
+    File.write!(Path.join(dir, "b.txt"), "one\ntwo\n")
+    sha = :crypto.hash(:sha256, "one\ntwo\n") |> Base.encode16(case: :lower)
+
+    insert = fn start, first, last ->
+      %{
+        path: "b.txt",
+        sha256: sha,
+        start: start,
+        end: start - 1,
+        first: first,
+        last: last,
+        replace: "X\n"
+      }
+    end
+
+    for {start, first, last} <- [{1, "one", ""}, {2, "two", "one"}, {3, "", "two"}] do
+      assert {:ok, blocks} =
+               Tools.edit_blocks(Jason.encode!(%{blocks: [insert.(start, first, last)]}))
+
+      assert {:ok, _} = Edits.apply(dir, blocks, dry_run: true)
+    end
+
+    assert {:ok, blocks} = Tools.edit_blocks(Jason.encode!(%{blocks: [insert.(2, "one", "two")]}))
+    assert {:error, [%{reason: :anchor_mismatch}]} = Edits.apply(dir, blocks)
+    assert File.read!(Path.join(dir, "b.txt")) == "one\ntwo\n"
   end
 
   test "stale digest feedback is bounded and never repeats replacement code", %{dir: dir} do

@@ -91,7 +91,7 @@ defmodule Trailblazer.Loop.Tools do
     definition =
       tool(
         "submit_edits",
-        "Submit all code changes for checking and review. Two block kinds are accepted. Range block: path (repository-relative), sha256 (lowercase hex), start and end (1-based line numbers, inclusive; set end to start-1 to insert before that line), replace. Use an empty search string for a new file. Do not call read/search in the same response.",
+        "Submit all code changes for checking and review. Two block kinds are accepted. Range block: path (repository-relative), sha256 (lowercase hex), start and end (1-based line numbers, inclusive; set end to start-1 to insert before that line), first and last (the exact current text of lines start and end, empty when outside the file), replace. Use an empty search string for a new file. Do not call read/search in the same response.",
         %{
           blocks: %{
             type: "array",
@@ -132,12 +132,20 @@ defmodule Trailblazer.Loop.Tools do
                       description:
                         "Last line of the range, inclusive; end = start - 1 inserts before that line"
                     },
+                    first:
+                      string(
+                        "Exact current text of line start, copied from the numbered source; empty when start is past the last line"
+                      ),
+                    last:
+                      string(
+                        "Exact current text of line end, copied from the numbered source; empty when end is 0"
+                      ),
                     replace:
                       string(
                         "Replacement whole lines; empty deletes. A missing final LF/CRLF is retained before an untouched following line. EOF text stays exact"
                       )
                   },
-                  required: ["path", "sha256", "start", "end", "replace"]
+                  required: ["path", "sha256", "start", "end", "first", "last", "replace"]
                 }
               ]
             }
@@ -153,7 +161,7 @@ defmodule Trailblazer.Loop.Tools do
 
       put_in(
         definition.function.description,
-        "Submit the complete batch of read-backed range edits for the existing named files. Copy sha256 from read; start/end are original inclusive lines; end=start-1 inserts. No SEARCH blocks in this format. Do not call read/search in the same response."
+        "Submit the complete batch of read-backed range edits for the existing named files. Copy sha256 from read; start/end are original inclusive lines; end=start-1 inserts; first/last quote the current text of lines start/end, so a miscounted range is refused instead of applied. No SEARCH blocks in this format. Do not call read/search in the same response."
       )
     else
       definition
@@ -170,8 +178,8 @@ defmodule Trailblazer.Loop.Tools do
       _ ->
         {:error,
          "submit_edits requires a nonempty blocks array; each block is either " <>
-           "{path, search, replace} strings, or a range block {path, sha256, start, end, replace} " <>
-           "with a lowercase 64-hex sha256 and integer line numbers"}
+           "{path, search, replace} strings, or a range block {path, sha256, start, end, first, last, replace} " <>
+           "with a lowercase 64-hex sha256, integer line numbers and the quoted text of lines start and end"}
     end
   end
 
@@ -208,10 +216,12 @@ defmodule Trailblazer.Loop.Tools do
            "sha256" => sha256,
            "start" => start,
            "end" => last,
+           "first" => first_text,
+           "last" => last_text,
            "replace" => replace
          } = block
        )
-       when map_size(block) == 5 do
+       when map_size(block) == 7 do
     cond do
       not (is_binary(path) and path != "") ->
         {:error, "range block needs a non-empty path"}
@@ -228,16 +238,28 @@ defmodule Trailblazer.Loop.Tools do
       not is_binary(replace) ->
         {:error, "range block replace must be a string"}
 
+      not (is_binary(first_text) and is_binary(last_text)) ->
+        {:error, "range block first and last must quote the current text of lines start and end"}
+
       true ->
         {:ok,
-         %{path: path, digest: sha256, start: start, end: last, replace: replace, type: :range}}
+         %{
+           path: path,
+           digest: sha256,
+           start: start,
+           end: last,
+           first: first_text,
+           last: last_text,
+           replace: replace,
+           type: :range
+         }}
     end
   end
 
   defp decode_block(_block),
     do:
       {:error,
-       "each block must be exactly {path, search, replace} or {path, sha256, start, end, replace}"}
+       "each block must be exactly {path, search, replace} or {path, sha256, start, end, first, last, replace}"}
 
   @doc "Strict whole-message JSON fallback; code bytes and edit validation stay unchanged."
   def text_edit_blocks(text) when is_binary(text) do

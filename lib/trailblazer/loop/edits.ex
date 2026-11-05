@@ -290,6 +290,7 @@ defmodule Trailblazer.Loop.Edits do
              :ok <- check_digests(blocks, text),
              {:ok, offsets} <- line_offsets(text),
              :ok <- validate_ranges(blocks, length(offsets) - 1, text),
+             :ok <- check_anchors(blocks, text),
              :ok <- check_spans(blocks, offsets) do
           rel = Path.relative_to(target_key(worktree, rel), target_key(worktree, "."))
           {:ok, rel, splice_all(text, blocks, offsets)}
@@ -352,6 +353,70 @@ defmodule Trailblazer.Loop.Edits do
         |> Enum.map_join("\n", fn {line, n} -> "#{n}| #{line}" end)
       end
     end
+  end
+
+  # A model block quotes the text of lines start and end (first/last); a
+  # miscounted line number would otherwise splice silently over the wrong
+  # lines (the range was valid, just not the one meant). Compared trimmed, so
+  # dropped indentation is tolerated; internal blocks without quotes skip it.
+  defp check_anchors(blocks, text) do
+    lines = source_lines(text)
+
+    blocks
+    |> Enum.flat_map(fn block ->
+      [{:first, block.start}, {:last, block.end}]
+      |> Enum.filter(fn {key, _} -> is_binary(Map.get(block, key)) end)
+      |> Enum.reject(fn {key, n} -> same?(Map.fetch!(block, key), line_at(lines, n)) end)
+      |> case do
+        [] -> []
+        misses -> [failure(block, :anchor_mismatch, anchor_hint(block, misses, lines, text))]
+      end
+    end)
+    |> case do
+      [] -> :ok
+      failures -> {:error, failures}
+    end
+  end
+
+  defp source_lines(text) do
+    text
+    |> String.split(~r/\r?\n/)
+    |> then(fn l -> if List.last(l) == "", do: Enum.drop(l, -1), else: l end)
+  end
+
+  defp line_at(lines, n) when n >= 1, do: Enum.at(lines, n - 1, "")
+  defp line_at(_lines, _n), do: ""
+
+  defp same?(quoted, actual), do: String.trim(quoted) == String.trim(actual)
+
+  defp anchor_hint(block, misses, lines, text) do
+    notes =
+      Enum.map_join(misses, "", fn {key, n} ->
+        quoted = Map.fetch!(block, key)
+
+        found =
+          for {line, i} <- Enum.with_index(lines, 1),
+              String.trim(quoted) != "",
+              same?(quoted, line),
+              do: i
+
+        where =
+          case Enum.take(found, 5) do
+            [] -> "it is not a line of the current file"
+            at -> "it is line #{Enum.join(at, ", ")}"
+          end
+
+        "#{key} quotes #{inspect(quoted)} but line #{n} is #{inspect(line_at(lines, n))}; #{where}.\n"
+      end)
+
+    shown =
+      case excerpt(text, block.start, max(block.start, block.end)) do
+        nil -> ""
+        lines -> "Current lines #{block.start}-#{block.end}:\n" <> lines <> "\n"
+      end
+
+    "The range #{block.start}-#{block.end} is not the code you quoted, so nothing was applied.\n" <>
+      notes <> shown <> "Recount start/end from the CURRENT numbered lines and quote them again."
   end
 
   defp sha256(text), do: :crypto.hash(:sha256, text) |> Base.encode16(case: :lower)
@@ -862,6 +927,8 @@ defmodule Trailblazer.Loop.Edits do
         hint <> "\n"
 
   defp note_body(%{reason: :stale_digest, closest: hint}), do: hint <> "\n"
+
+  defp note_body(%{reason: :anchor_mismatch, closest: hint}), do: hint <> "\n"
 
   defp note_body(%{reason: :invalid_range, closest: message}) when message != "",
     do: message <> "\n"

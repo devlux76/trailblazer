@@ -341,7 +341,10 @@ separator when an untouched following line remains, preventing accidental joins.
 An explicit replacement newline remains unchanged; empty text deletes the range;
 a replacement reaching EOF stays byte-exact. This boundary rule also applies to
 dry-run previews (bug:fae87c7).
-EOF/before-line insertions use `end = start - 1`.
+EOF/before-line insertions use `end = start - 1`. Each model range also
+quotes the text of lines `start` and `end` (`first`/`last`); a quote that does
+not match the line it names refuses the batch, so a miscount fails loudly
+instead of splicing over the wrong lines (bug:9ae2ace).
 
 Ranges use original coordinates, are grouped by canonical file identity, and
 splice from the end. Stale versions, overlaps, duplicate insertions, mixed

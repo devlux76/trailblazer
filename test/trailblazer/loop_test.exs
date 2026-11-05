@@ -1505,6 +1505,8 @@ defmodule Trailblazer.LoopTest do
           sha256: digest,
           start: 2,
           end: 2,
+          first: ~s|  def hello(name), do: "Hello " <> name|,
+          last: ~s|def hello(name), do: "Hello " <> name|,
           replace: ~s|  def hello(name), do: "Hello, " <> name\n|
         }
       ])
@@ -1531,7 +1533,15 @@ defmodule Trailblazer.LoopTest do
       assert feedback.content =~ hash
 
       submitted([
-        %{path: "lib/greeting.ex", sha256: hash, start: 1, end: 3, replace: replacement}
+        %{
+          path: "lib/greeting.ex",
+          sha256: hash,
+          start: 1,
+          end: 3,
+          first: @greeting |> String.split("\n") |> Enum.at(0),
+          last: @greeting |> String.split("\n") |> Enum.at(2),
+          replace: replacement
+        }
       ])
     end
 

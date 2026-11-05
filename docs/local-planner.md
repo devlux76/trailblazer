@@ -90,10 +90,15 @@ The coding worker exposes `submit_edits` alongside its retrieval tools.
 A nonempty `blocks` array accepts two strict shapes:
 
 - Legacy: `{path, search, replace}`, all strings; empty search creates a file.
-- Read-backed: `{path, sha256, start, end, replace}`; digest is lowercase
-  64-hex from a read of the full original file bytes, and line numbers are
-  integers. `start >= 1`; inclusive `end` may equal `start - 1` to insert.
-  EOF insertion uses `start = lines + 1`. Ranges require an existing file.
+- Read-backed: `{path, sha256, start, end, first, last, replace}`; digest is
+  lowercase 64-hex from a read of the full original file bytes, and line
+  numbers are integers. `start >= 1`; inclusive `end` may equal `start - 1` to
+  insert. EOF insertion uses `start = lines + 1`. Ranges require an existing
+  file. `first`/`last` quote the current text of lines `start`/`end` (empty
+  past either end of the file); compared whitespace-trimmed, a mismatch refuses
+  the batch (`anchor_mismatch`) and names the line where the quote actually is,
+  so a miscounted range cannot silently overwrite neighbouring code
+  (bug:9ae2ace, qual2 turn 3).
 
 The read result includes path, digest, total lines and bounded numbered source.
 All ranges for a file refer to that same version; edits do not renumber later
