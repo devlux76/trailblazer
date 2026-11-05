@@ -25,6 +25,16 @@ defmodule Trailblazer.TrailTest do
     end
   end
 
+  # Like the real store: ids without a vector are absent from scores.
+  defmodule SparseVectors do
+    def nearest(_repo, _vector, _limit, _opts), do: {:ok, []}
+
+    def scores(_repo, _vector, ids, _opts) do
+      sims = Process.get(:sims, %{})
+      {:ok, ids |> Enum.filter(&Map.has_key?(sims, &1)) |> Map.new(&{&1, sims[&1]})}
+    end
+  end
+
   defmodule DownVectors do
     def nearest(_repo, _vector, _limit, _opts), do: {:error, :qdrant_down}
     def scores(_repo, _vector, _ids, _opts), do: {:error, :qdrant_down}
@@ -384,6 +394,31 @@ defmodule Trailblazer.TrailTest do
 
     assert trail.notes == ["no vectors"]
     assert Enum.any?(trail.items, &(&1.node.qualified == "Mini.Store.put/2"))
+  end
+
+  test "unscored nodes are admitted only next to a seed, never across the whole walk", ctx do
+    opts = Keyword.put(ctx.opts, :budget, 100_000)
+    dense = Trail.build(ctx.dir, "change Mini.Store.put/2", opts)
+
+    Process.put(:sims, %{})
+
+    sparse =
+      Trail.build(ctx.dir, "change Mini.Store.put/2", Keyword.put(opts, :vectors, SparseVectors))
+
+    ids = fn t -> MapSet.new(t.items, & &1.node.id) end
+
+    assert rank_of(sparse, "Mini.Store.put/2")
+    assert MapSet.subset?(ids.(sparse), ids.(dense))
+    assert MapSet.size(ids.(sparse)) < MapSet.size(ids.(dense))
+
+    down =
+      Trail.build(
+        ctx.dir,
+        "change Mini.Store.put/2",
+        Keyword.merge(opts, embed: DownEmbed, vectors: DownVectors)
+      )
+
+    assert MapSet.subset?(ids.(down), ids.(dense))
   end
 
   test "a non-seed far from the request is dropped", ctx do

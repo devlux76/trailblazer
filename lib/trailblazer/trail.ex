@@ -171,17 +171,29 @@ defmodule Trailblazer.Trail do
 
   defp rank(_graph, [], _sims, _ok?), do: []
 
+  # A node without a similarity score (vectors down, or not embedded yet: the
+  # vector store omits it) is unknown, not "0.5 similar": it is admitted only as
+  # a seed or a direct neighbour of one. Defaulting it to 0.5 let every
+  # unembedded node of a 3-hop walk past the floor (e.g. 16 KB of unrelated
+  # cli.ts in a contact.ts task while ~3k vectors were pending).
   defp rank(graph, seeds, sims, vectors_ok?) do
     pagerank = pagerank(graph, seeds)
     seed? = MapSet.new(seeds)
 
+    near_seed =
+      Enum.reduce(seeds, seed?, fn s, acc ->
+        graph |> Map.get(s, %{}) |> Map.keys() |> MapSet.new() |> MapSet.union(acc)
+      end)
+
     pagerank
     |> Enum.flat_map(fn {id, pr} ->
-      sim = if vectors_ok?, do: Map.get(sims, id, 0.5), else: 0.5
+      sim = if vectors_ok?, do: Map.get(sims, id), else: nil
 
-      if MapSet.member?(seed?, id) or sim >= @floor,
-        do: [{id, pr * (0.5 + 0.5 * sim)}],
-        else: []
+      admit? =
+        MapSet.member?(seed?, id) or
+          if(is_number(sim), do: sim >= @floor, else: MapSet.member?(near_seed, id))
+
+      if admit?, do: [{id, pr * (0.5 + 0.5 * (sim || 0.5))}], else: []
     end)
     |> Enum.sort_by(fn {id, rank} -> {-rank, id} end)
     |> Enum.map(&elem(&1, 0))
