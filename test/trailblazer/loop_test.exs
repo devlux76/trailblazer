@@ -1485,6 +1485,9 @@ defmodule Trailblazer.LoopTest do
   } do
     coder = fn messages, options ->
       assert hd(messages).content =~ "There is no edit tool"
+      user = Enum.at(messages, 1).content
+      assert user =~ "## Current source"
+      assert user =~ "lib/greeting.ex\n```elixir\n" <> @greeting
       refute options[:tools]
       refute options[:tool_choice]
       assert List.last(messages).content =~ "SEARCH/REPLACE blocks only"
@@ -1539,6 +1542,16 @@ defmodule Trailblazer.LoopTest do
     script([rogue, final, reply("PASS")])
     report = Loop.run(task(repo, %{read_rounds: 1, edit_mode: :text}), opts)
     assert report.status == :fixed
+  end
+
+  test "tool mode does not send named files whole", %{repo: repo, opts: opts} do
+    coder = fn messages, _options ->
+      refute Enum.at(messages, 1).content =~ "## Current source"
+      submitted([greeting_block()])
+    end
+
+    script([coder, reply("PASS")])
+    assert Loop.run(task(repo, %{read_rounds: 0}), opts).status == :fixed
   end
 
   test "an invalid edit_mode is refused", %{repo: repo, opts: opts} do

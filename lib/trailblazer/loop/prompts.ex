@@ -56,6 +56,7 @@ defmodule Trailblazer.Loop.Prompts do
         section("Design", design(task)),
         section("Trail", trail),
         section("Files", named(files)),
+        section("Current source", sources(head[:sources] || [])),
         section("Check", head[:check] && "Your change must pass: `#{head[:check]}`"),
         section("A test to follow", head[:pattern] && file(head[:pattern])),
         section("Installed dependency evidence", evidence(head[:evidence] || [])),
@@ -166,6 +167,11 @@ defmodule Trailblazer.Loop.Prompts do
   defp section(_title, nil), do: nil
   defp section(_title, ""), do: nil
   defp section(title, body), do: "## #{title}\n\n#{body}"
+
+  # Text mode only: SEARCH must copy exact text, so small named files go
+  # whole (the loop bounds them); others stay names, read on demand.
+  defp sources([]), do: nil
+  defp sources(files), do: Enum.map_join(files, "\n\n", &file/1)
 
   defp named([]), do: nil
 

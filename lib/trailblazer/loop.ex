@@ -235,6 +235,28 @@ defmodule Trailblazer.Loop do
     end)
   end
 
+  # Text mode sends the named files whole, within a bound: a file over
+  # @source_lines lines, or past @source_bytes in total, stays name-only.
+  @source_lines 400
+  @source_bytes 32_000
+
+  defp sources(st) do
+    st.task.files
+    |> Enum.flat_map(fn path ->
+      case Files.read(st.ws.path, path) do
+        {:ok, text} -> if lines(text) <= @source_lines, do: [{path, text}], else: []
+        {:error, _} -> []
+      end
+    end)
+    |> Enum.reduce({[], 0}, fn {_, text} = file, {kept, used} ->
+      if used + byte_size(text) <= @source_bytes,
+        do: {[file | kept], used + byte_size(text)},
+        else: {kept, used}
+    end)
+    |> elem(0)
+    |> Enum.reverse()
+  end
+
   defp lines(""), do: 0
   defp lines(text), do: length(String.split(String.trim_trailing(text, "\n"), "\n"))
 
@@ -500,7 +522,9 @@ defmodule Trailblazer.Loop do
   end
 
   defp coder_reply(st, trail, files, feedback) do
-    messages = Prompts.coder(st.task, trail, files, feedback, Map.get(st, :head, %{}))
+    head = Map.get(st, :head, %{})
+    head = if st.task.edit_mode == :text, do: Map.put(head, :sources, sources(st)), else: head
+    messages = Prompts.coder(st.task, trail, files, feedback, head)
     record(st, :attempt, %{stage: :prompt_size, bytes: prompt_sizes(messages)})
 
     format =
