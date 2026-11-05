@@ -162,13 +162,12 @@ defmodule Trailblazer.Loop.ReadBackedToolsTest do
     assert {:ok, ["m.txt"]} = Edits.apply(dir, blocks, dry_run: true)
 
     assert {:ok, blocks} = Tools.edit_blocks(Jason.encode!(%{blocks: [block.(1, 7, whole, "}")]}))
-    # Miscounted start / end with unique quotes: relocated to 2-7, not refused,
-    # and reported to the caller.
+    # Miscounted start / end with unique quotes: relocated to 2-7, not refused;
+    # a dry run reports nothing (nothing is written).
     me = self()
     on = fn r -> send(me, {:relocated, r}) end
     assert {:ok, ["m.txt"]} = Edits.apply(dir, blocks, dry_run: true, on_relocate: on)
-    assert_received {:relocated, %{path: "m.txt", from: {1, 7}, to: {2, 7}} = r}
-    assert Edits.relocation_notice(r) =~ "range 1-7 in m.txt was applied as lines 2-7"
+    refute_received {:relocated, _}
 
     assert {:ok, blocks} =
              Tools.edit_blocks(Jason.encode!(%{blocks: [block.(2, 8, "/**", "return addrs\n}")]}))
@@ -222,6 +221,47 @@ defmodule Trailblazer.Loop.ReadBackedToolsTest do
     assert {:error, [failure]} = Edits.apply(dir, blocks)
     assert Edits.feedback([failure]) =~ "do not appear consecutively"
     assert File.read!(Path.join(dir, "m.txt")) == text
+  end
+
+  test "a relocation is reported only when its whole batch is written", %{dir: dir} do
+    a = "x\none\ntwo\ny\n"
+    File.write!(Path.join(dir, "a.txt"), a)
+    File.write!(Path.join(dir, "b.txt"), "b\n")
+    sha = fn t -> :crypto.hash(:sha256, t) |> Base.encode16(case: :lower) end
+
+    moved = %{
+      path: "a.txt",
+      sha256: sha.(a),
+      start: 3,
+      end: 4,
+      first: "one",
+      last: "two",
+      replace: "R\n"
+    }
+
+    miss = %{
+      path: "b.txt",
+      sha256: sha.("b\n"),
+      start: 1,
+      end: 1,
+      first: "nope",
+      last: "nope",
+      replace: "B\n"
+    }
+
+    me = self()
+    on = fn r -> send(me, {:relocated, r}) end
+
+    assert {:ok, blocks} = Tools.edit_blocks(Jason.encode!(%{blocks: [moved, miss]}))
+    assert {:error, _} = Edits.apply(dir, blocks, on_relocate: on)
+    refute_received {:relocated, _}
+    assert File.read!(Path.join(dir, "a.txt")) == a
+
+    assert {:ok, blocks} = Tools.edit_blocks(Jason.encode!(%{blocks: [moved]}))
+    assert {:ok, ["a.txt"]} = Edits.apply(dir, blocks, on_relocate: on)
+    assert_received {:relocated, %{path: "a.txt", from: {3, 4}, to: {2, 3}} = r}
+    assert Edits.relocation_notice(r) =~ "range 3-4 in a.txt was applied as lines 2-3"
+    assert File.read!(Path.join(dir, "a.txt")) == "x\nR\ny\n"
   end
 
   test "insertion quotes the neighbouring lines; past either end quotes empty", %{dir: dir} do
