@@ -26,9 +26,9 @@ end
 
 # Coding roles (operator, 2026-11-05): Nemotron Bolt codes in text edit mode on
 # the CPU router (the only local model to pass the contact.ts benchmark, 4/4);
-# Spark reviews (never its own work); the planner brain shares Bolt on the
-# router (its iGPU service emits EOS after one token), so planner and coder are
-# serialised by the planner lease.
+# Spark plans and reviews on its own server (operator: balance the loop; the
+# planner decision call is temperature 0, thinking off, JSON-schema bounded),
+# never reviewing its own work. Bolt's iGPU service emits EOS after one token.
 if config_env() == :prod do
   config :trailblazer,
     code_model: "nemotron-3.5-bolt-e4b:q4",
@@ -38,6 +38,6 @@ if config_env() == :prod do
     review_model: "spark-x2.6-4b-q8-dspark",
     review_model_url: "http://127.0.0.1:8096/v1",
     review_model_sampling: %{thinking: false},
-    planner_model: "nemotron-3.5-bolt-e4b:q4",
-    planner_model_url: "http://127.0.0.1:8094/v1"
+    planner_model: "spark-x2.6-4b-q8-dspark",
+    planner_model_url: "http://127.0.0.1:8096/v1"
 end
