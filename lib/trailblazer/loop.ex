@@ -469,7 +469,7 @@ defmodule Trailblazer.Loop do
            ),
          true <- event.data["finish_reason"] == "stop" and event.data["partial"] != true,
          true <- Map.get(event.data, "tool_calls", []) == [],
-         {:ok, edits} <- Tools.text_edit_blocks(event.data["content"]) do
+         {:ok, edits} <- replay_blocks(event.data["content"]) do
       reply = %{
         content: event.data["content"],
         reasoning: "",
@@ -560,7 +560,10 @@ defmodule Trailblazer.Loop do
 
     case chat(st, messages, tools, role, submit_only) do
       {:ok, %{tool_calls: [_ | _] = calls} = reply} when tools != nil ->
-        submissions = Enum.filter(calls, &(&1.name == "submit_edits"))
+        submissions =
+          if st.task.edit_mode == :text,
+            do: [],
+            else: Enum.filter(calls, &(&1.name == "submit_edits"))
 
         cond do
           length(submissions) == 1 and length(calls) == 1 ->
@@ -597,7 +600,7 @@ defmodule Trailblazer.Loop do
             )
 
           true ->
-            answers = Enum.map(calls, &answer_tool(st, &1))
+            answers = Enum.map(calls, &answer_call(st, &1))
 
             converse(
               st,
@@ -724,6 +727,16 @@ defmodule Trailblazer.Loop do
      )}
   end
 
+  defp answer_call(%{task: %{edit_mode: :text}}, %{name: "submit_edits"} = call),
+    do: %{
+      role: "tool",
+      tool_call_id: call.id,
+      content:
+        "error: there is no edit tool in this mode; when reading is complete, reply with SEARCH/REPLACE blocks in plain text."
+    }
+
+  defp answer_call(st, call), do: answer_tool(st, call)
+
   defp answer_tool(st, call) do
     target = %{repo: st.task.repo, worktree: st.ws.path}
     remaining = budget_remaining!()
@@ -799,11 +812,12 @@ defmodule Trailblazer.Loop do
             model_url: Config.get(:review_model_url),
             backstop_ms: Config.get(:review_backstop_ms),
             backstop_kind: :review_call,
-            role: :reviewer
+            role: :reviewer,
+            sampling: Config.get(:review_model_sampling)
           ]
 
         _ ->
-          []
+          [sampling: Config.get(:code_model_sampling)]
       end
 
     opts = role_opts ++ opts
@@ -1671,6 +1685,20 @@ defmodule Trailblazer.Loop do
     end
   end
 
+  # A recorded unparsed reply: strict JSON text first, else SEARCH/REPLACE text.
+  defp replay_blocks(content) do
+    case Tools.text_edit_blocks(content) do
+      :none ->
+        case Edits.parse(content || "") do
+          {:ok, [_ | _] = blocks} -> {:ok, blocks}
+          _ -> :error
+        end
+
+      other ->
+        other
+    end
+  end
+
   defp submit_how(%{task: %{edit_mode: :text}}), do: "as plain-text SEARCH/REPLACE blocks"
   defp submit_how(_st), do: "with submit_edits"
 
@@ -1702,8 +1730,7 @@ defmodule Trailblazer.Loop do
       do: raise(ArgumentError, "invalid reasoning_budget_tokens")
 
     edit_mode =
-      case Map.get(task, :edit_mode, Map.get(task, "edit_mode")) do
-        nil -> Config.get(:code_edit_mode)
+      case Map.get(task, :edit_mode, Map.get(task, "edit_mode")) || Config.get(:code_edit_mode) do
         mode when mode in [:tool, "tool"] -> :tool
         mode when mode in [:text, "text"] -> :text
         _ -> raise(ArgumentError, "edit_mode must be tool or text")

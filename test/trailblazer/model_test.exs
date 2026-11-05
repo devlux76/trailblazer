@@ -15,6 +15,26 @@ defmodule Trailblazer.ModelTest do
     conn |> Plug.Conn.put_resp_content_type("text/event-stream") |> Plug.Conn.send_resp(200, text)
   end
 
+  test "per-role sampling overrides temperature, top_p, top_k and thinking" do
+    Req.Test.stub(:model_sampling, fn conn ->
+      {:ok, body, conn} = Plug.Conn.read_body(conn)
+      body = Jason.decode!(body)
+      assert body["temperature"] == 0.6
+      assert body["top_p"] == 0.9
+      assert body["top_k"] == 20
+      assert body["chat_template_kwargs"]["enable_thinking"] == false
+      stream(conn, [event(%{content: "ok"}, "stop")])
+    end)
+
+    sampling = %{temperature: 0.6, top_p: 0.9, top_k: 20, thinking: false}
+
+    assert {:ok, %{content: "ok"}} =
+             Model.chat(
+               [%{role: "user", content: "hi"}],
+               options(:model_sampling) ++ [sampling: sampling]
+             )
+  end
+
   test "streamed reasoning stays separate and settings match the plan" do
     Req.Test.stub(:model_happy, fn conn ->
       {:ok, body, conn} = Plug.Conn.read_body(conn)

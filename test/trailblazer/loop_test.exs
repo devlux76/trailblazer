@@ -1519,6 +1519,28 @@ defmodule Trailblazer.LoopTest do
     assert report.status == :fixed
   end
 
+  test "text mode answers an unoffered submit_edits call like an unknown tool", %{
+    repo: repo,
+    opts: opts
+  } do
+    rogue = fn _messages, options ->
+      refute options[:tool_choice]
+      submitted([greeting_block()])
+    end
+
+    final = fn messages, options ->
+      refute options[:tools]
+      refute options[:tool_choice]
+      tool = Enum.find(messages, &(&1.role == "tool"))
+      assert tool.content =~ "no edit tool in this mode"
+      reply(@fix)
+    end
+
+    script([rogue, final, reply("PASS")])
+    report = Loop.run(task(repo, %{read_rounds: 1, edit_mode: :text}), opts)
+    assert report.status == :fixed
+  end
+
   test "an invalid edit_mode is refused", %{repo: repo, opts: opts} do
     assert_raise ArgumentError, ~r/edit_mode/, fn ->
       Loop.run(task(repo, %{edit_mode: "json"}), opts)

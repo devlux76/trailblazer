@@ -176,6 +176,10 @@ defmodule Trailblazer.Config do
   # How the coder submits edits: :tool (native submit_edits) or :text
   # (SEARCH/REPLACE blocks in plain text; small models handle it better).
   defp default(:code_edit_mode), do: :tool
+  # Optional %{temperature, top_p, top_k, thinking} per role; nil keeps the
+  # Model defaults (1.0 / 0.95 / 0, thinking on).
+  defp default(:code_model_sampling), do: nil
+  defp default(:review_model_sampling), do: nil
   # Backstops (design §13.2): set from measurements with a wide margin, so
   # firing means something is wrong. A model call can read an 11-minute
   # prompt and generate 16k tokens at ~3 tokens/s (~90 minutes).

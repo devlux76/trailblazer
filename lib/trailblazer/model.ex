@@ -116,6 +116,10 @@ defmodule Trailblazer.Model do
   defp do_chat(messages, opts, started, partials) do
     model = Keyword.get(opts, :model) || Config.get(:code_model)
 
+    # Per-role sampling (Config :code_model_sampling / :review_model_sampling);
+    # unset keys keep the vendor-card defaults below.
+    sampling = Keyword.get(opts, :sampling) || %{}
+
     body = %{
       model: model,
       messages:
@@ -127,15 +131,15 @@ defmodule Trailblazer.Model do
       stream: true,
       stream_options: %{include_usage: true},
       return_progress: true,
-      temperature: 1.0,
-      top_p: 0.95,
-      top_k: 0,
+      temperature: Map.get(sampling, :temperature, 1.0),
+      top_p: Map.get(sampling, :top_p, 0.95),
+      top_k: Map.get(sampling, :top_k, 0),
       min_p: 0,
       presence_penalty: 0,
       frequency_penalty: 0,
       repeat_penalty: 1.0,
       chat_template_kwargs: %{
-        enable_thinking: true,
+        enable_thinking: Map.get(sampling, :thinking, true),
         reasoning_effort: Keyword.get(opts, :reasoning_effort, "high")
       }
     }
