@@ -464,11 +464,26 @@ defmodule Trailblazer.Loop.Tools do
           header <> body
 
         {:error, :outside_repo} ->
-          {:error, "#{path} is outside the repository"}
+          {:error,
+           "#{path} is outside the repository; " <> relative_hint(t.worktree || t.repo, path)}
 
         {:error, _} ->
           {:error, "no file #{path}"}
       end
+    end
+  end
+
+  # Small models invent absolute roots (e.g. /home/x/workspace/src/a.ts): name
+  # the longest tail of the path that is a real repository file.
+  defp relative_hint(root, path) do
+    parts = path |> Path.split() |> Enum.reject(&(&1 in ["/", ".", ".."]))
+
+    0..max(length(parts) - 1, 0)//1
+    |> Enum.map(&(parts |> Enum.drop(&1) |> Path.join()))
+    |> Enum.find(&(&1 != "" and match?({:ok, _}, Files.read(root, &1))))
+    |> case do
+      nil -> "paths are repository-relative"
+      found -> "paths are repository-relative; did you mean #{found}?"
     end
   end
 
