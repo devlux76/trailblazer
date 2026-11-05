@@ -244,8 +244,12 @@ defmodule Trailblazer.Loop do
     st.task.files
     |> Enum.flat_map(fn path ->
       case Files.read(st.ws.path, path) do
-        {:ok, text} -> if lines(text) <= @source_lines, do: [{path, text}], else: []
-        {:error, _} -> []
+        # binary (non-UTF-8) files never go in: they would break the JSON request
+        {:ok, text} ->
+          if String.valid?(text) and lines(text) <= @source_lines, do: [{path, text}], else: []
+
+        {:error, _} ->
+          []
       end
     end)
     |> Enum.reduce({[], 0}, fn {_, text} = file, {kept, used} ->
