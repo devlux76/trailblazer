@@ -100,6 +100,17 @@ defmodule Trailblazer.MemoryTest do
     assert o.files == ["src/core/contact.ts"]
   end
 
+  test "a passing test whose name says failed is not the failure signature" do
+    id =
+      closed_case(
+        "x",
+        :failed,
+        "(pass) a failed replacement keeps state [3ms]\n(fail) contact rejects junk [1ms]\n"
+      )
+
+    assert Memory.outcome(id).signature == "(fail) contact rejects junk [1ms]"
+  end
+
   test "recorded outcomes are recalled by similarity, latest record per case" do
     a = closed_case("Implement multiaddr validation in contact", :failed, "error: x", [:fail])
     b = closed_case("Greet with a comma", :fixed, nil, [:pass])

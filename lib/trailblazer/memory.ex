@@ -158,7 +158,8 @@ defmodule Trailblazer.Memory do
       if check do
         (check.data["output_tail"] || "")
         |> String.split("\n")
-        |> Enum.find(&Regex.match?(~r/error|fail|✗|assert/i, &1))
+        |> Enum.reject(&String.starts_with?(String.trim_leading(&1), "(pass)"))
+        |> Enum.find(&Regex.match?(~r/error|\(fail\)|fail:|✗|assert/i, &1))
       end
 
     (line || report["summary"] || "")
