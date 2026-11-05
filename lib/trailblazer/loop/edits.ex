@@ -368,7 +368,7 @@ defmodule Trailblazer.Loop.Edits do
     |> Enum.flat_map(fn block ->
       [{:first, block.start}, {:last, block.end}]
       |> Enum.filter(fn {key, _} -> is_binary(Map.get(block, key)) end)
-      |> Enum.reject(fn {key, n} -> quoted_at?(lines, Map.fetch!(block, key), key, n) end)
+      |> Enum.reject(fn {key, n} -> anchor_ok?(lines, block, key, n) end)
       |> case do
         [] -> []
         misses -> [failure(block, :anchor_mismatch, anchor_hint(block, misses, lines, text))]
@@ -384,9 +384,10 @@ defmodule Trailblazer.Loop.Edits do
     text
     |> String.split(~r/\r?\n/)
     |> then(fn l -> if List.last(l) == "", do: Enum.drop(l, -1), else: l end)
+    |> List.to_tuple()
   end
 
-  defp line_at(lines, n) when n >= 1, do: Enum.at(lines, n - 1, "")
+  defp line_at(lines, n) when n >= 1 and n <= tuple_size(lines), do: elem(lines, n - 1)
   defp line_at(_lines, _n), do: ""
 
   defp same?(quoted, actual), do: String.trim(quoted) == String.trim(actual)
@@ -400,6 +401,16 @@ defmodule Trailblazer.Loop.Edits do
   end
 
   # first: quote line i is line n + i; last: the final quote line is line n.
+  # For a replacing range the quote must lie inside it (a longer quote means
+  # the range was miscounted); an insertion's quotes are the lines after
+  # (first) and before (last) the insertion point, checked in that direction.
+  defp anchor_ok?(lines, block, key, n) do
+    quoted = Map.fetch!(block, key)
+    span = block.end - block.start + 1
+
+    (span <= 0 or length(quote_lines(quoted)) <= span) and quoted_at?(lines, quoted, key, n)
+  end
+
   defp quoted_at?(lines, quoted, key, n) do
     q = quote_lines(quoted)
     from = if key == :first, do: n, else: n - length(q) + 1
@@ -418,16 +429,26 @@ defmodule Trailblazer.Loop.Edits do
 
         # Where the quote does sit, reported at the line it would name.
         found =
-          for i <- 1..max(length(lines), 1)//1,
+          for i <- 1..max(tuple_size(lines), 1)//1,
               String.trim(quoted) != "",
               quoted_at?(lines, quoted, key, i),
               do: i
 
+        range = block.end - block.start + 1
+
         where =
           case {Enum.take(found, 5), span} do
-            {[], 0} -> "it is not a line of the current file"
-            {[], _} -> "those #{span + 1} lines do not appear consecutively in the current file"
-            {at, _} -> "it fits #{key} = line #{Enum.join(at, ", ")}"
+            {_, _} when range > 0 and span + 1 > range ->
+              "it has #{span + 1} lines but the range #{block.start}-#{block.end} has #{range}; recount end"
+
+            {[], 0} ->
+              "it is not a line of the current file"
+
+            {[], _} ->
+              "those #{span + 1} lines do not appear consecutively in the current file"
+
+            {at, _} ->
+              "it fits #{key} = line #{Enum.join(at, ", ")}"
           end
 
         "#{key} quotes #{inspect(quoted)} but line #{n} is #{inspect(line_at(lines, n))}; #{where}.\n"

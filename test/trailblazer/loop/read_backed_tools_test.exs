@@ -165,6 +165,24 @@ defmodule Trailblazer.Loop.ReadBackedToolsTest do
     assert {:error, [failure]} = Edits.apply(dir, blocks)
     assert Edits.feedback([failure]) =~ "it fits last = line 7"
 
+    # Reviewer cases: a quote longer than the range exposes a miscounted end
+    # (overrun) or start (underrun) even when the other quote matches.
+    assert {:ok, blocks} =
+             Tools.edit_blocks(Jason.encode!(%{blocks: [block.(2, 5, whole, " */")]}))
+
+    assert {:error, [failure]} = Edits.apply(dir, blocks)
+    assert Edits.feedback([failure]) =~ "has 6 lines but the range 2-5 has 4"
+
+    assert {:ok, blocks} =
+             Tools.edit_blocks(Jason.encode!(%{blocks: [block.(3, 7, " * doc", whole)]}))
+
+    assert {:error, [_]} = Edits.apply(dir, blocks)
+
+    # An insertion's quotes are context in a fixed direction and may span lines.
+    insert = %{block.(5, 4, "fn x {\n  return addrs", "/**\n * doc\n */") | replace: "I\n"}
+    assert {:ok, blocks} = Tools.edit_blocks(Jason.encode!(%{blocks: [insert]}))
+    assert {:ok, _} = Edits.apply(dir, blocks, dry_run: true)
+
     assert {:ok, blocks} =
              Tools.edit_blocks(Jason.encode!(%{blocks: [block.(2, 7, "/**\n * nope", "}")]}))
 
