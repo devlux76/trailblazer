@@ -1479,6 +1479,52 @@ defmodule Trailblazer.LoopTest do
     assert File.read!(Path.join(report.worktree, "lib/greeting.ex")) == @greeting
   end
 
+  test "text edit mode: no edit tool, text system prompt, SEARCH/REPLACE reply applied", %{
+    repo: repo,
+    opts: opts
+  } do
+    coder = fn messages, options ->
+      assert hd(messages).content =~ "There is no edit tool"
+      refute options[:tools]
+      refute options[:tool_choice]
+      assert List.last(messages).content =~ "SEARCH/REPLACE blocks only"
+      reply(@fix)
+    end
+
+    script([coder, reply("PASS")])
+    report = Loop.run(task(repo, %{read_rounds: 0, edit_mode: "text"}), opts)
+    assert report.status == :fixed
+    assert git(repo, ["show", "#{report.commit}:lib/greeting.ex"]) =~ "Hello, "
+  end
+
+  test "text edit mode reads with tools but never offers submit_edits", %{repo: repo, opts: opts} do
+    read = fn _messages, options ->
+      names = Enum.map(options[:tools], & &1.function.name)
+      assert "read" in names
+      refute "submit_edits" in names
+
+      reply("", %{
+        tool_calls: [%{id: "r1", name: "read", arguments: ~s({"path":"lib/greeting.ex"})}]
+      })
+    end
+
+    final = fn messages, options ->
+      refute options[:tools]
+      assert Enum.any?(messages, &(&1.role == "tool"))
+      reply(@fix)
+    end
+
+    script([read, final, reply("PASS")])
+    report = Loop.run(task(repo, %{read_rounds: 1, edit_mode: :text}), opts)
+    assert report.status == :fixed
+  end
+
+  test "an invalid edit_mode is refused", %{repo: repo, opts: opts} do
+    assert_raise ArgumentError, ~r/edit_mode/, fn ->
+      Loop.run(task(repo, %{edit_mode: "json"}), opts)
+    end
+  end
+
   test "a relocated range is reported in the next attempt's feedback", %{
     repo: repo,
     opts: opts

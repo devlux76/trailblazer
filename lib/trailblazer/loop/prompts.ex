@@ -10,13 +10,18 @@ defmodule Trailblazer.Loop.Prompts do
   """
 
   @dir Path.expand("../../../priv/prompts", __DIR__)
-  for name <- ~w(coder reviewer dossier), do: @external_resource(Path.join(@dir, name <> ".md"))
+  for name <- ~w(coder coder_text reviewer dossier),
+      do: @external_resource(Path.join(@dir, name <> ".md"))
+
   @coder File.read!(Path.join(@dir, "coder.md"))
+  @coder_text File.read!(Path.join(@dir, "coder_text.md"))
   @reviewer File.read!(Path.join(@dir, "reviewer.md"))
   @dossier File.read!(Path.join(@dir, "dossier.md"))
 
-  @doc "The coder's system prompt."
-  def coder_system, do: @coder
+  @doc "The coder's system prompt for an edit mode (`:tool` or `:text`)."
+  def coder_system(mode \\ :tool)
+  def coder_system(:text), do: @coder_text
+  def coder_system(_mode), do: @coder
 
   @doc "The reviewer's system prompt."
   def reviewer_system, do: @reviewer
@@ -34,9 +39,17 @@ defmodule Trailblazer.Loop.Prompts do
   and what failed is appended last, so the model server's prompt cache
   spares a retry the re-read (E25).
   """
-  @spec coder(map(), String.t(), [{String.t(), non_neg_integer() | :missing}], String.t() | nil, map()) ::
+  @spec coder(
+          map(),
+          String.t(),
+          [{String.t(), non_neg_integer() | :missing}],
+          String.t() | nil,
+          map()
+        ) ::
           [map()]
   def coder(task, trail, files, feedback \\ nil, head \\ %{}) do
+    system = coder_system(Map.get(task, :edit_mode, :tool))
+
     user =
       [
         section("Request", field(task, :request)),
@@ -51,7 +64,7 @@ defmodule Trailblazer.Loop.Prompts do
       |> Enum.reject(&is_nil/1)
       |> Enum.join("\n\n")
 
-    [%{role: "system", content: @coder}, %{role: "user", content: user}]
+    [%{role: "system", content: system}, %{role: "user", content: user}]
   end
 
   @doc "Messages for a review of `diff`, in a context of its own."

@@ -98,6 +98,14 @@ defmodule Trailblazer.Config do
 
   defp from_system_env(:state_dir), do: System.get_env("TRAILBLAZER_STATE_DIR")
 
+  defp from_system_env(:code_edit_mode) do
+    case System.get_env("TRAILBLAZER_CODE_EDIT_MODE") do
+      "text" -> :text
+      "tool" -> :tool
+      _ -> nil
+    end
+  end
+
   defp from_system_env(:vortex), do: configured(:vortex)
   defp from_system_env(:planner), do: configured(:planner)
 
@@ -165,6 +173,9 @@ defmodule Trailblazer.Config do
   # A review call is additionally clamped to the card's shared verification allowance.
   defp default(:review_backstop_ms), do: 900_000
   defp default(:code_model_max_tokens), do: 16_384
+  # How the coder submits edits: :tool (native submit_edits) or :text
+  # (SEARCH/REPLACE blocks in plain text; small models handle it better).
+  defp default(:code_edit_mode), do: :tool
   # Backstops (design §13.2): set from measurements with a wide margin, so
   # firing means something is wrong. A model call can read an 11-minute
   # prompt and generate 16k tokens at ~3 tokens/s (~90 minutes).

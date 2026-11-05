@@ -322,7 +322,7 @@ defmodule Trailblazer.Loop do
             [_ | _] = edits ->
               next_feedback <>
                 "\n\nPrevious submitted edit blocks (reference only, captured before any check; a missed atomic submission writes no files). " <>
-                "Use their exact code to diagnose the failure; still submit corrected edits with submit_edits.\n\n```json\n" <>
+                "Use their exact code to diagnose the failure; still submit corrected edits #{submit_how(st)}.\n\n```json\n" <>
                 Jason.encode!(edits, pretty: true) <> "\n```"
 
             _ ->
@@ -509,15 +509,39 @@ defmodule Trailblazer.Loop do
          do: :ranges,
          else: :both
 
+    {format, tools} =
+      if st.task.edit_mode == :text,
+        do: {:text, Tools.definitions()},
+        else: {format, Tools.definitions() ++ [Tools.edit_definition(format)]}
+
     record(st, :attempt, %{stage: :edit_format, format: format})
-    converse(st, messages, Tools.definitions() ++ [Tools.edit_definition(format)], :coder)
+    converse(st, messages, tools, :coder)
   end
 
   ## The model
 
   # One exchange: the task may reduce the default reading budget,
   # then must submit edits through the remaining edit tool.
-  defp converse(st, messages, tools, role, round \\ 1, corrections \\ 0) do
+  defp converse(st, messages, tools, role, round \\ 1, corrections \\ 0)
+
+  # Text mode: once reading ends the coder answers in plain text, so the
+  # final call offers no tools; its SEARCH/REPLACE reply is parsed by blocks/2.
+  defp converse(%{task: %{edit_mode: :text}} = st, messages, tools, :coder, round, corrections)
+       when tools != nil and round > st.task.read_rounds do
+    messages =
+      messages ++
+        [
+          %{
+            role: "user",
+            content:
+              "Reading is complete. Reply now with the complete change as SEARCH/REPLACE blocks only; call no tool."
+          }
+        ]
+
+    converse(st, messages, nil, :coder, round, corrections)
+  end
+
+  defp converse(st, messages, tools, role, round, corrections) do
     submit_only = tools != nil and (round > st.task.read_rounds or corrections > 0)
 
     messages =
@@ -842,7 +866,7 @@ defmodule Trailblazer.Loop do
         record(st, :error, %{stage: role, reason: reason})
 
         {:retry, {:model, reason},
-         "Your last reply was not usable (#{describe(reason)}). Answer more briefly and submit the changes with submit_edits."}
+         "Your last reply was not usable (#{describe(reason)}). Answer more briefly and submit the changes #{submit_how(st)}."}
     end
   end
 
@@ -879,7 +903,7 @@ defmodule Trailblazer.Loop do
     record(st, :edit, %{status: :cut_off})
 
     {:retry, :cut_off,
-     "Your reply was cut off before it ended. Submit fewer, shorter edits with submit_edits."}
+     "Your reply was cut off before it ended. Submit fewer, shorter edits #{submit_how(st)}."}
   end
 
   defp blocks(_st, %{edit_blocks: blocks}), do: {:ok, blocks}
@@ -904,7 +928,7 @@ defmodule Trailblazer.Loop do
         record(st, :edit, %{status: :no_blocks})
 
         {:retry, :no_blocks,
-         "Your reply had no edits. Call submit_edits with the path/search/replace blocks."}
+         "Your reply had no edits. Submit the path/search/replace blocks #{submit_how(st)}."}
 
       {:ok, blocks} ->
         {:ok, blocks}
@@ -1647,6 +1671,9 @@ defmodule Trailblazer.Loop do
     end
   end
 
+  defp submit_how(%{task: %{edit_mode: :text}}), do: "as plain-text SEARCH/REPLACE blocks"
+  defp submit_how(_st), do: "with submit_edits"
+
   defp tally(key), do: Process.get(@tally, %{}) |> Map.get(key, 0)
   defp tally(key, value), do: Process.put(@tally, Map.put(Process.get(@tally, %{}), key, value))
 
@@ -1674,6 +1701,14 @@ defmodule Trailblazer.Loop do
     unless is_nil(reasoning_budget) or Model.valid_reasoning_budget?(reasoning_budget),
       do: raise(ArgumentError, "invalid reasoning_budget_tokens")
 
+    edit_mode =
+      case Map.get(task, :edit_mode, Map.get(task, "edit_mode")) do
+        nil -> Config.get(:code_edit_mode)
+        mode when mode in [:tool, "tool"] -> :tool
+        mode when mode in [:text, "text"] -> :text
+        _ -> raise(ArgumentError, "edit_mode must be tool or text")
+      end
+
     %{
       repo: get.(:repo),
       request: get.(:request),
@@ -1686,6 +1721,7 @@ defmodule Trailblazer.Loop do
       compilation: Map.get(task, :compilation),
       read_rounds: read_rounds,
       reasoning_budget_tokens: reasoning_budget,
+      edit_mode: edit_mode,
       replay_reply_from: replay,
       from: get.(:from) || "cli"
     }

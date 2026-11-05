@@ -86,6 +86,14 @@ issue: trailblazer:4cc63df.
 
 ## Coding and verification contract
 
+Edit mode (`edit_mode` per task, default `Config :code_edit_mode`, env
+`TRAILBLAZER_CODE_EDIT_MODE`): `tool` (below) or `text`. In `text` mode the
+coder gets only the retrieval tools and the `coder_text` prompt; once reading
+ends it is asked, with no tools offered, for plain-text SEARCH/REPLACE blocks,
+parsed and applied all-or-nothing by `Edits`. Small local coders handle the
+text form far better than JSON-carried code (2026-11-05 A/B: Nemotron Bolt
+0 applied edits with the range tool, 3/3 passes with text blocks).
+
 The coding worker exposes `submit_edits` alongside its retrieval tools.
 A nonempty `blocks` array accepts two strict shapes:
 
