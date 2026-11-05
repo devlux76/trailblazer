@@ -25,6 +25,7 @@ defmodule Trailblazer.Trail do
   files): nothing from them is packed again, though they still seed and rank.
   """
 
+  alias Trailblazer.Trail.Rerank
   alias Trailblazer.{Config, Embed, Files, Store, Vectors}
 
   defstruct text: "", items: [], tokens: 0, notes: []
@@ -55,7 +56,7 @@ defmodule Trailblazer.Trail do
       {query_vector, embedded?} = query_vector(request, opts)
       {near, near_ok?} = nearest(repo_id, path, query_vector, opts)
       vectors_ok? = embedded? and near_ok?
-      seeds = seeds(repo_id, request, files, near)
+      {seeds, pinned} = seeds(repo_id, request, files, near)
 
       graph = neighbourhood(repo_id, seeds)
 
@@ -63,6 +64,7 @@ defmodule Trailblazer.Trail do
         similarities(path, query_vector, vectors_ok?, graph, opts)
 
       ranked = rank(graph, seeds, sims, vectors_ok?)
+      {ranked, rerank_note} = rerank(ranked, pinned, request, sims, opts)
       budget = Keyword.get(opts, :budget, Config.get(:trail_tokens))
       omit = opts |> Keyword.get(:omit, []) |> MapSet.new()
       {text, items} = pack(repo_id, path, ranked, budget, omit)
@@ -71,7 +73,7 @@ defmodule Trailblazer.Trail do
         text: text,
         items: items,
         tokens: tokens(text),
-        notes: if(vectors_ok?, do: [], else: ["no vectors"])
+        notes: if(vectors_ok?, do: [], else: ["no vectors"]) ++ List.wrap(rerank_note)
       }
     end
   end
@@ -87,11 +89,69 @@ defmodule Trailblazer.Trail do
       |> places()
       |> Enum.flat_map(fn {file, line} -> List.wrap(enclosing(repo_id, file, line)) end)
 
-    (in_files ++ named ++ placed ++ near)
-    |> Enum.reject(&doc?/1)
-    |> Enum.uniq_by(& &1.id)
-    |> Enum.map(& &1.id)
+    ids = fn nodes ->
+      nodes |> Enum.reject(&doc?/1) |> Enum.uniq_by(& &1.id) |> Enum.map(& &1.id)
+    end
+
+    {ids.(in_files ++ named ++ placed ++ near), ids.(in_files ++ named ++ placed)}
   end
+
+  ## Rerank
+
+  # The ranked candidates go to the reranker (ranger's LFM3 role), which keeps
+  # what the change needs: the explicitly named (files, names, places) always
+  # stay, the top non-pinned definitions are filtered, the rest drop, design
+  # sections and file nodes pass through (pack places them). Any failure
+  # leaves the ranking as it was. On by default; :rerank false (or the
+  # :trail_rerank env, false in tests) turns it off.
+  @rerank_candidates 40
+
+  defp rerank(ranked, pinned, request, sims, opts) do
+    enabled? = Keyword.get(opts, :rerank, Application.get_env(:trailblazer, :trail_rerank, true))
+
+    if enabled? do
+      pinned = MapSet.new(pinned)
+      nodes = Map.new(Store.nodes(ranked), &{&1.id, &1})
+      pass? = fn id -> MapSet.member?(pinned, id) or passthrough?(nodes[id]) end
+
+      pool =
+        ranked
+        |> Enum.reject(pass?)
+        |> Enum.take(@rerank_candidates)
+        |> Enum.map(&nodes[&1])
+        |> Enum.reject(&is_nil/1)
+        |> Enum.map(
+          &%{
+            id: &1.id,
+            path: &1.path,
+            start_line: &1.start_line,
+            end_line: &1.end_line,
+            qualified: &1.qualified,
+            signature: &1.signature,
+            sim: Map.get(sims, &1.id)
+          }
+        )
+
+      case Rerank.select(request, pool, opts) do
+        {:ok, keep} ->
+          keep = MapSet.new(keep)
+
+          {Enum.filter(ranked, &(pass?.(&1) or MapSet.member?(keep, &1))),
+           "reranked #{MapSet.size(keep)}/#{length(pool)}"}
+
+        {:error, :no_candidates} ->
+          {ranked, nil}
+
+        {:error, reason} ->
+          {ranked, "rerank skipped: #{inspect(reason)}"}
+      end
+    else
+      {ranked, nil}
+    end
+  end
+
+  defp passthrough?(nil), do: false
+  defp passthrough?(node), do: doc?(node) or file_node?(node)
 
   # The words of the request that name code: identifier-shaped ones (camelCase,
   # snake_case, Qualified.names, name/2, ready?) and anything in backticks.

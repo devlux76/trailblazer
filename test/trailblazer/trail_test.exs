@@ -421,6 +421,65 @@ defmodule Trailblazer.TrailTest do
     assert MapSet.subset?(ids.(down), ids.(dense))
   end
 
+  describe "rerank" do
+    test "keeps the pinned and the reranker's picks, drops the rest", ctx do
+      opts = Keyword.put(ctx.opts, :budget, 100_000)
+      plain = Trail.build(ctx.dir, "change Mini.Store.put/2", opts)
+
+      reranked =
+        Trail.build(
+          ctx.dir,
+          "change Mini.Store.put/2",
+          Keyword.merge(opts,
+            rerank: true,
+            rerank_chat: fn _m, o ->
+              send(self(), {:rerank_opts, o})
+              {:ok, %{content: "1, 999"}}
+            end
+          )
+        )
+
+      names = fn t -> MapSet.new(t.items, & &1.node.qualified) end
+      assert "Mini.Store.put/2" in names.(reranked)
+      assert MapSet.subset?(names.(reranked), names.(plain))
+      assert MapSet.size(names.(reranked)) < MapSet.size(names.(plain))
+      assert Enum.any?(reranked.notes, &String.starts_with?(&1, "reranked"))
+      assert_received {:rerank_opts, rerank_opts}
+      assert rerank_opts[:model] == Trailblazer.Config.get(:rerank_model)
+      refute rerank_opts[:tools]
+    end
+
+    test "a failing reranker leaves the trail as it was and says so", ctx do
+      opts = Keyword.put(ctx.opts, :budget, 100_000)
+      plain = Trail.build(ctx.dir, "change Mini.Store.put/2", opts)
+      down = fn _messages, _opts -> {:error, :econnrefused} end
+
+      failed =
+        Trail.build(
+          ctx.dir,
+          "change Mini.Store.put/2",
+          Keyword.merge(opts, rerank: true, rerank_chat: down)
+        )
+
+      assert Enum.map(failed.items, & &1.node.id) == Enum.map(plain.items, & &1.node.id)
+      assert "rerank skipped: :econnrefused" in failed.notes
+    end
+
+    test "an answer naming no candidate is a failure, not an empty trail" do
+      cands = [
+        %{id: 7, path: "a.ex", start_line: 1, end_line: 2, qualified: "A.f/0", signature: "def f"}
+      ]
+
+      chat = fn _m, _o -> {:ok, %{content: "none of them"}} end
+
+      assert {:error, :nothing_named} =
+               Trailblazer.Trail.Rerank.select("x", cands, rerank_chat: chat)
+
+      chat = fn _m, _o -> {:ok, %{content: "1, 1, 5"}} end
+      assert {:ok, [7]} = Trailblazer.Trail.Rerank.select("x", cands, rerank_chat: chat)
+    end
+  end
+
   test "a non-seed far from the request is dropped", ctx do
     # renderList is reached from saveHikes but is not a seed and scores low
     Process.put(:sims, Map.put(Process.get(:sims), ctx.ids.save, 0.9))

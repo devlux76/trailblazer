@@ -176,6 +176,10 @@ defmodule Trailblazer.Config do
   # How the coder submits edits: :tool (native submit_edits) or :text
   # (SEARCH/REPLACE blocks in plain text; small models handle it better).
   defp default(:code_edit_mode), do: :tool
+  # The trail reranker: ranger's LFM3 on the shared router (Trail.Rerank).
+  defp default(:rerank_model), do: "lfm3-1.7b:q8"
+  defp default(:rerank_model_url), do: "http://127.0.0.1:8094/v1"
+  defp default(:rerank_backstop_ms), do: 180_000
   # Optional %{temperature, top_p, top_k, thinking} per role; nil keeps the
   # Model defaults (1.0 / 0.95 / 0, thinking on).
   defp default(:code_model_sampling), do: nil
