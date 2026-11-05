@@ -95,6 +95,15 @@ text form far better than JSON-carried code (2026-11-05 A/B: Nemotron Bolt
 0 applied edits with the range tool, 3/3 passes with text blocks).
 
 The coding worker exposes `submit_edits` alongside its retrieval tools.
+It also exposes `edit(path, search, replace)`: one change per call with plain
+string arguments, so a model whose native tool format carries strings raw
+(Spark's `<arg_value>`) writes code unescaped. Every call of a reply that holds
+only `submit_edits`/`edit` calls joins one all-or-nothing batch.
+
+Commit subject: the request's first line. Over 255 bytes, every `bug:<id>`
+reference is kept whole at the end and only the prose is shortened with
+`...`; if the references leave under 40 bytes of prose, the work stays
+uncommitted as before.
 A nonempty `blocks` array accepts two strict shapes:
 
 - Legacy: `{path, search, replace}`, all strings; empty search creates a file.

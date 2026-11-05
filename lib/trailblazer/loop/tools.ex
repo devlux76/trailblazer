@@ -168,6 +168,45 @@ defmodule Trailblazer.Loop.Tools do
     end
   end
 
+  @edit_tools ~w(submit_edits edit)
+
+  @doc "Names of the tools whose calls are edit submissions."
+  def edit_tools, do: @edit_tools
+
+  @doc """
+  The flat edit tool: one change per call with plain string arguments, so a
+  model whose native tool format carries strings raw (e.g. Spark's
+  `<arg_value>`) writes code unescaped. Several `edit` calls in one reply,
+  with or without `submit_edits`, form one all-or-nothing batch.
+  """
+  def flat_edit_definition do
+    tool(
+      "edit",
+      "Replace exact existing text in one file. Call it once per change; several edit calls in one reply (with or without submit_edits) form one all-or-nothing batch. Do not call read/search in the same response.",
+      %{
+        path: string("Repository-relative file path"),
+        search:
+          string(
+            "Exact existing text to replace, copied with its indentation; it must match one place. Empty only to create a new or empty file"
+          ),
+        replace: string("The replacement text")
+      },
+      [:path, :search, :replace]
+    )
+  end
+
+  @doc "Blocks of one edit-tool call: `submit_edits` (a batch) or `edit` (one block)."
+  def edit_call_blocks("submit_edits", arguments), do: edit_blocks(arguments)
+
+  def edit_call_blocks("edit", arguments) when is_binary(arguments) do
+    case Jason.decode(arguments) do
+      {:ok, %{} = block} -> edit_blocks(Jason.encode!(%{blocks: [block]}))
+      _ -> {:error, "edit arguments must be a JSON object {path, search, replace}"}
+    end
+  end
+
+  def edit_call_blocks(_name, _arguments), do: {:error, "not an edit tool"}
+
   @doc "Validates model arguments before the existing all-or-nothing edit application."
   def edit_blocks(arguments) when is_binary(arguments) do
     with {:ok, %{"blocks" => [_ | _] = blocks} = args} when map_size(args) == 1 <-

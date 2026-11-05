@@ -273,7 +273,7 @@ defmodule Trailblazer.LoopTest do
 
     final = fn _messages, options ->
       assert Enum.map(options[:tools], & &1.function.name) ==
-               ~w(submit_edits)
+               ~w(submit_edits edit)
 
       assert options[:tool_choice] == "required"
       submitted([greeting_block()])
@@ -290,7 +290,7 @@ defmodule Trailblazer.LoopTest do
        } do
     first = fn _messages, options ->
       assert Enum.map(options[:tools], & &1.function.name) ==
-               ~w(submit_edits)
+               ~w(submit_edits edit)
 
       assert options[:tool_choice] == "required"
       assert options[:reasoning_budget_tokens] == 1024
@@ -322,7 +322,7 @@ defmodule Trailblazer.LoopTest do
 
     second = fn _messages, options ->
       assert Enum.map(options[:tools], & &1.function.name) ==
-               ~w(submit_edits)
+               ~w(submit_edits edit)
 
       assert options[:tool_choice] == "required"
       submitted([greeting_block()])
@@ -885,11 +885,24 @@ defmodule Trailblazer.LoopTest do
              "Greet with a comma"
   end
 
-  test "an over-long request line is never truncated into a commit; the work stays uncommitted",
+  test "an over-long request line commits with shortened prose and every bug reference kept",
        %{repo: repo, opts: opts} do
     script([reply(@fix), reply("PASS")])
-    long = String.duplicate("x", 250) <> " bug:abcdef1"
+    long = "Fix bug:abcdef1 " <> String.duplicate("word ", 60) <> "bug:1234567"
     report = Loop.run(task(repo, %{request: long <> "\nDetails."}), opts)
+    assert report.status == :fixed
+    message = git(repo, ["log", "-1", "--format=%B", report.branch]) |> String.trim()
+    assert byte_size(message) <= 255
+    assert message =~ ~r/^Fix word word .*\.\.\. bug:abcdef1 bug:1234567$/
+  end
+
+  test "a request line that is nothing but references stays uncommitted", %{
+    repo: repo,
+    opts: opts
+  } do
+    script([reply(@fix), reply("PASS")])
+    refs = Enum.map_join(1..30, " ", &"bug:#{String.pad_leading(Integer.to_string(&1), 7, "0")}")
+    report = Loop.run(task(repo, %{request: refs}), opts)
     assert report.status == :failed
     assert report.summary =~ "over 255 characters"
     assert report[:commit] == nil
@@ -1427,7 +1440,7 @@ defmodule Trailblazer.LoopTest do
       reply("", %{tool_calls: [%{id: "bad-json", name: "submit_edits", arguments: "{not json"}]})
 
     correction = fn messages, options ->
-      assert Enum.map(options[:tools], & &1.function.name) == ["submit_edits"]
+      assert Enum.map(options[:tools], & &1.function.name) == ["submit_edits", "edit"]
       assert Enum.at(messages, -1).role == "tool"
       assert Enum.at(messages, -1).tool_call_id == "bad-json"
       assert Enum.at(messages, -1).content =~ "submit_edits"
@@ -1554,6 +1567,95 @@ defmodule Trailblazer.LoopTest do
     assert Loop.run(task(repo, %{read_rounds: 0}), opts).status == :fixed
   end
 
+  test "several flat edit calls form one batch with code as plain strings", %{
+    repo: repo,
+    opts: opts
+  } do
+    edits = fn _messages, options ->
+      assert "edit" in Enum.map(options[:tools], & &1.function.name)
+
+      reply("", %{
+        tool_calls: [
+          %{
+            id: "e1",
+            name: "edit",
+            arguments:
+              Jason.encode!(%{
+                path: "lib/greeting.ex",
+                search: ~s|  def hello(name), do: "Hello " <> name\n|,
+                replace: ~s|  def hello(name), do: "Hello, " <> name\n|
+              })
+          },
+          %{
+            id: "e2",
+            name: "edit",
+            arguments:
+              Jason.encode!(%{
+                path: "lib/greeting.ex",
+                search: "defmodule Greeting do\n",
+                replace: "defmodule Greeting do\n  @moduledoc false\n"
+              })
+          }
+        ]
+      })
+    end
+
+    script([edits, reply("PASS")])
+    report = Loop.run(task(repo, %{read_rounds: 0}), opts)
+    assert report.status == :fixed
+    file = git(repo, ["show", "#{report.commit}:lib/greeting.ex"])
+    assert file =~ "Hello, "
+    assert file =~ "@moduledoc false"
+  end
+
+  test "one bad flat edit refuses the whole batch and is corrected", %{repo: repo, opts: opts} do
+    bad = fn _messages, _ ->
+      reply("", %{
+        tool_calls: [
+          %{
+            id: "e1",
+            name: "edit",
+            arguments: Jason.encode!(%{path: "lib/greeting.ex", search: "x"})
+          },
+          %{id: "e2", name: "edit", arguments: Jason.encode!(greeting_block())}
+        ]
+      })
+    end
+
+    fixed = fn messages, _ ->
+      answers = Enum.filter(messages, &(&1.role == "tool"))
+      assert length(answers) == 2
+      assert hd(answers).content =~ "edit:"
+
+      reply("", %{
+        tool_calls: [%{id: "e3", name: "edit", arguments: Jason.encode!(greeting_block())}]
+      })
+    end
+
+    script([bad, fixed, reply("PASS")])
+    assert Loop.run(task(repo, %{read_rounds: 0}), opts).status == :fixed
+  end
+
+  test "text mode answers an unoffered flat edit call like an unknown tool", %{
+    repo: repo,
+    opts: opts
+  } do
+    rogue = fn _messages, _ ->
+      reply("", %{
+        tool_calls: [%{id: "e1", name: "edit", arguments: Jason.encode!(greeting_block())}]
+      })
+    end
+
+    final = fn messages, options ->
+      refute options[:tools]
+      assert Enum.find(messages, &(&1.role == "tool")).content =~ "no edit tool in this mode"
+      reply(@fix)
+    end
+
+    script([rogue, final, reply("PASS")])
+    assert Loop.run(task(repo, %{read_rounds: 1, edit_mode: :text}), opts).status == :fixed
+  end
+
   test "an invalid edit_mode is refused", %{repo: repo, opts: opts} do
     assert_raise ArgumentError, ~r/edit_mode/, fn ->
       Loop.run(task(repo, %{edit_mode: "json"}), opts)
@@ -1613,7 +1715,10 @@ defmodule Trailblazer.LoopTest do
       assert options[:tool_choice] == "required"
 
       assert options[:tools] ==
-               [Trailblazer.Loop.Tools.edit_definition(:ranges)]
+               [
+                 Trailblazer.Loop.Tools.edit_definition(:ranges),
+                 Trailblazer.Loop.Tools.flat_edit_definition()
+               ]
 
       digest = :crypto.hash(:sha256, @greeting) |> Base.encode16(case: :lower)
 
@@ -1684,7 +1789,9 @@ defmodule Trailblazer.LoopTest do
     opts: opts
   } do
     first = fn _messages, options ->
-      items = List.last(options[:tools]).function.parameters.properties.blocks.items
+      items =
+        Enum.find(options[:tools], &(&1.function.name == "submit_edits")).function.parameters.properties.blocks.items
+
       refute Map.has_key?(items, :anyOf)
       assert "sha256" in items.required
       submitted([greeting_block()])
@@ -1697,7 +1804,9 @@ defmodule Trailblazer.LoopTest do
   test "zero-read and new-file tasks keep the compatible dual schema", %{repo: repo, opts: opts} do
     for extra <- [%{read_rounds: 0}, %{files: ["lib/greeting.ex", "notes.txt"], read_rounds: 1}] do
       first = fn _messages, options ->
-        items = List.last(options[:tools]).function.parameters.properties.blocks.items
+        items =
+          Enum.find(options[:tools], &(&1.function.name == "submit_edits")).function.parameters.properties.blocks.items
+
         assert length(items.anyOf) == 2
         submitted([greeting_block()])
       end

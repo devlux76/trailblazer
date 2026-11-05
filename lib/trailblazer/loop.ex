@@ -540,7 +540,9 @@ defmodule Trailblazer.Loop do
     {format, tools} =
       if st.task.edit_mode == :text,
         do: {:text, Tools.definitions()},
-        else: {format, Tools.definitions() ++ [Tools.edit_definition(format)]}
+        else:
+          {format,
+           Tools.definitions() ++ [Tools.edit_definition(format), Tools.flat_edit_definition()]}
 
     record(st, :attempt, %{stage: :edit_format, format: format})
     converse(st, messages, tools, :coder)
@@ -579,7 +581,7 @@ defmodule Trailblazer.Loop do
             %{
               role: "user",
               content:
-                "Reading is complete. Call submit_edits alone with the complete batch. No more read or search calls."
+                "Reading is complete. Call submit_edits or edit alone with the complete batch. No more read or search calls."
             }
           ]
       else
@@ -591,11 +593,11 @@ defmodule Trailblazer.Loop do
         submissions =
           if st.task.edit_mode == :text,
             do: [],
-            else: Enum.filter(calls, &(&1.name == "submit_edits"))
+            else: Enum.filter(calls, &(&1.name in Tools.edit_tools()))
 
         cond do
-          length(submissions) == 1 and length(calls) == 1 ->
-            case Tools.edit_blocks(hd(submissions).arguments) do
+          submissions != [] and length(submissions) == length(calls) ->
+            case batch_blocks(submissions) do
               {:ok, blocks} ->
                 preview_edits(st, messages, tools, role, round, reply, blocks, corrections)
 
@@ -612,7 +614,7 @@ defmodule Trailblazer.Loop do
               round,
               reply,
               corrections,
-              "Call submit_edits alone, without read/search calls, with the complete batch."
+              "Call submit_edits or edit alone, without read/search calls, with the complete batch."
             )
 
           submit_only ->
@@ -624,7 +626,7 @@ defmodule Trailblazer.Loop do
               round,
               reply,
               corrections,
-              "Reading is complete. Only submit_edits may be called now."
+              "Reading is complete. Only submit_edits or edit may be called now."
             )
 
           true ->
@@ -755,13 +757,25 @@ defmodule Trailblazer.Loop do
      )}
   end
 
-  defp answer_call(%{task: %{edit_mode: :text}}, %{name: "submit_edits"} = call),
-    do: %{
-      role: "tool",
-      tool_call_id: call.id,
-      content:
-        "error: there is no edit tool in this mode; when reading is complete, reply with SEARCH/REPLACE blocks in plain text."
-    }
+  # One batch from every edit-tool call of a reply, in order; any bad call
+  # refuses the whole batch with its reason.
+  defp batch_blocks(calls) do
+    Enum.reduce_while(calls, {:ok, []}, fn call, {:ok, acc} ->
+      case Tools.edit_call_blocks(call.name, call.arguments) do
+        {:ok, blocks} -> {:cont, {:ok, acc ++ blocks}}
+        {:error, reason} -> {:halt, {:error, "#{call.name}: #{reason}"}}
+      end
+    end)
+  end
+
+  defp answer_call(%{task: %{edit_mode: :text}}, %{name: name} = call)
+       when name in ["submit_edits", "edit"],
+       do: %{
+         role: "tool",
+         tool_call_id: call.id,
+         content:
+           "error: there is no edit tool in this mode; when reading is complete, reply with SEARCH/REPLACE blocks in plain text."
+       }
 
   defp answer_call(st, call), do: answer_tool(st, call)
 
@@ -801,7 +815,7 @@ defmodule Trailblazer.Loop do
     # reading tools when the host no longer permits them, including corrections.
     tools =
       if submit_only,
-        do: Enum.filter(tools, &(&1.function.name == "submit_edits")),
+        do: Enum.filter(tools, &(&1.function.name in Tools.edit_tools())),
         else: tools
 
     record(st, :prompt, %{role: role, messages: messages, tools: tools != nil})
@@ -1729,7 +1743,7 @@ defmodule Trailblazer.Loop do
   end
 
   defp submit_how(%{task: %{edit_mode: :text}}), do: "as plain-text SEARCH/REPLACE blocks"
-  defp submit_how(_st), do: "with submit_edits"
+  defp submit_how(_st), do: "with submit_edits or edit"
 
   defp tally(key), do: Process.get(@tally, %{}) |> Map.get(key, 0)
   defp tally(key, value), do: Process.put(@tally, Map.put(Process.get(@tally, %{}), key, value))
@@ -1798,15 +1812,37 @@ defmodule Trailblazer.Loop do
 
   # The request's first line is the whole commit message: the operator's hooks (run
   # by Workspace.commit) require a bug:<id> in our repositories and cap the message at
-  # 255 characters, details living in the bug. Never truncate: a cut could drop the
-  # reference, so an over-long line leaves the work uncommitted.
+  # 255 characters, details living in the bug. An over-long line keeps every bug:<id>
+  # reference whole at the end and shortens only the prose; only when the references
+  # alone leave no room for a meaningful subject is the work left uncommitted.
   @commit_limit 255
+  @bug_ref ~r/\bbug:[0-9a-f]{7,64}\b/
   defp commit_message(request) do
     line = request |> String.trim() |> String.split("\n", parts: 2) |> hd() |> String.trim()
 
-    if String.length(line) > @commit_limit,
-      do: {:error, "the request's first line is over #{@commit_limit} characters"},
-      else: {:ok, line}
+    if byte_size(line) <= @commit_limit do
+      {:ok, line}
+    else
+      refs = @bug_ref |> Regex.scan(line) |> List.flatten() |> Enum.uniq()
+      suffix = Enum.map_join(refs, "", &(" " <> &1))
+      prose = @bug_ref |> Regex.replace(line, "") |> String.split() |> Enum.join(" ")
+      room = @commit_limit - byte_size(suffix) - byte_size("...")
+
+      if room < 40 do
+        {:error, "the request's first line is over #{@commit_limit} characters"}
+      else
+        {:ok, fit_bytes(prose, room) <> "..." <> suffix}
+      end
+    end
+  end
+
+  defp fit_bytes(text, room) do
+    text
+    |> String.graphemes()
+    |> Enum.reduce_while("", fn g, acc ->
+      if byte_size(acc) + byte_size(g) <= room, do: {:cont, acc <> g}, else: {:halt, acc}
+    end)
+    |> String.trim_trailing()
   end
 
   defp describe(reason) when is_binary(reason), do: reason
