@@ -11,9 +11,10 @@ defmodule Trailblazer.Trail do
   both edge directions, not through an uncertain call whose site resolved to
   more than 2 candidates, the restart mass split evenly over the seeds, damping
   0.85, 30 iterations, edge weight 1.0, uncertain 0.3, contains 0.5. A node's
-  rank is its PageRank times `0.5 + 0.5 * similarity` to the request (0.5 for
-  every node when vectors are unavailable), and a node that is not a seed is
-  dropped below a similarity of 0.25.
+  rank is its PageRank times `0.5 + 0.5 * similarity` to the request. A scored
+  node that is not a seed is dropped below a similarity of 0.25; an unscored one
+  (vectors down, or not yet embedded) is kept only as a direct neighbour of a
+  seed and weighted as 0.5.
 
   Packing, in rank order: full source until 60% of the budget is used, then
   signatures; then the design sections the packed definitions implement, as
