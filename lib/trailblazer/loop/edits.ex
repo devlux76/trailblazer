@@ -290,7 +290,7 @@ defmodule Trailblazer.Loop.Edits do
              :ok <- check_digests(blocks, text),
              {:ok, offsets} <- line_offsets(text),
              :ok <- validate_ranges(blocks, length(offsets) - 1, text),
-             :ok <- check_anchors(blocks, text),
+             {:ok, blocks} <- check_anchors(blocks, text),
              :ok <- check_spans(blocks, offsets) do
           rel = Path.relative_to(target_key(worktree, rel), target_key(worktree, "."))
           {:ok, rel, splice_all(text, blocks, offsets)}
@@ -361,24 +361,62 @@ defmodule Trailblazer.Loop.Edits do
   # dropped indentation is tolerated; internal blocks without quotes skip it.
   # A multi-line quote (models often copy the old code) must match line by
   # line: first from line start downward, last upward ending at line end.
+  #
+  # The quotes state the intended code; the numbers are what small models
+  # miscount. A replacing range whose quotes each sit at its stated line or,
+  # failing that, at exactly one line of the file is relocated there when the
+  # result is a consistent range (start <= end, quotes inside it). Anything
+  # ambiguous, absent or inconsistent, and every insertion, is refused.
   defp check_anchors(blocks, text) do
     lines = source_lines(text)
 
     blocks
-    |> Enum.flat_map(fn block ->
-      [{:first, block.start}, {:last, block.end}]
-      |> Enum.filter(fn {key, _} -> is_binary(Map.get(block, key)) end)
-      |> Enum.reject(fn {key, n} -> anchor_ok?(lines, block, key, n) end)
-      |> case do
-        [] -> []
-        misses -> [failure(block, :anchor_mismatch, anchor_hint(block, misses, lines, text))]
+    |> Enum.map(fn block ->
+      misses =
+        [{:first, block.start}, {:last, block.end}]
+        |> Enum.filter(fn {key, _} -> is_binary(Map.get(block, key)) end)
+        |> Enum.reject(fn {key, n} -> anchor_ok?(lines, block, key, n) end)
+
+      case {misses, relocate(lines, block, misses)} do
+        {[], _} -> {:ok, block}
+        {_, {:ok, moved}} -> {:ok, moved}
+        _ -> {:error, failure(block, :anchor_mismatch, anchor_hint(block, misses, lines, text))}
       end
     end)
+    |> Enum.split_with(&match?({:ok, _}, &1))
     |> case do
-      [] -> :ok
-      failures -> {:error, failures}
+      {ok, []} -> {:ok, Enum.map(ok, &elem(&1, 1))}
+      {_, failures} -> {:error, Enum.map(failures, &elem(&1, 1))}
     end
   end
+
+  defp relocate(_lines, block, _misses) when block.end < block.start, do: :error
+
+  defp relocate(lines, %{first: first, last: last} = block, misses)
+       when is_binary(first) and is_binary(last) do
+    position = fn key, quoted, stated ->
+      if Enum.any?(misses, &(elem(&1, 0) == key)) do
+        case for(i <- 1..max(tuple_size(lines), 1)//1, quoted_at?(lines, quoted, key, i), do: i) do
+          [only] -> only
+          _ -> nil
+        end
+      else
+        stated
+      end
+    end
+
+    with s when is_integer(s) <- position.(:first, first, block.start),
+         e when is_integer(e) <- position.(:last, last, block.end),
+         true <- s <= e,
+         span = e - s + 1,
+         true <- length(quote_lines(first)) <= span and length(quote_lines(last)) <= span do
+      {:ok, %{block | start: s, end: e}}
+    else
+      _ -> :error
+    end
+  end
+
+  defp relocate(_lines, _block, _misses), do: :error
 
   defp source_lines(text) do
     text

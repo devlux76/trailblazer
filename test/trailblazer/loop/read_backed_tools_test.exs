@@ -85,9 +85,10 @@ defmodule Trailblazer.Loop.ReadBackedToolsTest do
   end
 
   # Replays qual2 turn 3: openContact began at line 20, the model sent start 12
-  # and silently deleted encodeContact (lines 12-19). Quoting line start makes
-  # the miscount a refusal that names the real line.
-  test "a miscounted range is refused by its quoted first line, naming the real one", %{
+  # and silently deleted encodeContact (lines 12-19). The quoted first line
+  # sits uniquely at 20 and the quoted last at the stated 22, so the range is
+  # relocated to the code meant; an ambiguous quote is refused, naming lines.
+  test "a miscounted range is relocated by unique quotes, or refused when ambiguous", %{
     dir: dir
   } do
     text =
@@ -109,22 +110,24 @@ defmodule Trailblazer.Loop.ReadBackedToolsTest do
       replace: "export function openContact () {\n  return 2\n}\n"
     }
 
-    assert {:ok, blocks} = Tools.edit_blocks(Jason.encode!(%{blocks: [block]}))
+    # Ambiguous: the quoted first line "}" fits lines 14 and 22.
+    ambiguous = %{block | first: "}", last: "}"}
+    assert {:ok, blocks} = Tools.edit_blocks(Jason.encode!(%{blocks: [ambiguous]}))
     assert {:error, [failure]} = Edits.apply(dir, blocks)
     assert failure.reason == :anchor_mismatch
     feedback = Edits.feedback([failure])
     assert feedback =~ "line 12 is \"export function encodeContact"
-    assert feedback =~ "it fits first = line 20"
+    assert feedback =~ "it fits first = line 14, 22"
     refute feedback =~ "Each SEARCH"
     refute feedback =~ "return 2"
     assert File.read!(Path.join(dir, "contact.ts")) == text
 
-    # Recounted, with indentation dropped from the quote: accepted.
-    fixed = %{block | start: 20, last: "}"}
-    assert {:ok, blocks} = Tools.edit_blocks(Jason.encode!(%{blocks: [fixed]}))
+    # Unique quote: relocated to 20-22; encodeContact survives.
+    assert {:ok, blocks} = Tools.edit_blocks(Jason.encode!(%{blocks: [block]}))
     assert {:ok, ["contact.ts"]} = Edits.apply(dir, blocks)
     assert File.read!(Path.join(dir, "contact.ts")) =~ "export function encodeContact"
     assert File.read!(Path.join(dir, "contact.ts")) =~ "return 2"
+    refute File.read!(Path.join(dir, "contact.ts")) =~ "return 1"
   end
 
   # Replays qual3 turn 1: the model quoted the whole old range as first and
@@ -155,15 +158,13 @@ defmodule Trailblazer.Loop.ReadBackedToolsTest do
     assert {:ok, ["m.txt"]} = Edits.apply(dir, blocks, dry_run: true)
 
     assert {:ok, blocks} = Tools.edit_blocks(Jason.encode!(%{blocks: [block.(1, 7, whole, "}")]}))
-    assert {:error, [failure]} = Edits.apply(dir, blocks)
-    assert failure.reason == :anchor_mismatch
-    assert Edits.feedback([failure]) =~ "it fits first = line 2"
+    # Miscounted start / end with unique quotes: relocated to 2-7, not refused.
+    assert {:ok, ["m.txt"]} = Edits.apply(dir, blocks, dry_run: true)
 
     assert {:ok, blocks} =
              Tools.edit_blocks(Jason.encode!(%{blocks: [block.(2, 8, "/**", "return addrs\n}")]}))
 
-    assert {:error, [failure]} = Edits.apply(dir, blocks)
-    assert Edits.feedback([failure]) =~ "it fits last = line 7"
+    assert {:ok, ["m.txt"]} = Edits.apply(dir, blocks, dry_run: true)
 
     # Reviewer cases: a quote longer than the range exposes a miscounted end
     # (overrun) or start (underrun) even when the other quote matches.
