@@ -819,6 +819,7 @@ defmodule Trailblazer.Loop do
         _ ->
           [sampling: Config.get(:code_model_sampling)]
       end
+      |> Enum.reject(&match?({:sampling, nil}, &1))
 
     opts = role_opts ++ opts
     opts = opts ++ Keyword.get(st.opts, :model_opts, [])

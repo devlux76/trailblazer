@@ -118,7 +118,7 @@ defmodule Trailblazer.Model do
 
     # Per-role sampling (Config :code_model_sampling / :review_model_sampling);
     # unset keys keep the vendor-card defaults below.
-    sampling = Keyword.get(opts, :sampling) || %{}
+    sampling = Map.new(Keyword.get(opts, :sampling) || %{})
 
     body = %{
       model: model,
