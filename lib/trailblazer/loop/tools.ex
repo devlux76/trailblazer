@@ -200,8 +200,18 @@ defmodule Trailblazer.Loop.Tools do
 
   def edit_call_blocks("edit", arguments) when is_binary(arguments) do
     case Jason.decode(arguments) do
-      {:ok, %{} = block} -> edit_blocks(Jason.encode!(%{blocks: [block]}))
-      _ -> {:error, "edit arguments must be a JSON object {path, search, replace}"}
+      {:ok, %{} = block} ->
+        case edit_blocks(Jason.encode!(%{blocks: [block]})) do
+          {:ok, blocks} ->
+            {:ok, blocks}
+
+          {:error, _} ->
+            {:error,
+             "edit needs exactly path, search and replace as strings (path non-empty; empty search only creates a file)"}
+        end
+
+      _ ->
+        {:error, "edit arguments must be a JSON object {path, search, replace}"}
     end
   end
 
