@@ -173,4 +173,33 @@ defmodule Trailblazer.Loop.CheckTest do
     assert result.status == :timeout
     refute File.exists?(Path.join(root, "should-not-exist"))
   end
+
+  test "a failing run keeps its first failure ahead of a cascading tail (bug:9ae2ace)", %{
+    root: root
+  } do
+    first =
+      "error: expect(received).toEqual(expected)\n  Expected: [\"/ip4/1.2.3.4\"]\n  Received: undefined\n(fail) a contact round-trips\n"
+
+    cascade = for i <- 1..200, into: "", do: "(fail) cascading interest test #{i} [5.0ms]\n"
+
+    File.write!(
+      Path.join(root, "output"),
+      "bun test v1\n" <>
+        String.duplicate("(pass) ok\n", 50) <> first <> cascade <> " 39 pass\n 47 fail\n"
+    )
+
+    assert %{status: :fail, output_tail: out} = Check.run(root, "cat output; exit 1", [])
+    assert String.starts_with?(out, "[first failure]\n")
+    assert out =~ "Received: undefined"
+    assert String.ends_with?(out, " 47 fail\n")
+    assert String.length(out) <= 4000 + 60
+  end
+
+  test "first-failure excerpt is added only to failing output not already showing it" do
+    tail = "x\nerror: boom\n"
+    assert Check.output(:pass, "error: early\n" <> tail, tail) == tail
+    assert Check.output(:fail, tail, tail) == tail
+    assert Check.output(:fail, "no markers here", "tail") == "tail"
+    assert Check.output(:fail, "🙂\nerror: early\n", "tail") =~ "[first failure]\n🙂\nerror: early"
+  end
 end

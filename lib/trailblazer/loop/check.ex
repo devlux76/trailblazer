@@ -9,6 +9,12 @@ defmodule Trailblazer.Loop.Check do
   """
   alias Trailblazer.{Backstop, Config}
   @limit 4000
+  # A failing run keeps the excerpt around its FIRST failure ahead of the tail:
+  # cascading failures otherwise push the root-cause assertion out (bug:9ae2ace).
+  @prefix_limit 65_536
+  @excerpt_before 1_200
+  @excerpt_after 1_300
+  @failure ~r/(?:^|\n)[ \t]*(?:error:|\(fail\)|✗|FAIL\b|FAILED\b|E {3}|--- FAIL|\d+\) test |thread '.*' panicked|panicked at|AssertionError|Traceback)/u
   # setsid's child identifies its real process group and waits for permission
   # to start. A startup timeout can close stdin without ever running the check.
   @launch ~S(printf '%s %s\n' "$1" "$$"; IFS= read -r go || exit 125; exec sh -c "$2" </dev/null)
@@ -109,6 +115,7 @@ defmodule Trailblazer.Loop.Check do
       group: nil,
       header: "",
       tail: "",
+      prefix: "",
       pending: "",
       marker: marker,
       owner: owner,
@@ -205,7 +212,13 @@ defmodule Trailblazer.Loop.Check do
 
   defp data(s, bytes) do
     {valid, pending} = decode(s.pending <> bytes)
-    %{s | tail: String.slice(s.tail <> valid, -@limit, @limit), pending: pending}
+
+    prefix =
+      if byte_size(s.prefix) < @prefix_limit,
+        do: binary_part(s.prefix <> valid, 0, min(byte_size(s.prefix <> valid), @prefix_limit)),
+        else: s.prefix
+
+    %{s | tail: String.slice(s.tail <> valid, -@limit, @limit), prefix: prefix, pending: pending}
   end
 
   defp decode(bytes) do
@@ -235,9 +248,41 @@ defmodule Trailblazer.Loop.Check do
     %{
       status: status,
       exit: code,
-      output_tail: String.slice(tail, -@limit, @limit),
+      output_tail: output(status, s.prefix, tail),
       ms: now() - s.started
     }
+  end
+
+  @doc false
+  # The tail, preceded on failure by the first failure's excerpt when the tail
+  # no longer contains it. Never longer than @limit plus the elision marker.
+  def output(:pass, _prefix, tail), do: String.slice(tail, -@limit, @limit)
+
+  def output(_status, prefix, tail) do
+    tail = String.slice(tail, -@limit, @limit)
+
+    with [{at, _} | _] <- Regex.run(@failure, prefix, return: :index),
+         from = max(at - @excerpt_before, 0),
+         excerpt =
+           prefix
+           |> binary_part(from, min(byte_size(prefix) - from, @excerpt_before + @excerpt_after))
+           |> valid_text(),
+         false <- String.contains?(tail, String.trim(excerpt)) do
+      kept = String.slice(tail, -(@limit - String.length(excerpt)), @limit)
+      "[first failure]\n" <> excerpt <> "\n[... output elided ...]\n" <> kept
+    else
+      _ -> tail
+    end
+  end
+
+  # A byte cut can split a UTF-8 sequence at either end; drop the partial bytes.
+  defp valid_text(<<b, rest::binary>>) when b in 0x80..0xBF, do: valid_text(rest)
+
+  defp valid_text(bin) do
+    case :unicode.characters_to_binary(bin) do
+      text when is_binary(text) -> text
+      {_, text, _} -> text
+    end
   end
 
   defp npm_test?(repo) do
