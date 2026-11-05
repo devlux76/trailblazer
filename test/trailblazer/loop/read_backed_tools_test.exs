@@ -86,9 +86,9 @@ defmodule Trailblazer.Loop.ReadBackedToolsTest do
 
   # Replays qual2 turn 3: openContact began at line 20, the model sent start 12
   # and silently deleted encodeContact (lines 12-19). The quoted first line
-  # sits uniquely at 20 and the quoted last at the stated 22, so the range is
-  # relocated to the code meant; an ambiguous quote is refused, naming lines.
-  test "a miscounted range is relocated by unique quotes, or refused when ambiguous", %{
+  # sits uniquely at 20, but 12-22 to 20-22 is too large a change to relocate,
+  # so it is refused naming line 20; an ambiguous quote is refused too.
+  test "a large miscount is refused naming the real line; ambiguity refuses", %{
     dir: dir
   } do
     text =
@@ -122,8 +122,12 @@ defmodule Trailblazer.Loop.ReadBackedToolsTest do
     refute feedback =~ "return 2"
     assert File.read!(Path.join(dir, "contact.ts")) == text
 
-    # Unique quote: relocated to 20-22; encodeContact survives.
+    # Unique quote but an 8-line miscount: too far to relocate, refused with
+    # the line where it fits; the recount applies and encodeContact survives.
     assert {:ok, blocks} = Tools.edit_blocks(Jason.encode!(%{blocks: [block]}))
+    assert {:error, [failure]} = Edits.apply(dir, blocks)
+    assert Edits.feedback([failure]) =~ "it fits first = line 20"
+    assert {:ok, blocks} = Tools.edit_blocks(Jason.encode!(%{blocks: [%{block | start: 20}]}))
     assert {:ok, ["contact.ts"]} = Edits.apply(dir, blocks)
     assert File.read!(Path.join(dir, "contact.ts")) =~ "export function encodeContact"
     assert File.read!(Path.join(dir, "contact.ts")) =~ "return 2"
@@ -165,6 +169,29 @@ defmodule Trailblazer.Loop.ReadBackedToolsTest do
              Tools.edit_blocks(Jason.encode!(%{blocks: [block.(2, 8, "/**", "return addrs\n}")]}))
 
     assert {:ok, ["m.txt"]} = Edits.apply(dir, blocks, dry_run: true)
+
+    # Reviewer cases for relocation: a unique far quote cannot stretch the
+    # range over unrelated code, nor can a generic line at the stated position.
+    far = "x\ndef f1 do\n  a\nend\ndef f2 do\n  keep\nend\ndef f3 do\n  target\nend\n"
+    File.write!(Path.join(dir, "far.ex"), far)
+    fsha = :crypto.hash(:sha256, far) |> Base.encode16(case: :lower)
+
+    for {first, last} <- [{"def f1 do", "  target"}, {"end", "  keep"}] do
+      b = %{
+        path: "far.ex",
+        sha256: fsha,
+        start: 2,
+        end: 4,
+        first: first,
+        last: last,
+        replace: "R\n"
+      }
+
+      assert {:ok, blocks} = Tools.edit_blocks(Jason.encode!(%{blocks: [b]}))
+      assert {:error, [%{reason: :anchor_mismatch}]} = Edits.apply(dir, blocks)
+    end
+
+    assert File.read!(Path.join(dir, "far.ex")) == far
 
     # Reviewer cases: a quote longer than the range exposes a miscounted end
     # (overrun) or start (underrun) even when the other quote matches.

@@ -363,10 +363,11 @@ defmodule Trailblazer.Loop.Edits do
   # line: first from line start downward, last upward ending at line end.
   #
   # The quotes state the intended code; the numbers are what small models
-  # miscount. A replacing range whose quotes each sit at its stated line or,
-  # failing that, at exactly one line of the file is relocated there when the
-  # result is a consistent range (start <= end, quotes inside it). Anything
-  # ambiguous, absent or inconsistent, and every insertion, is refused.
+  # miscount. A replacing range with a missed quote is relocated only when
+  # both quotes are unique in the file, the result is consistent (start <=
+  # end, quotes inside it) and its length is within max(2, 20%) of the stated
+  # one. Anything ambiguous, absent or inconsistent, and every insertion, is
+  # refused.
   defp check_anchors(blocks, text) do
     lines = source_lines(text)
 
@@ -392,22 +393,24 @@ defmodule Trailblazer.Loop.Edits do
 
   defp relocate(_lines, block, _misses) when block.end < block.start, do: :error
 
-  defp relocate(lines, %{first: first, last: last} = block, misses)
+  # Once a miss proves the numbers wrong, a quote is trusted only where it is
+  # unique in the file (a generic "}" at the stated line is no evidence), and
+  # the range may change length only slightly, so it cannot swallow code.
+  defp relocate(lines, %{first: first, last: last} = block, _misses)
        when is_binary(first) and is_binary(last) do
-    position = fn key, quoted, stated ->
-      if Enum.any?(misses, &(elem(&1, 0) == key)) do
-        case for(i <- 1..max(tuple_size(lines), 1)//1, quoted_at?(lines, quoted, key, i), do: i) do
-          [only] -> only
-          _ -> nil
-        end
-      else
-        stated
+    unique = fn key, quoted ->
+      case for(i <- 1..max(tuple_size(lines), 1)//1, quoted_at?(lines, quoted, key, i), do: i) do
+        [only] -> only
+        _ -> nil
       end
     end
 
-    with s when is_integer(s) <- position.(:first, first, block.start),
-         e when is_integer(e) <- position.(:last, last, block.end),
+    stated = block.end - block.start
+
+    with s when is_integer(s) <- unique.(:first, first),
+         e when is_integer(e) <- unique.(:last, last),
          true <- s <= e,
+         true <- abs(e - s - stated) <= max(2, div(stated + 1, 5)),
          span = e - s + 1,
          true <- length(quote_lines(first)) <= span and length(quote_lines(last)) <= span do
       {:ok, %{block | start: s, end: e}}
