@@ -195,11 +195,33 @@ defmodule Trailblazer.Loop.CheckTest do
     assert String.length(out) <= 4000 + 60
   end
 
-  test "first-failure excerpt is added only to failing output not already showing it" do
+  test "a first failure far beyond any startup window still leads the output", %{root: root} do
+    body =
+      String.duplicate("(pass) ok\n", 8000) <>
+        "AssertionError: ROOT SENTINEL\nExpected valid address\n" <>
+        String.duplicate("(fail) cascade\n", 1000)
+
+    File.write!(Path.join(root, "output"), body)
+    assert %{status: :fail, output_tail: out} = Check.run(root, "cat output; exit 1", [])
+    assert out =~ "ROOT SENTINEL"
+    assert String.ends_with?(out, "(fail) cascade\n")
+  end
+
+  test "UTF-8 split across output chunks around a failure never crashes the check", %{root: root} do
+    cmd = ~S"""
+    printf '\360\237'; sleep 0.2; printf '\231\202\nerror: split\n'; sleep 0.2
+    i=0; while [ $i -lt 400 ]; do printf '(fail) cascade %s \360\237\231\202\n' $i; i=$((i+1)); done; exit 1
+    """
+
+    assert %{status: :fail, output_tail: out} = Check.run(root, cmd, [])
+    assert String.valid?(out)
+    assert out =~ "[first failure]\n🙂\nerror: split"
+  end
+
+  test "the excerpt is added only to failing output not already showing it" do
     tail = "x\nerror: boom\n"
-    assert Check.output(:pass, "error: early\n" <> tail, tail) == tail
-    assert Check.output(:fail, tail, tail) == tail
-    assert Check.output(:fail, "no markers here", "tail") == "tail"
-    assert Check.output(:fail, "🙂\nerror: early\n", "tail") =~ "[first failure]\n🙂\nerror: early"
+    assert Check.output(:pass, "error: early\n", tail) == tail
+    assert Check.output(:fail, "error: boom\n", tail) == tail
+    assert Check.output(:fail, nil, "tail") == "tail"
   end
 end

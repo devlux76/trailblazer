@@ -79,7 +79,7 @@ L1–L6 and L10 have no dependencies on each other: their interfaces are fixed b
 
 **Files:** `lib/trailblazer/loop/check.ex`, tests.
 
-**Interface:** `Check.default(repo) :: String.t() | nil` (`mix test` with a mix.exs, `bun test` with bun.lock, `npm test` with a test script, `pytest` with pytest config, `cargo test` with Cargo.toml, `go test ./...` with go.mod); `Check.run(worktree, command, opts) :: %{status: :pass | :fail | :timeout, exit: integer() | nil, output_tail: String.t(), ms: integer()}`. Runs `sh -c` inside the worktree, with a timeout (default 15 minutes) that kills the process group, and keeps the last 4,000 characters.
+**Interface:** `Check.default(repo) :: String.t() | nil` (`mix test` with a mix.exs, `bun test` with bun.lock, `npm test` with a test script, `pytest` with pytest config, `cargo test` with Cargo.toml, `go test ./...` with go.mod); `Check.run(worktree, command, opts) :: %{status: :pass | :fail | :timeout, exit: integer() | nil, output_tail: String.t(), ms: integer()}`. Runs `sh -c` inside the worktree, with a timeout (default 15 minutes) that kills the process group, and keeps the last 4,000 characters. A non-passing run whose tail no longer contains its first failure marker (`error:`, `(fail)`, `FAIL`, `AssertionError`, `panicked`, ExUnit `N) test`, pytest `E   `, ...) is prefixed with `[first failure]`: up to 1,200 characters before that marker and 1,300 from it, captured while streaming wherever it occurs, as valid UTF-8, then `[... output elided ...]` and the tail shortened by the excerpt's length. Passing output is only the tail (bug:9ae2ace: cascades must not hide the root assertion).
 
 ## L5 Case records (Claude; review Codex)
 

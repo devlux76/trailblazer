@@ -11,7 +11,6 @@ defmodule Trailblazer.Loop.Check do
   @limit 4000
   # A failing run keeps the excerpt around its FIRST failure ahead of the tail:
   # cascading failures otherwise push the root-cause assertion out (bug:9ae2ace).
-  @prefix_limit 65_536
   @excerpt_before 1_200
   @excerpt_after 1_300
   @failure ~r/(?:^|\n)[ \t]*(?:error:|\(fail\)|✗|FAIL\b|FAILED\b|E {3}|--- FAIL|\d+\) test |thread '.*' panicked|panicked at|AssertionError|Traceback)/u
@@ -115,7 +114,8 @@ defmodule Trailblazer.Loop.Check do
       group: nil,
       header: "",
       tail: "",
-      prefix: "",
+      pre: "",
+      first: nil,
       pending: "",
       marker: marker,
       owner: owner,
@@ -213,12 +213,12 @@ defmodule Trailblazer.Loop.Check do
   defp data(s, bytes) do
     {valid, pending} = decode(s.pending <> bytes)
 
-    prefix =
-      if byte_size(s.prefix) < @prefix_limit,
-        do: binary_part(s.prefix <> valid, 0, min(byte_size(s.prefix <> valid), @prefix_limit)),
-        else: s.prefix
-
-    %{s | tail: String.slice(s.tail <> valid, -@limit, @limit), prefix: prefix, pending: pending}
+    %{
+      s
+      | tail: String.slice(s.tail <> valid, -@limit, @limit),
+        pending: pending
+    }
+    |> capture(valid)
   end
 
   defp decode(bytes) do
@@ -248,40 +248,54 @@ defmodule Trailblazer.Loop.Check do
     %{
       status: status,
       exit: code,
-      output_tail: output(status, s.prefix, tail),
+      output_tail: output(status, first_text(s.first), tail),
       ms: now() - s.started
     }
   end
 
-  @doc false
-  # The tail, preceded on failure by the first failure's excerpt when the tail
-  # no longer contains it. Never longer than @limit plus the elision marker.
-  def output(:pass, _prefix, tail), do: String.slice(tail, -@limit, @limit)
+  # Streams the excerpt around the first failure marker: a rolling window of
+  # text before it, then a bounded window after. Every piece is valid text
+  # (regex offsets fall on character boundaries), however late the failure.
+  defp capture(%{first: {:done, _}} = s, _valid), do: s
 
-  def output(_status, prefix, tail) do
-    tail = String.slice(tail, -@limit, @limit)
+  defp capture(%{first: {:open, text, need}} = s, valid) do
+    taken = String.slice(valid, 0, need)
+    left = need - String.length(taken)
+    %{s | first: if(left > 0, do: {:open, text <> taken, left}, else: {:done, text <> taken})}
+  end
 
-    with [{at, _} | _] <- Regex.run(@failure, prefix, return: :index),
-         from = max(at - @excerpt_before, 0),
-         excerpt =
-           prefix
-           |> binary_part(from, min(byte_size(prefix) - from, @excerpt_before + @excerpt_after))
-           |> valid_text(),
-         false <- String.contains?(tail, String.trim(excerpt)) do
-      kept = String.slice(tail, -(@limit - String.length(excerpt)), @limit)
-      "[first failure]\n" <> excerpt <> "\n[... output elided ...]\n" <> kept
-    else
-      _ -> tail
+  defp capture(%{first: nil} = s, valid) do
+    seen = s.pre <> valid
+
+    case Regex.run(@failure, seen, return: :index) do
+      [{at, _} | _] ->
+        before = seen |> binary_part(0, at) |> String.slice(-@excerpt_before, @excerpt_before)
+        rest = binary_part(seen, at, byte_size(seen) - at)
+        capture(%{s | pre: "", first: {:open, before, @excerpt_after}}, rest)
+
+      nil ->
+        %{s | pre: String.slice(seen, -@excerpt_before, @excerpt_before)}
     end
   end
 
-  # A byte cut can split a UTF-8 sequence at either end; drop the partial bytes.
-  defp valid_text(<<b, rest::binary>>) when b in 0x80..0xBF, do: valid_text(rest)
+  defp first_text(nil), do: nil
+  defp first_text({:done, text}), do: text
+  defp first_text({:open, text, _}), do: text
 
-  defp valid_text(bin) do
-    case :unicode.characters_to_binary(bin) do
-      text when is_binary(text) -> text
-      {_, text, _} -> text
+  @doc false
+  # The tail, preceded on failure by the first failure's excerpt when the tail
+  # no longer contains it. At most @limit characters plus two short labels.
+  def output(:pass, _first, tail), do: String.slice(tail, -@limit, @limit)
+  def output(_status, nil, tail), do: String.slice(tail, -@limit, @limit)
+
+  def output(_status, first, tail) do
+    tail = String.slice(tail, -@limit, @limit)
+
+    if String.contains?(tail, String.trim(first)) do
+      tail
+    else
+      kept = String.slice(tail, -(@limit - String.length(first)), @limit)
+      "[first failure]\n" <> first <> "\n[... output elided ...]\n" <> kept
     end
   end
 
