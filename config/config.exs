@@ -23,3 +23,21 @@ if config_env() == :test do
     memory_record: false,
     loop_rerank: false
 end
+
+# Coding roles (operator, 2026-11-05): Nemotron Bolt codes in text edit mode on
+# the CPU router (the only local model to pass the contact.ts benchmark, 4/4);
+# Spark reviews (never its own work); the planner brain shares Bolt on the
+# router (its iGPU service emits EOS after one token), so planner and coder are
+# serialised by the planner lease.
+if config_env() == :prod do
+  config :trailblazer,
+    code_model: "nemotron-3.5-bolt-e4b:q4",
+    code_model_url: "http://127.0.0.1:8094/v1",
+    code_edit_mode: :text,
+    code_model_sampling: %{temperature: 0.6, top_p: 0.95, top_k: 20, thinking: false},
+    review_model: "spark-x2.6-4b-q8-dspark",
+    review_model_url: "http://127.0.0.1:8096/v1",
+    review_model_sampling: %{thinking: false},
+    planner_model: "nemotron-3.5-bolt-e4b:q4",
+    planner_model_url: "http://127.0.0.1:8094/v1"
+end
