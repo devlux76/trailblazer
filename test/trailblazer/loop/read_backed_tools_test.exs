@@ -162,8 +162,13 @@ defmodule Trailblazer.Loop.ReadBackedToolsTest do
     assert {:ok, ["m.txt"]} = Edits.apply(dir, blocks, dry_run: true)
 
     assert {:ok, blocks} = Tools.edit_blocks(Jason.encode!(%{blocks: [block.(1, 7, whole, "}")]}))
-    # Miscounted start / end with unique quotes: relocated to 2-7, not refused.
-    assert {:ok, ["m.txt"]} = Edits.apply(dir, blocks, dry_run: true)
+    # Miscounted start / end with unique quotes: relocated to 2-7, not refused,
+    # and reported to the caller.
+    me = self()
+    on = fn r -> send(me, {:relocated, r}) end
+    assert {:ok, ["m.txt"]} = Edits.apply(dir, blocks, dry_run: true, on_relocate: on)
+    assert_received {:relocated, %{path: "m.txt", from: {1, 7}, to: {2, 7}} = r}
+    assert Edits.relocation_notice(r) =~ "range 1-7 in m.txt was applied as lines 2-7"
 
     assert {:ok, blocks} =
              Tools.edit_blocks(Jason.encode!(%{blocks: [block.(2, 8, "/**", "return addrs\n}")]}))

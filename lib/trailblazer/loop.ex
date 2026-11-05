@@ -302,6 +302,7 @@ defmodule Trailblazer.Loop do
     record(st, :attempt, %{stage: :attempt, n: n})
     tally(:changed, [])
     tally(:previous_edits, nil)
+    tally(:relocations, [])
     tally(:artifacts, nil)
 
     case attempt(st, trail, files, check, feedback) do
@@ -312,6 +313,10 @@ defmodule Trailblazer.Loop do
         awaiting_review(st, reason)
 
       {:retry, why, next_feedback} ->
+        next_feedback =
+          Enum.map_join(Enum.reverse(tally(:relocations)), "", &Edits.relocation_notice/1) <>
+            next_feedback
+
         next_feedback =
           case tally(:previous_edits) do
             [_ | _] = edits ->
@@ -913,9 +918,15 @@ defmodule Trailblazer.Loop do
   defp apply_edits(st, blocks) do
     tally(:previous_edits, blocks)
 
+    relocate = fn r ->
+      record(st, :edit, %{status: :relocated, relocation: r})
+      tally(:relocations, [r | tally(:relocations)])
+    end
+
     case Edits.apply(st.ws.path, blocks,
            files: tracked(st.ws.path),
-           shown: Map.get(st.task, :files, [])
+           shown: Map.get(st.task, :files, []),
+           on_relocate: relocate
          ) do
       {:ok, paths} ->
         record(st, :edit, %{status: :applied, blocks: blocks, paths: paths})

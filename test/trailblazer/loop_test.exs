@@ -1479,6 +1479,46 @@ defmodule Trailblazer.LoopTest do
     assert File.read!(Path.join(report.worktree, "lib/greeting.ex")) == @greeting
   end
 
+  test "a relocated range is reported in the next attempt's feedback", %{
+    repo: repo,
+    opts: opts
+  } do
+    digest = :crypto.hash(:sha256, @greeting) |> Base.encode16(case: :lower)
+    line2 = ~s|  def hello(name), do: "Hello " <> name|
+
+    block = fn start, replace ->
+      %{
+        path: "lib/greeting.ex",
+        sha256: digest,
+        start: start,
+        end: 2,
+        first: line2,
+        last: line2,
+        replace: replace
+      }
+    end
+
+    # Off by one (start 1): relocated to 2-2, written, but fails the check.
+    first = fn _messages, _ ->
+      submitted([block.(1, ~s|  def hello(name), do: "Hi " <> name\n|)])
+    end
+
+    second = fn messages, _ ->
+      assert Enum.any?(
+               messages,
+               &(&1.content =~ "range 1-2 in lib/greeting.ex was applied as lines 2-2")
+             )
+
+      submitted([block.(2, ~s|  def hello(name), do: "Hello, " <> name\n|)])
+    end
+
+    script([first, second, reply("PASS")])
+    report = Loop.run(task(repo, %{read_rounds: 0}), opts)
+    assert report.status == :fixed
+    assert report.attempts == 2
+    assert git(repo, ["show", "#{report.commit}:lib/greeting.ex"]) =~ ~s|"Hello, "|
+  end
+
   test "native ranges use the digest delivered by read without recopying source", %{
     repo: repo,
     opts: opts

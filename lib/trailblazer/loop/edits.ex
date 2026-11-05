@@ -21,6 +21,7 @@ defmodule Trailblazer.Loop.Edits do
   """
 
   alias Trailblazer.Files
+  require Logger
 
   @head ~r/^<{5,9} SEARCH>?\s*$/
   @divider ~r/^={5,9}\s*$/
@@ -171,7 +172,11 @@ defmodule Trailblazer.Loop.Edits do
         {:error, failures}
 
       {:ok, range_blocks, legacy_blocks} ->
-        case apply_ranges(worktree, range_blocks) do
+        case apply_ranges(
+               worktree,
+               range_blocks,
+               Keyword.get(opts, :on_relocate, &log_relocation/1)
+             ) do
           {:error, failures} ->
             {:error, failures}
 
@@ -267,20 +272,29 @@ defmodule Trailblazer.Loop.Edits do
 
   ## Read-backed range edits
 
-  defp apply_ranges(_worktree, []), do: {:ok, %{}}
+  @doc "The notice for a relocated range, for the model and the case evidence."
+  def relocation_notice(%{path: path, from: {a, b}, to: {c, d}}),
+    do:
+      "Note: your range #{a}-#{b} in #{path} was applied as lines #{c}-#{d}, " <>
+        "where your first/last quotes are. Verify that is the code you meant in the current source.\n"
 
-  defp apply_ranges(worktree, blocks) do
+  defp log_relocation(relocation),
+    do: Logger.warning("trailblazer: edit relocated " <> relocation_notice(relocation))
+
+  defp apply_ranges(_worktree, [], _on_relocate), do: {:ok, %{}}
+
+  defp apply_ranges(worktree, blocks, on_relocate) do
     blocks
     |> Enum.group_by(&target_key(worktree, &1.path))
     |> Enum.reduce_while({:ok, %{}}, fn {_, group}, {:ok, contents} ->
-      case apply_range_group(worktree, hd(group).path, group) do
+      case apply_range_group(worktree, hd(group).path, group, on_relocate) do
         {:ok, rel, text} -> {:cont, {:ok, Map.put(contents, rel, text)}}
         {:error, failures} -> {:halt, {:error, failures}}
       end
     end)
   end
 
-  defp apply_range_group(worktree, path, blocks) do
+  defp apply_range_group(worktree, path, blocks, on_relocate) do
     case contained(worktree, path) do
       {:error, reason} when is_atom(reason) ->
         {:error, Enum.map(blocks, &failure(&1, reason, ""))}
@@ -293,6 +307,11 @@ defmodule Trailblazer.Loop.Edits do
              {:ok, blocks} <- check_anchors(blocks, text),
              :ok <- check_spans(blocks, offsets) do
           rel = Path.relative_to(target_key(worktree, rel), target_key(worktree, "."))
+
+          # Reported only once the whole group is valid, i.e. it will be written.
+          for %{relocated_from: from} = b <- blocks,
+              do: on_relocate.(%{path: b.path, from: from, to: {b.start, b.end}})
+
           {:ok, rel, splice_all(text, blocks, offsets)}
         else
           {:error, :no_such_file} -> {:error, Enum.map(blocks, &failure(&1, :no_such_file, ""))}
@@ -413,7 +432,7 @@ defmodule Trailblazer.Loop.Edits do
          true <- abs(e - s - stated) <= max(2, div(stated + 1, 5)),
          span = e - s + 1,
          true <- length(quote_lines(first)) <= span and length(quote_lines(last)) <= span do
-      {:ok, %{block | start: s, end: e}}
+      {:ok, Map.merge(block, %{start: s, end: e, relocated_from: {block.start, block.end}})}
     else
       _ -> :error
     end
