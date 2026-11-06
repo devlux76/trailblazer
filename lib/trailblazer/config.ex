@@ -176,6 +176,9 @@ defmodule Trailblazer.Config do
   # How the coder submits edits: :tool (native submit_edits) or :text
   # (SEARCH/REPLACE blocks in plain text; small models handle it better).
   defp default(:code_edit_mode), do: :tool
+  # Local coder attempts per case; the frontier fallback follows (Loop).
+  defp default(:code_attempts), do: 3
+  defp default(:frontier_ping), do: nil
   # The trail reranker: ranger's LFM3 on the shared router (Trail.Rerank).
   defp default(:rerank_model), do: "lfm3-1.7b:q8"
   defp default(:rerank_model_url), do: "http://127.0.0.1:8094/v1"

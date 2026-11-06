@@ -23,7 +23,7 @@ defmodule Trailblazer.Loop.CaseRecord do
 
   alias Trailblazer.{CaseStore, Config, Events}
 
-  @kinds ~w(prompt reply tool_call edit check review attempt report dossier error)
+  @kinds ~w(prompt reply tool_call edit check review attempt report dossier frontier error)
   @inline_limit 4096
 
   @type case_id :: String.t()

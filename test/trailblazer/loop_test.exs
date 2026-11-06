@@ -1892,6 +1892,52 @@ defmodule Trailblazer.LoopTest do
   end
 
   @tag :hour_of_code
+  test "after the configured local attempts the frontier is pinged with a written brief", %{
+    repo: repo,
+    opts: opts
+  } do
+    dir = Path.join(System.tmp_dir!(), "tb-ping-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+    out = Path.join(dir, "pinged")
+    ping = Path.join(dir, "ping")
+    File.write!(ping, "#!/bin/sh\nprintf '%s|%s' \"$PING_FROM\" \"$1\" > #{out}\n")
+    File.chmod!(ping, 0o755)
+    Application.put_env(:trailblazer, :code_attempts, 2)
+    Application.put_env(:trailblazer, :frontier_ping, [ping])
+
+    on_exit(fn ->
+      Application.delete_env(:trailblazer, :code_attempts)
+      Application.delete_env(:trailblazer, :frontier_ping)
+      File.rm_rf(dir)
+    end)
+
+    timeout = fn _messages, call_opts ->
+      Process.sleep(call_opts[:backstop_ms] + 5)
+      {:error, {:backstop, :generation_test}}
+    end
+
+    script(List.duplicate(timeout, 2))
+    report = Loop.run(task(repo), opts ++ [generation_limit_ms: 100])
+    assert report.status == :failed
+    assert report.attempts == 2
+    assert_received {:asked, _, _}
+    assert_received {:asked, _, _}
+    refute_received {:asked, _, _}
+
+    brief = Path.join(CaseRecord.dir(report.case), "dossier.md")
+    assert File.read!(brief) =~ "Check:"
+
+    pinged =
+      Enum.find_value(1..50, fn _ ->
+        Process.sleep(20)
+        File.exists?(out) && File.read!(out)
+      end)
+
+    assert pinged =~ "Trailblazer|Trailblazer frontier fallback: case #{report.case}"
+    assert pinged =~ "Brief: #{brief}"
+  end
+
+  @tag :hour_of_code
   test "read exchanges share the same generation deadline instead of resetting it", %{
     repo: repo,
     opts: opts

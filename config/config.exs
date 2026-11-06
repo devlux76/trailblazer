@@ -31,6 +31,8 @@ end
 # never reviewing its own work. Bolt's iGPU service emits EOS after one token.
 if config_env() == :prod do
   config :trailblazer,
+    code_attempts: 2,
+    frontier_ping: [Path.expand("~/.local/bin/ping-claude")],
     code_model: "nemotron-3.5-bolt-e4b:q4",
     code_model_url: "http://127.0.0.1:8094/v1",
     code_edit_mode: :text,

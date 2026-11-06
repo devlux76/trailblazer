@@ -334,12 +334,14 @@ defmodule Trailblazer.Loop do
     end
   end
 
-  defp attempts(st, _trail, _files, _check, n, _feedback) when n > @attempts, do: exhausted(st)
-
   defp attempts(%{task: %{replay_reply_from: source}} = st, _trail, _files, _check, n, _feedback)
        when is_binary(source) and n > 1, do: exhausted(st)
 
   defp attempts(st, trail, files, check, n, feedback) do
+    if n > max_attempts(), do: exhausted(st), else: attempt(st, trail, files, check, n, feedback)
+  end
+
+  defp attempt(st, trail, files, check, n, feedback) do
     record(st, :attempt, %{stage: :attempt, n: n})
     tally(:changed, Map.get(st, :carried_paths, []))
     tally(:edit_tree, nil)
@@ -375,7 +377,7 @@ defmodule Trailblazer.Loop do
         st = %{st | failures: st.failures ++ [failure]}
 
         # the last attempt's edits stay in the worktree for inspection
-        retry? = n < @attempts and is_nil(st.task.replay_reply_from)
+        retry? = n < max_attempts() and is_nil(st.task.replay_reply_from)
 
         # The next attempt continues from the model's own edits (as written,
         # before any check or tool ran), so errors refer to the files it sees.
@@ -1635,6 +1637,7 @@ defmodule Trailblazer.Loop do
       })
 
     record(st, :dossier, %{text: dossier})
+    frontier_fallback(st, attempts, diagnosis, dossier)
 
     report(
       st,
@@ -1647,6 +1650,50 @@ defmodule Trailblazer.Loop do
         files: tally(:changed)
       }
     )
+  end
+
+  # Local attempts per case (:code_attempts, at most the built-in three); the
+  # frontier is the fallback after them.
+  defp max_attempts, do: min(Config.get(:code_attempts) || @attempts, @attempts)
+
+  # The frontier fallback: the dossier (request, worktree, every attempt's
+  # failure) plus the design and check is written next to the case record,
+  # and the configured ping command (:frontier_ping, e.g. ["ping-claude"])
+  # gets a self-contained message pointing at it, so the frontier can write
+  # the patch without being briefed. Background, never raises; off when unset.
+  defp frontier_fallback(st, attempts, diagnosis, dossier) do
+    with [cmd | args] <- Config.get(:frontier_ping) || [],
+         path = Path.join(CaseRecord.dir(st.id), "dossier.md"),
+         :ok <- File.mkdir_p(Path.dirname(path)),
+         brief =
+           dossier <>
+             "\n\nDesign:\n" <>
+             Enum.join(st.task[:design] || [], "\n\n") <>
+             "\n\nCheck: " <> to_string(st.task[:check]) <> "\n",
+         :ok <- File.write(path, brief) do
+      card = get_in(st.task, [:planner, :ref])
+
+      text =
+        "Trailblazer frontier fallback: case #{st.id}" <>
+          if(card, do: " (card #{card})", else: "") <>
+          " failed #{attempts} local attempts (#{diagnosis}). Write the patch as the next attempt. " <>
+          "Brief: #{path}. Base worktree #{st.task.repo}; case worktree #{st.ws.path}; check: #{st.task[:check]}"
+
+      Task.start(fn ->
+        try do
+          System.cmd(cmd, args ++ [text],
+            stderr_to_stdout: true,
+            env: [{"PING_FROM", "Trailblazer"}]
+          )
+        rescue
+          e -> Logger.warning("trailblazer: frontier ping failed: #{Exception.message(e)}")
+        end
+      end)
+
+      record(st, :frontier, %{stage: :fallback, brief: path})
+    else
+      _ -> :ok
+    end
   end
 
   defp changed_summary([]), do: nil
