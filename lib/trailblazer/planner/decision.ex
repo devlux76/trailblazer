@@ -9,11 +9,21 @@ defmodule Trailblazer.Planner.Decision do
   oversized reply is an error the brain journals and shows). `validate/2` is
   pure: the model can only name a listed reference, never a command, target
   or repository of its own.
+
+  A thinking model whose chat template cannot switch thinking off (LFM2.5:
+  the template always opens `<think>`) spends the 384 tokens thinking and
+  never answers. `planner_prefill` set (for LFM2.5, `"</think>"`): the
+  messages are rendered by the server's own template (`/apply-template`), the
+  prefill is appended to the rendered prompt, and the same schema and token
+  cap go to the raw `/completion`. A prefilled chat request cannot carry the
+  schema (llama.cpp refuses it at sampler setup), and without the schema
+  that model answers with invented tool calls.
   """
   alias Trailblazer.{Backstop, Config}
 
   @max_tokens 384
-  @limit_ms 600_000
+  # the planner's window (operator, 2026-11-06): past it the brain journals the error
+  @limit_ms 900_000
   @max_reason 1000
   @max_reply 8192
 
@@ -58,8 +68,17 @@ defmodule Trailblazer.Planner.Decision do
 
     if loopback?(url) do
       post = opts[:post] || (&http_post/2)
-      endpoint = String.trim_trailing(url, "/") <> "/chat/completions"
+      base = String.trim_trailing(url, "/")
       limit = {:ms, opts[:limit_ms] || @limit_ms}
+
+      call =
+        case Config.get(:planner_prefill) do
+          prefill when is_binary(prefill) and prefill != "" ->
+            fn -> prefilled(post, String.replace_suffix(base, "/v1", ""), cards, prefill) end
+
+          _ ->
+            fn -> post.(base <> "/chat/completions", body(cards)) end
+        end
 
       case Backstop.guard(
              :planner_decision,
@@ -68,7 +87,7 @@ defmodule Trailblazer.Planner.Decision do
              fn ->
                %{cards: length(cards)}
              end,
-             fn -> post.(endpoint, body(cards)) end
+             call
            ) do
         {:ok, reply} -> interpret(reply, cards)
         {:error, {:backstop, id}} -> {:error, {:backstop, id}}
@@ -86,13 +105,35 @@ defmodule Trailblazer.Planner.Decision do
     end
   end
 
+  defp messages(cards) do
+    [
+      %{role: "system", content: @prompt},
+      %{role: "user", content: Jason.encode!(%{cards: Enum.map(cards, & &1.context)})}
+    ]
+  end
+
+  # The server renders its own template; the prefill follows the rendered
+  # generation prompt verbatim. A failed render is the reply (an error).
+  defp prefilled(post, root, cards, prefill) do
+    case post.(root <> "/apply-template", %{messages: messages(cards)}) do
+      {:ok, %{status: 200, body: %{"prompt" => prompt}}} when is_binary(prompt) ->
+        post.(root <> "/completion", %{
+          prompt: prompt <> prefill,
+          n_predict: @max_tokens,
+          temperature: 0,
+          stream: false,
+          json_schema: @schema
+        })
+
+      other ->
+        other
+    end
+  end
+
   defp body(cards) do
     %{
       model: Config.get(:planner_model),
-      messages: [
-        %{role: "system", content: @prompt},
-        %{role: "user", content: Jason.encode!(%{cards: Enum.map(cards, & &1.context)})}
-      ],
+      messages: messages(cards),
       max_tokens: @max_tokens,
       temperature: 0,
       stream: false,
@@ -134,6 +175,16 @@ defmodule Trailblazer.Planner.Decision do
 
       true ->
         validate(content, cards)
+    end
+  end
+
+  # The raw completion (prefilled): only an end-of-sequence or stop-word end
+  # is a finished answer; `limit` is a truncation.
+  defp interpret({:ok, %{status: 200, body: %{"content" => content, "stop_type" => stop}}}, cards) do
+    cond do
+      stop not in ["eos", "word"] -> {:error, {:completion, stop}}
+      not is_binary(content) or content == "" -> {:error, :bad_completion}
+      true -> validate(content, cards)
     end
   end
 

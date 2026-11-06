@@ -161,6 +161,10 @@ defmodule Trailblazer.Config do
   # own server on the iGPU (Vulkan), so it never takes CPU from the coding model.
   defp default(:planner_model), do: "nemotron-3.5-bolt-e4b:q4"
   defp default(:planner_model_url), do: "http://127.0.0.1:8098/v1"
+  # Appended to the server-rendered planner prompt (Decision): "</think>" for a
+  # model whose template always opens a think block (LFM2.5); nil keeps the
+  # chat request with thinking switched off by template kwargs.
+  defp default(:planner_prefill), do: nil
   # Only a planner sharing the coding model's router needs the CPU lease (whose
   # verified unload is of planner_model).
   defp default(:planner_lease), do: get(:planner_model_url) == get(:code_model_url)

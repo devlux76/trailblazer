@@ -118,11 +118,71 @@ defmodule Trailblazer.Planner.DecisionTest do
       assert body.temperature == 0
       assert body.stream == false
       assert body.response_format["type"] == "json_schema"
+
       assert %{"target" => %{"enum" => ["trailblazer", nil, "research"]}} =
                body.response_format["json_schema"]["schema"]["properties"]
+
       assert body.chat_template_kwargs == %{preserve_thinking: false, enable_thinking: false}
       assert [%{role: "system"}, %{role: "user", content: user}] = body.messages
       assert user =~ ~s("ref":"probe:aaaa11")
+    end
+
+    test "with planner_prefill: renders by the server's template, appends the prefill, posts the raw completion with the schema" do
+      Application.put_env(:trailblazer, :planner_prefill, "</think>")
+      on_exit(fn -> Application.delete_env(:trailblazer, :planner_prefill) end)
+      parent = self()
+
+      post = fn url, body ->
+        send(parent, {:posted, url, body})
+
+        if String.ends_with?(url, "/apply-template"),
+          do: {:ok, %{status: 200, body: %{"prompt" => "RENDERED<think>"}}},
+          else:
+            {:ok,
+             %{
+               status: 200,
+               body: %{
+                 "content" =>
+                   ~s({"ref": "probe:aaaa11", "target": "trailblazer", "reason": "first"}),
+                 "stop_type" => "eos"
+               }
+             }}
+      end
+
+      assert {:ok, %{ref: "probe:aaaa11", target: "trailblazer"}} =
+               Decision.choose(@cards, post: post)
+
+      root = String.replace_suffix(Trailblazer.Config.get(:planner_model_url), "/v1", "")
+      assert_receive {:posted, url1, %{messages: [%{role: "system"}, %{role: "user"}]}}
+      assert url1 == root <> "/apply-template"
+      assert_receive {:posted, url2, body}
+      assert url2 == root <> "/completion"
+      assert body.prompt == "RENDERED<think></think>"
+      assert body.n_predict == 384
+      assert body.temperature == 0
+      assert body.json_schema["properties"]["target"]["enum"] == ["trailblazer", nil, "research"]
+    end
+
+    test "with planner_prefill: a completion cut at the token limit is an error, and a failed render posts nothing more" do
+      Application.put_env(:trailblazer, :planner_prefill, "</think>")
+      on_exit(fn -> Application.delete_env(:trailblazer, :planner_prefill) end)
+
+      cut = fn url, _ ->
+        if String.ends_with?(url, "/apply-template"),
+          do: {:ok, %{status: 200, body: %{"prompt" => "P"}}},
+          else:
+            {:ok, %{status: 200, body: %{"content" => ~s({"ref": "pro), "stop_type" => "limit"}}}
+      end
+
+      assert {:error, {:completion, "limit"}} = Decision.choose(@cards, post: cut)
+
+      failed = fn url, _ ->
+        if String.ends_with?(url, "/apply-template"),
+          do: {:ok, %{status: 500}},
+          else: flunk("must not complete without a rendered prompt")
+      end
+
+      assert {:error, {:http, 500}} = Decision.choose(@cards, post: failed)
     end
 
     test "refuses a non-loopback model URL without calling anything" do
