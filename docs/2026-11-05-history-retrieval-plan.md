@@ -159,7 +159,7 @@ used so outcomes can be traced back to examples.
 | # | step | gate |
 |---|---|---|
 | 1 | Part 1: range edits + diff/patch | suites green, one live card |
-| 2 | corpus schema + ingest for one repo (trailblazer), no recall | entries + labels spot-checked by Claude |
+| 2 | corpus schema + ingest for the baseline only (operator, 2026-11-05): vortex, real branches, since the first `bug:` commit (2026-10-25, bug:d9ecbf2), i.e. 112 commits / 105 unique patches / 378 commit × file entries (89 commits, 277 entries cite a bug, 32 cards), plus vortex case attempts (37 cases). Expand only if the replay eval says it helps | entries + labels spot-checked by Claude |
 | 3 | throughput sample, projected backfill time | reported to the operator |
 | 4 | git notes on integration + backfill of notes from case records | notes visible on v6-impl commits |
 | 5 | recall + rendering + prompt section | unit tests; exclusions tested |
