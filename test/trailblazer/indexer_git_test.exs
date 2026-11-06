@@ -20,6 +20,8 @@ defmodule Trailblazer.IndexerGitTest do
 
     on_exit(fn ->
       if pid = Indexer.whereis(root), do: GenServer.stop(pid)
+      # the real Vectors made a collection for this repo: leave none behind
+      Vectors.drop(root)
       File.rm_rf!(root)
     end)
 
@@ -277,6 +279,8 @@ defmodule Trailblazer.IndexerGitTest do
 
     on_exit(fn ->
       if pid = Indexer.whereis(plain), do: GenServer.stop(pid)
+      # the real Vectors made a collection for this repo: leave none behind
+      Vectors.drop(plain)
       File.rm_rf!(plain)
     end)
 

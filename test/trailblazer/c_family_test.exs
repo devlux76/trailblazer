@@ -9,6 +9,8 @@ defmodule Trailblazer.CFamilyTest do
 
     on_exit(fn ->
       if pid = Indexer.whereis(root), do: GenServer.stop(pid)
+      # the indexer made a real collection for this repo: leave none behind
+      Trailblazer.Vectors.drop(root)
       File.rm_rf!(root)
     end)
 

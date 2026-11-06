@@ -24,6 +24,8 @@ defmodule Trailblazer.OwnRepoTest do
 
       for repo <- paths do
         if pid = Indexer.whereis(repo), do: GenServer.stop(pid)
+        # collections are keyed by the suite's own state dir: never prod's
+        Trailblazer.Vectors.drop(repo)
       end
 
       for %{id: id, path: path} <- Store.watched_repos(),
@@ -50,7 +52,11 @@ defmodule Trailblazer.OwnRepoTest do
 
     try do
       File.cp!("mix.exs", Path.join(dir, "mix.exs"))
-      git = fn args -> {_, 0} = System.cmd("git", ["-c", "core.hooksPath=/dev/null"] ++ args, cd: dir) end
+
+      git = fn args ->
+        {_, 0} = System.cmd("git", ["-c", "core.hooksPath=/dev/null"] ++ args, cd: dir)
+      end
+
       git.(["init", "-q"])
       git.(["add", "mix.exs"])
       git.(["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "new root"])
