@@ -212,4 +212,35 @@ defmodule Trailblazer.Loop.ToolsTest do
     assert text =~ "paths are repository-relative"
     refute text =~ "did you mean"
   end
+
+  test "a repeated read of lines already served this attempt is a pointer, not the text again" do
+    read = fn first, last, sha ->
+      "path: lib/a.ex\nsha256: #{sha}\nlines: 9\n" <>
+        Enum.map_join(first..last, "\n", &"#{&1}| line #{&1}")
+    end
+
+    {first, served} = Tools.dedupe_read(read.(1, 5, "aa"), %{})
+    assert first == read.(1, 5, "aa")
+
+    # wholly inside what was shown: no content, a pointer to submit edits
+    {again, served} = Tools.dedupe_read(read.(2, 4, "aa"), served)
+    refute again =~ "3| line 3"
+    assert again =~ "lib/a.ex lines 2-4 are unchanged and already shown above"
+
+    # new lines still come through, and are then remembered
+    {more, served} = Tools.dedupe_read(read.(4, 9, "aa"), served)
+    assert more == read.(4, 9, "aa")
+    assert {_, _} = Tools.dedupe_read(read.(6, 9, "aa"), served)
+    assert elem(Tools.dedupe_read(read.(6, 9, "aa"), served), 0) =~ "already shown"
+
+    # the file changed (another sha): served in full again
+    assert elem(Tools.dedupe_read(read.(2, 4, "bb"), served), 0) == read.(2, 4, "bb")
+
+    # a note prefix (invented root) keeps working; errors pass through
+    noted =
+      "note: /workspace/lib/a.ex is outside the repository; read lib/a.ex\n" <> read.(1, 2, "aa")
+
+    assert elem(Tools.dedupe_read(noted, served), 0) =~ "already shown"
+    assert Tools.dedupe_read("error: no file x", served) == {"error: no file x", served}
+  end
 end

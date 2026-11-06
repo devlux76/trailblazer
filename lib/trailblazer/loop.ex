@@ -402,6 +402,7 @@ defmodule Trailblazer.Loop do
     tally(:previous_edits, nil)
     tally(:relocations, [])
     tally(:artifacts, nil)
+    tally(:served_reads, nil)
 
     case attempt(st, trail, files, check, feedback) do
       {:ok, reply} ->
@@ -933,6 +934,16 @@ defmodule Trailblazer.Loop do
         {:ok, result} -> result
         {:error, {:backstop, _}} -> throw({:budget_expired, :generation})
         {:error, reason} -> "Tool failed: #{inspect(reason)}"
+      end
+
+    # a re-read of lines this attempt already showed is a pointer, not the text
+    result =
+      if call.name == "read" do
+        {result, served} = Tools.dedupe_read(result, served_reads())
+        tally(:served_reads, served)
+        result
+      else
+        result
       end
 
     budget_remaining!()
@@ -2091,6 +2102,14 @@ defmodule Trailblazer.Loop do
   defp submit_how(_st), do: "with submit_edits or edit"
 
   defp tally(key), do: Process.get(@tally, %{}) |> Map.get(key, 0)
+
+  defp served_reads do
+    case tally(:served_reads) do
+      %{} = served -> served
+      _ -> %{}
+    end
+  end
+
   defp tally(key, value), do: Process.put(@tally, Map.put(Process.get(@tally, %{}), key, value))
 
   defp mod(st, key, default), do: Keyword.get(st.opts, key, default)

@@ -652,6 +652,41 @@ defmodule Trailblazer.Loop.Tools do
     kind, reason -> "error: #{name} failed: #{inspect({kind, reason})}"
   end
 
+  @doc """
+  One attempt's reads, deduplicated: `served` maps `{path, sha256}` to the line
+  numbers already shown. A read whose numbered lines were all shown before
+  (same file bytes) becomes a one-line pointer, so a model that loops on
+  re-reading does not pay the whole prompt again for nothing (on CPU each
+  re-read cost minutes of prefill and expired the window). New lines, a
+  changed file and anything not a read pass through. Returns `{text, served}`.
+  """
+  @spec dedupe_read(String.t(), map()) :: {String.t(), map()}
+  def dedupe_read(text, served) when is_binary(text) and is_map(served) do
+    with [_, path] <- Regex.run(~r/^path: (.+)$/m, text),
+         [_, sha] <- Regex.run(~r/^sha256: ([0-9a-f]+)$/m, text),
+         [_ | _] = shown <- shown_lines(text) do
+      key = {path, sha}
+      seen = Map.get(served, key, MapSet.new())
+
+      if Enum.all?(shown, &MapSet.member?(seen, &1)) do
+        {first, last} = Enum.min_max(shown)
+
+        {"path: #{path}\nsha256: #{sha}\n#{path} lines #{first}-#{last} are unchanged and already shown above in this attempt; do not read them again. Use what you have and reply with your edits now.",
+         served}
+      else
+        {text, Map.put(served, key, Enum.into(shown, seen))}
+      end
+    else
+      _ -> {text, served}
+    end
+  end
+
+  def dedupe_read(text, served), do: {text, served}
+
+  defp shown_lines(text) do
+    for [_, n] <- Regex.scan(~r/^(\d+)\| /m, text), do: String.to_integer(n)
+  end
+
   defp known(name) when name in @names, do: :ok
 
   defp known(name),
