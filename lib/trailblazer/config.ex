@@ -182,6 +182,9 @@ defmodule Trailblazer.Config do
   defp default(:code_edit_mode), do: :tool
   # Local coder attempts per case; the frontier fallback follows (Loop).
   defp default(:code_attempts), do: 3
+  # Prefill the coder's reply with a closed think block holding the trail and
+  # history (Loop): for a model whose template always thinks (LFM2.5).
+  defp default(:code_think_prefill), do: false
   defp default(:frontier_ping), do: nil
   # The trail reranker: ranger's LFM3 on the shared router (Trail.Rerank).
   defp default(:rerank_model), do: "lfm3-1.7b:q8"

@@ -627,7 +627,14 @@ defmodule Trailblazer.Loop do
   defp coder_reply(st, trail, files, feedback) do
     head = Map.get(st, :head, %{})
     head = if st.task.edit_mode == :text, do: Map.put(head, :sources, sources(st)), else: head
-    messages = Prompts.coder(st.task, trail, files, feedback, head)
+    think? = Config.get(:code_think_prefill) == true
+    messages = Prompts.coder(st.task, trail, files, feedback, Map.put(head, :think, think?))
+
+    st =
+      if think?,
+        do: Map.put(st, :think, Prompts.coder_think(trail, head[:examples])),
+        else: st
+
     record(st, :attempt, %{stage: :prompt_size, bytes: prompt_sizes(messages)})
 
     format =
@@ -746,10 +753,30 @@ defmodule Trailblazer.Loop do
     end
   end
 
+  defp think_prefill(%{think: think}, messages, :coder) when is_binary(think) do
+    if Enum.any?(messages, &(&1[:role] == "assistant")),
+      do: "<think></think>",
+      else: "<think>" <> think <> "</think>"
+  end
+
+  defp think_prefill(_, _, _), do: nil
+
+  # The server may echo the prefill at the head of the content.
+  defp unprefill(reply, prefill) do
+    content = reply.content || ""
+
+    content =
+      if String.starts_with?(content, prefill),
+        do: String.trim_leading(String.replace_prefix(content, prefill, "")),
+        else: content
+
+    Map.merge(reply, %{content: content, prefill: prefill})
+  end
+
   defp assistant_message(reply) do
     %{
       role: "assistant",
-      content: reply.content,
+      content: Map.get(reply, :prefill, "") <> (reply.content || ""),
       tool_calls:
         Enum.map(reply.tool_calls, fn call ->
           %{
@@ -917,6 +944,16 @@ defmodule Trailblazer.Loop do
         do: Enum.filter(tools, &(&1.function.name in Tools.edit_tools())),
         else: tools
 
+    # A think-prefill coder (code_think_prefill): its reply is prefilled with a
+    # closed think block, the trail and history on the attempt's first call,
+    # empty after, so it answers at once instead of deliberating for the
+    # whole window. The echo is stripped from the reply's content and kept
+    # in the history the next call sends.
+    prefill = think_prefill(st, messages, role)
+
+    messages =
+      if prefill, do: messages ++ [%{role: "assistant", content: prefill}], else: messages
+
     record(st, :prompt, %{role: role, messages: messages, tools: tools != nil})
 
     # a call that fails part way keeps what it had (E5)
@@ -976,6 +1013,12 @@ defmodule Trailblazer.Loop do
         timeout = min(remaining, opts[:backstop_ms] || Config.get(:backstop_model_ms))
         mod(st, :model, Model).chat(messages, Keyword.put(opts, :backstop_ms, timeout))
       end)
+
+    result =
+      case result do
+        {:ok, reply} when is_binary(prefill) -> {:ok, unprefill(reply, prefill)}
+        other -> other
+      end
 
     # Preserve a complete late reply too; a deadline never erases work.
     case result do

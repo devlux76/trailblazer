@@ -50,13 +50,16 @@ defmodule Trailblazer.Loop.Prompts do
           [map()]
   def coder(task, trail, files, feedback \\ nil, head \\ %{}) do
     system = coder_system(Map.get(task, :edit_mode, :tool))
+    # with a think prefill the trail and history go in the coder's own
+    # thinking (coder_think/2), not in the user message
+    think? = Map.get(head, :think, false)
 
     user =
       [
         section("Request", field(task, :request)),
         section("Design", design(task)),
-        section("Similar past changes", head[:examples]),
-        section("Trail", trail),
+        unless(think?, do: section("Similar past changes", head[:examples])),
+        unless(think?, do: section("Trail", trail)),
         section("Files", named(files)),
         section("Current source", sources(head[:sources] || [])),
         section("Check", head[:check] && "Your change must pass: `#{head[:check]}`"),
@@ -68,6 +71,17 @@ defmodule Trailblazer.Loop.Prompts do
       |> Enum.join("\n\n")
 
     [%{role: "system", content: system}, %{role: "user", content: user}]
+  end
+
+  @doc """
+  The coder's prefilled thinking for a think-prefill model (Loop,
+  `code_think_prefill`): the trail and the similar past changes, as notes the
+  model already holds when it starts answering. Empty when there are none.
+  """
+  def coder_think(trail, examples) do
+    [section("Similar past changes", examples), section("Trail", trail)]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join("\n\n")
   end
 
   @doc "Messages for a review of `diff`, in a context of its own."

@@ -225,6 +225,46 @@ defmodule Trailblazer.LoopTest do
     refute_received {:recall, _, _, _}
   end
 
+  test "with code_think_prefill, the trail and history are the coder's prefilled thinking, and the echo is stripped",
+       %{repo: repo, opts: opts} do
+    Application.put_env(:trailblazer, :code_think_prefill, true)
+    on_exit(fn -> Application.delete_env(:trailblazer, :code_think_prefill) end)
+    :persistent_term.put(:examples_test_pid, self())
+    on_exit(fn -> :persistent_term.erase(:examples_test_pid) end)
+    parent = self()
+
+    script([
+      fn messages, _ ->
+        # system, the task, text mode's "Reading is complete", the prefill
+        [system, user | _] = messages
+        prefill = List.last(messages)
+        assert system.role == "system"
+        refute user.content =~ "Similar past changes"
+        refute user.content =~ "## Trail"
+        assert prefill.role == "assistant"
+        assert prefill.content =~ ~r/\A<think>## Similar past changes\n\nPAST CHANGE/
+        assert String.ends_with?(prefill.content, "</think>")
+        send(parent, {:prefill, prefill.content})
+        # the server echoes the prefill at the head of the content
+        reply(prefill.content <> @fix_tags)
+      end,
+      fn messages, _ ->
+        refute List.last(messages).role == "assistant"
+        reply("PASS")
+      end
+    ])
+
+    report =
+      Loop.run(
+        task(repo, %{read_rounds: 0, edit_mode: :text, examples: true}),
+        Keyword.put(opts, :examples, ExamplesAt)
+      )
+
+    assert report.status == :fixed
+    assert_received {:prefill, _}
+    assert git(repo, ["show", "#{report.commit}:lib/greeting.ex"]) =~ "Hello, "
+  end
+
   test "a complete fenced JSON edit array uses the same check review and commit path", %{
     repo: repo,
     opts: opts
