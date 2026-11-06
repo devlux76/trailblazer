@@ -951,7 +951,9 @@ defmodule Trailblazer.Loop.Edits do
   # cannot be resolved is refused, never assumed inside.
   # A model that invents a root (/workspace/src/a.ts) means the repository
   # file at the longest tail of that path that exists; that tail is then
-  # checked like any relative path (the read tool does the same).
+  # checked like any relative path. Only for a root that does not exist on
+  # this machine: a real outside path (/tmp/calc.py) is never matched to a
+  # file inside (A9).
   defp contained(worktree, path) do
     case Path.type(path) do
       :relative -> contained_relative(worktree, path)
@@ -961,7 +963,11 @@ defmodule Trailblazer.Loop.Edits do
 
   defp invented_tail(worktree, path) do
     parts = path |> Path.split() |> Enum.reject(&(&1 in ["/", ".", ".."]))
+    invented? = parts != [] and not File.exists?(Path.join("/", hd(parts)))
+    if invented?, do: longest_tail(worktree, parts)
+  end
 
+  defp longest_tail(worktree, parts) do
     0..max(length(parts) - 1, 0)//1
     |> Enum.map(&(parts |> Enum.drop(&1) |> Path.join()))
     |> Enum.find(&(&1 != "" and File.regular?(Path.join(worktree, &1))))
