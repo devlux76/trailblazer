@@ -139,6 +139,40 @@ defmodule Trailblazer.Memory do
     |> Enum.count(&(record(&1, %{}, opts) == :ok))
   end
 
+  @doc """
+  Rebuilds the memory's vectors from the stored outcomes, under the current
+  point ids (run once after the id scheme changed from phash2 to sha256).
+  """
+  @spec reindex(keyword()) :: {:ok, non_neg_integer()} | {:error, term()}
+  def reindex(opts \\ []) do
+    outcomes = all()
+
+    docs =
+      Enum.map(outcomes, fn o ->
+        document(%{
+          status: o["status"],
+          edit_mode: o["edit_mode"],
+          model: o["model"],
+          request: o["request"],
+          reason: o["reason"],
+          attempts: o["attempts"],
+          reviews: o["reviews"] || [],
+          signature: o["signature"]
+        })
+      end)
+
+    with :ok <- vectors(opts).drop(root(), opts),
+         :ok <- vectors(opts).ensure(root(), opts),
+         {:ok, vectors} <- if(docs == [], do: {:ok, []}, else: embed(opts).documents(docs, opts)),
+         points =
+           Enum.zip_with(outcomes, vectors, fn o, v ->
+             %{id: point_id(o["case"]), vector: v, payload: %{case: o["case"]}}
+           end),
+         :ok <- vectors(opts).put(root(), points, opts) do
+      {:ok, length(points)}
+    end
+  end
+
   # The text embedded for an outcome: what was asked, then how it went.
   defp document(o) do
     {"#{o.status} #{o.edit_mode} #{o[:model]}",
@@ -182,8 +216,9 @@ defmodule Trailblazer.Memory do
 
   defp version, do: to_string(Application.spec(:trailblazer, :vsn) || "")
 
-  # A stable positive id per case for the vector store.
-  defp point_id(case_id), do: :erlang.phash2(case_id, 2_147_483_647) + 1
+  # A stable positive id per case for the vector store (sha256-based; the
+  # earlier phash2 ids could collide, and Qdrant overwrites on collision).
+  defp point_id(case_id), do: Vectors.point_id("memory\0" <> case_id)
 
   defp embed(opts), do: Keyword.get(opts, :embed, Embed)
   defp vectors(opts), do: Keyword.get(opts, :vectors, Vectors)

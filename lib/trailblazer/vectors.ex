@@ -63,6 +63,18 @@ defmodule Trailblazer.Vectors do
     end
   end
 
+  @doc """
+  A stable point id for `key`: the first 63 bits of its sha256, never 0.
+  Qdrant overwrites a point whose id repeats, so ids must not collide:
+  `:erlang.phash2`'s 31 bits make a collision likely past about 10k points;
+  63 bits keep it negligible far past any corpus here (callers still check).
+  """
+  @spec point_id(String.t()) :: pos_integer()
+  def point_id(key) do
+    <<n::unsigned-64, _::binary>> = :crypto.hash(:sha256, key)
+    max(Bitwise.band(n, 0x7FFF_FFFF_FFFF_FFFF), 1)
+  end
+
   @spec put(Path.t(), [%{id: pos_integer(), vector: [number()], payload: map()}], keyword()) ::
           :ok | {:error, term()}
   def put(repo_path, points, opts \\ [])
