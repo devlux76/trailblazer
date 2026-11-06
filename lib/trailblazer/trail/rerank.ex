@@ -70,8 +70,11 @@ defmodule Trailblazer.Trail.Rerank do
            backstop_ms: Config.get(:rerank_backstop_ms),
            backstop_kind: :rerank_call
          ) do
+      # a blank reply (thinking only, cut off) is no answer, never "none fits"
       {:ok, %{content: content}} when is_binary(content) ->
-        parse(content, numbered, Keyword.get(opts, :allow_none, false))
+        if String.trim(content) == "",
+          do: {:error, :no_answer},
+          else: parse(content, numbered, Keyword.get(opts, :allow_none, false))
 
       {:ok, _} ->
         {:error, :no_answer}

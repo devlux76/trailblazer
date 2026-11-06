@@ -187,30 +187,33 @@ defmodule Trailblazer.Loop.ExamplesTest do
       assert Enum.map(kept, &elem(&1, 1)["id"]) == ["c", "e"]
     end
 
-    test "in the case's own repo only ancestors of the base stay, whatever their time" do
+    test "a commit the case's repo holds stays only if the base reaches it, whatever its time or clone name" do
       hits =
         for e <- [
               # the case's own fix on a side branch, committed before the base's time
               entry("side", %{"commit" => "s1", "at" => 10}),
               entry("anc", %{"commit" => "a1", "at" => 10}),
-              # another repo: the time cut applies
+              # unknown to the case's repo (another repository): the time cut
               entry("other", %{"repo" => "vortex", "commit" => "v1", "at" => 10}),
               entry("late", %{"repo" => "vortex", "commit" => "v2", "at" => 5_000})
             ],
             do: {0.7, e}
 
+      # a scratch clone under another name: "own" is by commit, not by name
       kept =
-        Examples.exclude(hits, %{request: "x", repo: "/home/u/projects/trailblazer"},
+        Examples.exclude(hits, %{request: "x", repo: "/tmp/replay/tb-abc"},
           before: 2_000,
+          known: MapSet.new(["s1", "a1"]),
           reachable: MapSet.new(["a1"])
         )
 
       assert Enum.map(kept, &elem(&1, 1)["id"]) == ["anc", "other"]
     end
 
-    test "fails closed: an entry without a commit time is excluded when a cut applies" do
+    test "fails closed: no commit time, or no cut given, excludes" do
       hits = [{0.7, entry("x", %{"at" => nil})}, {0.7, entry("y", %{})}]
       assert [{_, %{"id" => "y"}}] = Examples.exclude(hits, %{request: "x"}, before: 2_000)
+      assert [] = Examples.exclude(hits, %{request: "x"}, [])
     end
   end
 
@@ -270,9 +273,22 @@ defmodule Trailblazer.Loop.ExamplesTest do
         assert {:ok, %{text: nil, ids: [], how: :rerank}} =
                  Examples.recall(%{request: "x"},
                    similar: similar([entry("1", %{})]),
-                   rerank_chat: chat
+                   rerank_chat: chat,
+                   before: 5_000
                  )
       end
+    end
+
+    test "a blank rerank reply is no answer: the vector order stands, recorded as such" do
+      chat = fn _m, _o -> {:ok, %{content: "  \n"}} end
+
+      assert {:ok, %{ids: ["1"], how: :similarity, rerank_error: :no_answer}} =
+               Examples.recall(%{request: "x"},
+                 similar: similar([entry("1", %{})]),
+                 rerank_chat: chat,
+                 before: 5_000,
+                 budget: 100_000
+               )
     end
 
     test "a failed rerank leaves the vector order and says why" do
@@ -282,6 +298,7 @@ defmodule Trailblazer.Loop.ExamplesTest do
         Examples.recall(%{request: "x", edit_mode: :tool},
           similar: similar([entry("1", %{}), entry("2", %{})]),
           rerank_chat: chat,
+          before: 5_000,
           budget: 100_000
         )
 
@@ -296,6 +313,7 @@ defmodule Trailblazer.Loop.ExamplesTest do
                Examples.recall(%{request: "x"},
                  similar: similar([entry("1", %{})]),
                  rerank_chat: chat,
+                 before: 5_000,
                  budget: 50
                )
 
@@ -311,6 +329,33 @@ defmodule Trailblazer.Loop.ExamplesTest do
         "--- a/p.md\n+++ b/p.md\n@@ -1,2 +1,2 @@\n a\n-<edit path=\"x\">\n+<edit path=\"y\">\n"
 
       assert Examples.render(entry("1", %{"patch" => patch}), :text) == :error
+    end
+
+    test "without a stitched change, only a one-chunk file diff is taken as whole" do
+      assert {:ok, _} = Examples.render(entry("1", %{"chunks" => 1}), :text)
+      assert Examples.render(entry("1", %{"chunks" => 2}), :text) == :error
+      assert Examples.render(entry("1", %{"chunks" => 2, "change" => nil}), :text) == :error
+    end
+  end
+
+  describe "blocks/2 refusals" do
+    test "overlapping hunks (two ingest generations stitched) refuse the change" do
+      patch =
+        "--- a/lib/x.ex\n+++ b/lib/x.ex\n" <>
+          "@@ -1,3 +1,3 @@\n line 1\n-line 2\n+two\n line 3\n" <>
+          "@@ -2,3 +2,3 @@\n line 2\n-line 3\n+three\n line 4\n"
+
+      assert Examples.blocks(patch, "lib/x.ex") == :error
+    end
+
+    test "a bare ~ on an old line (HOME=~, cd ~) refuses; sigils do not" do
+      for line <- ["HOME=~", "cd ~", "x = ~/bin"] do
+        patch = "--- a/r\n+++ b/r\n@@ -1,2 +1,2 @@\n #{line}\n-a\n+b\n"
+        assert Examples.blocks(patch, "r") == :error
+      end
+
+      sigil = "--- a/r\n+++ b/r\n@@ -1,2 +1,2 @@\n x = ~r/a/\n-a\n+b\n"
+      assert {:ok, _} = Examples.blocks(sigil, "r")
     end
   end
 

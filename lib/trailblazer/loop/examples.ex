@@ -11,9 +11,10 @@ defmodule Trailblazer.Loop.Examples do
     and unrelated code in one band, so rank is what carries meaning).
   - Exclusions (mandatory, or the replay eval cheats; missing data excludes):
     any entry of a bug the request cites (`bug:<id>`, either id a prefix of
-    the other); in the case's own repository anything not reachable from its
-    base (a rebased or side-branch copy of its own fix included); elsewhere
-    anything committed at or after the base's time.
+    the other); a commit the case's repository holds (by sha, whatever the
+    clone is called) that is not reachable from its base (a rebased or
+    side-branch copy of its own fix included); any other commit made at or
+    after the base's time.
   - One candidate per card (or per commit without a card): a card's long
     request repeats across all its entries and would otherwise fill the pool.
   - The reranker sees the best 40 and may answer that none fits (any answer
@@ -64,8 +65,9 @@ defmodule Trailblazer.Loop.Examples do
   | :empty, considered: n, rerank_error: reason | nil}}`, or `{:error, reason}`
   when the corpus cannot be searched.
 
-  Options: `before:` the base commit's unix time; `reachable:` the set of
-  commits reachable from the base in the case's repository; `budget:` characters
+  Options: `before:` the base commit's unix time (without it only `known:`
+  commits can pass); `reachable:` the commits reachable from the base and
+  `known:` every commit the case's repository holds; `budget:` characters
   (default `:history_examples_chars`); `similar:` a `History.similar/3`
   stand-in; the rest go to `History.similar/3` and `Rerank.ask/4`.
   """
@@ -107,21 +109,22 @@ defmodule Trailblazer.Loop.Examples do
   end
 
   @doc false
-  # The cheat guard, failing closed: an entry of the case's own repository
-  # must be an ancestor of the base (`reachable:`, its commit set; a rebased
-  # or side-branch copy of the case's own fix is not); any other entry must
-  # be committed before the base's time (`before:`). Missing data excludes.
+  # The cheat guard, failing closed. A commit the case's repository knows
+  # (`known:`, every object it holds, whatever the clone is called) must be
+  # an ancestor of the base (`reachable:`; a rebased or side-branch copy of
+  # the case's own fix is not); any other must be committed before the
+  # base's time (`before:`). Missing data excludes, `before:` included.
   def exclude(hits, task, opts) do
     bugs = @bug_ref |> Regex.scan(task[:request] || "") |> Enum.map(fn [_, id] -> id end)
-    own = task[:repo] && Path.basename(task[:repo])
-    reachable = opts[:reachable]
+    known = opts[:known] || MapSet.new()
+    reachable = opts[:reachable] || MapSet.new()
     before = opts[:before]
 
     Enum.reject(hits, fn {_score, e} ->
       own_bug?(e["bug"], bugs) or not is_binary(e["patch"]) or
-        if(e["repo"] == own and reachable,
+        if(MapSet.member?(known, e["commit"]),
           do: not MapSet.member?(reachable, e["commit"]),
-          else: is_integer(before) and not (is_integer(e["at"]) and e["at"] < before)
+          else: not (is_integer(before) and is_integer(e["at"]) and e["at"] < before)
         )
     end)
   end
@@ -199,11 +202,16 @@ defmodule Trailblazer.Loop.Examples do
   @doc """
   One example: a heading with repo, path, outcome and date, the request, and
   the whole change to that file (`"change"`, stitched by `History.similar/3`;
-  an entry without the key is taken as whole).
+  without the key, only an entry whose file diff is one chunk is whole).
   """
   @spec render(map(), :text | :tool) :: {:ok, String.t()} | :error
   def render(e, mode) do
-    patch = Map.get(e, "change", e["patch"])
+    patch =
+      case e do
+        %{"change" => change} -> change
+        %{"chunks" => n} when n not in [nil, 1] -> nil
+        _ -> e["patch"]
+      end
 
     body =
       cond do
@@ -252,8 +260,8 @@ defmodule Trailblazer.Loop.Examples do
 
     with false <- raw == [],
          {:ok, hunks} <- parse_hunks(raw),
-         hunks = join(hunks),
-         false <- Enum.any?(hunks, fn h -> Enum.any?(h.lines, &String.contains?(&1, "~/")) end) do
+         {:ok, hunks} <- join(hunks),
+         false <- Enum.any?(hunks, &rewritten?/1) do
       if header =~ ~r{^--- /dev/null$}m, do: create(hunks, path), else: edits(hunks, path)
     else
       _ -> :error
@@ -290,17 +298,31 @@ defmodule Trailblazer.Loop.Examples do
 
   # git never emits two hunks that touch (it merges them), so a hunk that
   # starts where the last ended on both sides is a piece History split off.
+  # One that starts before the last ended (overlap, out of order: chunks of
+  # two ingest generations stitched together) refuses the change.
   defp join(hunks) do
     hunks
-    |> Enum.reduce([], fn
+    |> Enum.reduce_while([], fn
       h, [p | rest] when p.o + p.on == h.o and p.n + p.nn == h.n ->
-        [%{p | on: p.on + h.on, nn: p.nn + h.nn, lines: p.lines ++ h.lines} | rest]
+        {:cont, [%{p | on: p.on + h.on, nn: p.nn + h.nn, lines: p.lines ++ h.lines} | rest]}
+
+      h, [p | _] when h.o < p.o + p.on or h.n < p.n + p.nn ->
+        {:halt, :error}
 
       h, acc ->
-        [h | acc]
+        {:cont, [h | acc]}
     end)
-    |> Enum.reverse()
+    |> case do
+      :error -> :error
+      joined -> {:ok, Enum.reverse(joined)}
+    end
   end
+
+  # History writes the home directory as `~` (`~/x`, `HOME=~`, `cd ~`), so an
+  # old line holding one is not the file's line and cannot be an anchor;
+  # sigils and `~x` operators (a letter follows) are left alone.
+  defp rewritten?(hunk),
+    do: Enum.any?(hunk.lines, &(&1 =~ ~r/^[ -].*~(?![A-Za-z])/))
 
   defp create([%{o: 1, on: 0, n: 1, lines: lines}], path) do
     added = for "+" <> line <- lines, do: line

@@ -193,11 +193,15 @@ defmodule Trailblazer.Loop do
   defp examples(st) do
     git = fn args -> System.cmd("git", args, cd: st.ws.path, stderr_to_stdout: true) end
 
+    # "own" is by commit, not by clone name: a replay from a scratch clone
+    # still knows its repository's commits
     with {time, 0} <- git.(["show", "-s", "--format=%ct", st.ws.base]),
-         {shas, 0} <- git.(["rev-list", st.ws.base]) do
+         {shas, 0} <- git.(["rev-list", st.ws.base]),
+         {all, 0} <- git.(["rev-list", "--all"]) do
       mod(st, :examples, Trailblazer.Loop.Examples).recall(st.task,
         before: time |> String.trim() |> String.to_integer(),
-        reachable: MapSet.new(String.split(shas))
+        reachable: MapSet.new(String.split(shas)),
+        known: MapSet.new(String.split(all))
       )
     else
       _ -> {:error, :base_history}
