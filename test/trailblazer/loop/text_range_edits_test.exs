@@ -259,6 +259,22 @@ defmodule Trailblazer.Loop.TextRangeEditsTest do
       assert {:error, [%{reason: :anchor_mismatch}]} = Edits.apply(dir, bad)
     end
 
+    test "live lucet hybrid: attributes plus a bare <arg_value> replace" do
+      reply = """
+      <tool_call>edit path="src/c.ts" start="7" end="9" replace</arg_key><arg_value>import a
+      import b
+      </arg_value></tool_call><tool_call>edit path="src/c.ts" start="28" end="30" replace</arg_key><arg_value>  for (x of y) {
+        z()
+      }
+      </arg_value></tool_call>
+      """
+
+      assert {:ok, [a, b]} = text(reply)
+      assert {a.path, a.start, a.end, a.replace} == {"src/c.ts", 7, 9, "import a\nimport b\n"}
+      assert {b.start, b.end} == {28, 30}
+      assert b.replace =~ "z()"
+    end
+
     test "tags are text mode only; JSON stays accepted there without a digest" do
       reply =
         ~s(<edit path="a" start="1" end="1"><first>a</first><last>a</last><replace>b\n</replace></edit>)

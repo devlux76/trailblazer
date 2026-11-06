@@ -354,7 +354,7 @@ defmodule Trailblazer.Loop.Tools do
   # An <edit ...> or <create ...> opening tag at the start of a line (a tag
   # mentioned inside a sentence is not one).
   @native_open "<|tool_call_start|>"
-  @argkey_call ~r/<tool_call>\s*(?:edit|submit_edits)\s*<arg_key>/
+  @argkey_call ~r/<tool_call>\s*(?:edit|submit_edits)\b[^\n]*?(?:<arg_key>|<arg_value>|\w+\s*=\s*")/
   @tag_open ~r/^[ \t]*<(edit|create)\b([^>\n]*)>/m
 
   @doc """
@@ -641,11 +641,7 @@ defmodule Trailblazer.Loop.Tools do
   def argkey_edit_blocks(text) do
     ~r/<tool_call>\s*(?:edit|submit_edits)\s*(.*?)<\/tool_call>/s
     |> Regex.scan(text, capture: :all_but_first)
-    |> Enum.map(fn [inner] ->
-      ~r/<arg_key>(.*?)<\/arg_key>\s*<arg_value>(.*?)<\/arg_value>/s
-      |> Regex.scan(inner, capture: :all_but_first)
-      |> Map.new(fn [k, v] -> {String.trim(k), v} end)
-    end)
+    |> Enum.map(&argkey_args/1)
     |> case do
       [] ->
         {:error,
@@ -654,6 +650,28 @@ defmodule Trailblazer.Loop.Tools do
       calls ->
         native_call_blocks(calls)
     end
+  end
+
+  # One call's arguments, read leniently: <arg_key>/<arg_value> pairs, plus
+  # key="value" attributes (live, lucet 2026-11-06 mixed the two:
+  # `<tool_call>edit path="a" start="7" end="9" replace</arg_key><arg_value>...`);
+  # a replace with no key of its own is the last <arg_value>.
+  defp argkey_args([inner]) do
+    pairs =
+      ~r/<arg_key>(.*?)<\/arg_key>\s*<arg_value>(.*?)<\/arg_value>/s
+      |> Regex.scan(inner, capture: :all_but_first)
+      |> Map.new(fn [k, v] -> {String.trim(k), v} end)
+
+    head = inner |> String.split(~r/<arg_(?:key|value)>/, parts: 2) |> hd()
+    attrs = attrs(head)
+
+    values = Regex.scan(~r/<arg_value>(.*?)<\/arg_value>/s, inner, capture: :all_but_first)
+
+    args = Map.merge(attrs, pairs)
+
+    if Map.has_key?(args, "replace") or values == [],
+      do: args,
+      else: Map.put(args, "replace", values |> List.last() |> hd())
   end
 
   defp native_calls(inner) do
