@@ -39,6 +39,12 @@ The examples are only useful in a format the model can actually produce.
    (`loop/tools.ex`) already parses that from a text reply, and `Edits.parse/1`
    is SEARCH-only today. No new syntax. Part 1 is mostly a prompt change plus
    wiring text mode to the range path.
+
+   **Superseded (operator, 2026-11-05):** code inside JSON strings forces a 4B
+   model to escape quotes and newlines, so text mode uses raw-code tags
+   instead: `<edit path start end><first/><last/><replace>…</replace></edit>`
+   and `<create path>…</create>` (JSON still accepted as a fallback, SEARCH
+   refused). Built and merged as step 1 (trailblazer main a05a466).
 2. **Keep the first/last-line quotes mandatory.** They are the anchors
    (`edits.ex` relocates on a unique quote match and refuses otherwise) that
    stop a 4B model's miscounted range from silently overwriting the wrong
@@ -215,7 +221,7 @@ used so outcomes can be traced back to examples.
 | # | step | gate |
 |---|---|---|
 | 0 | **Density probe** (one script, no infra): embed the baseline entries to JSONL, brute-force cosine for each replay query; report sibling rank (recall@k) and how it moves as the corpus grows (subsample 25/50/100%), plus histograms against true siblings; count the replay cards that still have a plausible example after exclusions | curve + histogram reported to the operator; picks k (and a floor only if a clean gap shows); if fewer than about 10 of 20 cards have a sibling, widen the corpus first |
-| 1 | Part 1: JSON range blocks in text mode + diff/patch | suites green, one live card |
+| 1 | Part 1: raw-code edit tags in text mode (was JSON range blocks; superseded) + diff/patch | DONE a05a466 |
 | 2 | corpus schema + ingest for the baseline only (operator, 2026-11-05): owned repos trailblazer, vortex, ranger, planner, scout, mirai-agent, sojourney (not resonant, sojourney2, frontier); real branches/tags only, no squash snapshots, no `refs/bugs`. About 276 unique patches / about 918 code entries (about 259 bug-citing commits), nearly all trailblazer + vortex, plus case attempts. Expand (e.g. opencode upstream as a tagged set) only if the probe/eval says density is the limit | entries + labels spot-checked by Claude |
 | 3 | throughput sample, projected backfill time | reported to the operator |
 | 4 | git notes on integration + backfill of notes from case records | notes visible on v6-impl commits |
