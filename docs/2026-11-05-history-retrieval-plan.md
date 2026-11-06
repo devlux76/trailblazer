@@ -32,21 +32,32 @@ accepted.
 
 The examples are only useful in a format the model can actually produce.
 
-1. Text-mode coder prompt: drop SEARCH/REPLACE. The model gets numbered source
-   (as now) and answers with range blocks ("replace lines A-B of PATH with:"
-   then the new text, or an insert after line A). It never retypes existing
-   code. `Loop.Edits` already has a `:range` block type with a digest (tool
-   mode). Text mode reuses it.
-2. The host splices the ranges into a scratch copy, writes a unified diff with
+1. Text-mode coder prompt: drop SEARCH/REPLACE for edits. The model gets
+   numbered source (as now) and answers with the **same JSON range blocks tool
+   mode uses**, in a `json` fence. `Tools.text_edit_blocks/1`
+   (`loop/tools.ex`) already parses that from a text reply, and `Edits.parse/1`
+   is SEARCH-only today. No new syntax. Part 1 is mostly a prompt change plus
+   wiring text mode to the range path.
+2. **Keep the first/last-line quotes mandatory.** They are the anchors
+   (`edits.ex` relocates on a unique quote match and refuses otherwise) that
+   stop a 4B model's miscounted range from silently overwriting the wrong
+   lines.
+3. **Digest optional in text mode.** A small model copying 64 hex chars will
+   hallucinate them, and the anchors already catch stale ranges. Tool mode
+   keeps its digest.
+4. **File creation:** range blocks need an existing file (`read_full` →
+   `:no_such_file`). Keep the empty-SEARCH block as the single creation case,
+   or add an explicit create action. Pick whichever the tests make simpler.
+5. The host splices the ranges into a scratch copy, writes a unified diff with
    `diff -u`, and applies it to the case worktree with `git apply --check`
-   then `git apply`. The diff is what review reads and what is committed. Our
-   own matcher is no longer in the apply path. This is vendored "sensory"
-   tooling, per standing policy.
-3. Range blocks that overlap, fall outside the file, or carry a stale digest
-   are refused with feedback that quotes the current numbered lines. Overlap
-   detection, bounds and digests already exist.
-4. host_stop: the looping detector moves from no-op SEARCH blocks to repeated
-   identical range blocks.
+   then `git apply`. Watch new files (`-N`) and CRLF. The diff is what review
+   reads and what is committed. Our own matcher is no longer in the apply
+   path. This is vendored "sensory" tooling, per standing policy.
+6. Overlap, bounds and anchor failures are refused with feedback that quotes
+   the current numbered lines. That machinery already exists.
+7. Looping: `Loop.looping_blocks?/1` is SEARCH-specific. The no-op signal
+   becomes an **empty diff**, repeated (host_stop is `Model`'s finish
+   mechanism and is unchanged).
 
 Check: the loop and edits suites; one live case on a real card.
 
@@ -113,9 +124,13 @@ operator says so.
   records, then the upstream history of vendored repos (llama.cpp, opencode).
   Upstream history is large (thousands of commits) and goes in as a separate
   tag that recall can include or exclude.
-- **Live**: the watcher already sees HEAD move (`Git.changed/2`). New commits
-  on watched repos are ingested on that event, and Loop records each attempt
-  as it ends.
+- **Live**: the indexer already calls `git.changed(path, head)` when the
+  watcher reports a HEAD move (`indexer.ex`). Corpus ingest hangs off the
+  same event, and Loop records each attempt as it ends.
+- **Point ids**: never `:erlang.phash2` (31-bit; Qdrant silently overwrites on
+  collision, unsafe past about 10k points). Use a UUID derived from
+  sha256(repo, commit, path, chunk) and check for collisions on write. The
+  same fix applies to `Memory.point_id/1` before it grows.
 - Measure throughput on a 500-commit sample first, then project the full
   backfill time and report it before running it.
 
@@ -148,13 +163,19 @@ copy of history and must not become a way around that redaction.
 ## Part 3: recall into the prompt
 
 1. Query: design + plan + paths → Qdrant top 200 → keep cosine ≥ a threshold.
-   The threshold starts at 0.90 and is calibrated on held-out cards in step 5,
-   since EmbeddingGemma's similarity spread for code is not known yet.
+   **The 0.90 floor is a hypothesis to be tested, not a setting.**
+   `Trail.Rerank`'s moduledoc records EmbeddingGemma putting related and
+   unrelated *code* in a 0.6-0.8 band, which is why the reranker exists.
+   Request+patch entries matched against similar requests may score higher.
+   The density probe (step 0) decides: if true siblings reach about 0.90, keep
+   a floor; if their top-1 is well under about 0.75, drop the floor and use
+   top-k + rerank.
 2. Exclusions: never return the case's own bug id, commits at or after the
    case base, or anything from the case's own branch. This is mandatory or the
    replay eval cheats.
-3. LFM3 reranks the survivors against the request, using the same reranker
-   path as `Trail.rerank`, and keeps up to 3 succeeded examples plus at most 1
+3. LFM3 reranks the survivors against the request, using the same plumbing
+   as `Trail.Rerank.select/3` but with a new selection prompt (the current one
+   ranks code locations by signature, not patch examples), and keeps up to 3 succeeded examples plus at most 1
    failed attempt on the closest request, shown as "this was tried and failed
    because …".
 4. Each example is rendered in the coder's edit format: diff hunks converted to
@@ -171,9 +192,20 @@ used so outcomes can be traced back to examples.
 
 ## Part 4: measure
 
-- **Replay eval**: the last 20 closed cards with a host check, rerun at their
-  base commit with and without examples (exclusions on). Metrics: local pass
-  rate, attempts to pass, frontier fallbacks, tokens.
+- **Replay eval**: closed cards with a host check, rerun at their base commit
+  with and without examples (exclusions on). Only about 10-12 such cards exist
+  per repo, and 11 of 12 recorded outcomes failed, so a pass-rate delta over
+  20 cards can't be resolved. Instead:
+  - Run paired, within card, 3 runs per arm, per repo (vortex TypeScript and
+    trailblazer Elixir separately).
+  - Primary metric: **first-apply success**, the fraction of replies whose
+    first batch parses, anchors hold, ranges are in bounds and the diff
+    applies. This is the "form" problem the examples target.
+  - Secondary metrics: attempts to pass, check failures, refusals and no-op
+    attempts, tokens, frontier fallbacks.
+  - Draw the eval set from case records across repos if closed cards run
+    short (about 34 vortex cases are on disk).
+  - Never calibrate on the eval set: use an older era or skip calibration.
 - **Live**: frontier fallback rate per card, before and after, from case
   records and notes.
 - Calibrate the threshold and example count on the replay set. Report
@@ -184,8 +216,9 @@ used so outcomes can be traced back to examples.
 
 | # | step | gate |
 |---|---|---|
-| 1 | Part 1: range edits + diff/patch | suites green, one live card |
-| 2 | corpus schema + ingest for the baseline only (operator, 2026-11-05): vortex, real branches, since the first `bug:` commit (2026-10-25, bug:d9ecbf2), i.e. 112 commits / 105 unique patches / 378 commit × file entries (89 commits, 277 entries cite a bug, 32 cards), plus vortex case attempts (37 cases). Expand only if the replay eval says it helps | entries + labels spot-checked by Claude |
+| 0 | **Density probe** (one script, no infra): embed the baseline entries to JSONL, brute-force cosine for each replay query, plot histograms against true siblings, count the replay cards that still have a plausible example after exclusions | histogram reported to the operator; decides floor vs top-k; if fewer than about 10 of 20 cards have a sibling, widen the corpus first |
+| 1 | Part 1: JSON range blocks in text mode + diff/patch | suites green, one live card |
+| 2 | corpus schema + ingest for the baseline only (operator, 2026-11-05): owned repos trailblazer, vortex, ranger, planner, scout, mirai-agent, sojourney (not resonant, sojourney2, frontier); real branches/tags only, no squash snapshots, no `refs/bugs`. About 276 unique patches / about 918 code entries (about 259 bug-citing commits), nearly all trailblazer + vortex, plus case attempts. Expand (e.g. opencode upstream as a tagged set) only if the probe/eval says density is the limit | entries + labels spot-checked by Claude |
 | 3 | throughput sample, projected backfill time | reported to the operator |
 | 4 | git notes on integration + backfill of notes from case records | notes visible on v6-impl commits |
 | 5 | recall + rendering + prompt section | unit tests; exclusions tested |
@@ -194,3 +227,16 @@ used so outcomes can be traced back to examples.
 
 Each step is a card, and each card is coded through the pipeline itself where
 it can be (planner → Trailblazer), with the frontier fallback as usual.
+
+## Peer review record
+
+- 2026-11-05, GLM (OpenCode, read-only, verified against code;
+  `~/.local/share/claude-handoff/glm-reply.md`). Folded in: the 0.90 floor is a
+  hypothesis, tested first by the density probe (step 0); JSON range blocks in
+  text mode (no new syntax); mandatory anchor quotes; optional digest in text
+  mode; a file-creation path; looping detected on empty diffs; sha-based point
+  ids; a new rerank prompt; a paired, per-repo eval on first-apply success.
+  Rejected one claim: "`Git.changed/2` has no caller". The indexer calls it
+  through the injected git module.
+- Codex: out of usage until 2026-11-10; no review. Ask then if a second look
+  is still useful.
