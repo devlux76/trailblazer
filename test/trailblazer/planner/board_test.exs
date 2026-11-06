@@ -298,6 +298,71 @@ defmodule Trailblazer.Planner.BoardTest do
     assert byte_size(c.context["body"]) <= 400 + 3 * 201
   end
 
+  test "a card Trailblazer blocked after a failed case comes back with the reason; others' blocks and released cards as they are",
+       ctx do
+    cli = fn args ->
+      {out, 0} = System.cmd(ctx.planner, args, stderr_to_stdout: true)
+      out
+    end
+
+    failed = card(ctx, "failed once", @ready)
+    cli.(["--actor", "trailblazer", "start", failed, "--plan", "p"])
+
+    cli.([
+      "--actor",
+      "trailblazer",
+      "block",
+      failed,
+      "2 attempts failed: generation timeout (2)."
+    ])
+
+    theirs = card(ctx, "blocked by someone else", @ready)
+    cli.(["--actor", "glm", "start", theirs, "--plan", "p"])
+    cli.(["--actor", "glm", "block", theirs, "waiting for the operator"])
+
+    released = card(ctx, "released", @ready)
+    cli.(["--actor", "glm", "start", released, "--plan", "p"])
+    cli.(["--actor", "glm", "release", released, "handing back"])
+
+    config = config(ctx, %{ctx.repo => ["make check"]})
+    assert {:ok, %{cards: cards}} = read(config)
+    by_ref = Map.new(cards, &{&1.ref, &1})
+
+    assert %{"failed" => true, "failure" => "2 attempts failed: generation timeout (2)."} =
+             by_ref[failed].context
+
+    refute Map.has_key?(by_ref, theirs)
+    assert Map.has_key?(by_ref, released)
+    refute Map.has_key?(by_ref[released].context, "failed")
+  end
+
+  test "assigning a failed card releases Trailblazer's block first", ctx do
+    parent = self()
+
+    run = fn args ->
+      send(parent, {:ran, args})
+      %{status: :pass, output_tail: "{}"}
+    end
+
+    card = %{
+      ref: "probe:abc123",
+      check: "make check",
+      repo: ctx.repo,
+      context: %{"failed" => true, "failure" => "timeout"}
+    }
+
+    assert :ok = Board.assign(config(ctx, %{}), card, run: run)
+    assert_receive {:ran, ["--actor", "trailblazer", "release", "probe:abc123", _]}
+    assert_receive {:ran, ["--actor", "trailblazer", "assign", "probe:abc123" | _]}
+
+    refusing = fn
+      ["--actor", "trailblazer", "release" | _] -> %{status: :fail, exit: 1, output_tail: "no"}
+      _ -> flunk("must not assign when the release failed")
+    end
+
+    assert {:error, {:planner, "no"}} = Board.assign(config(ctx, %{}), card, run: refusing)
+  end
+
   test "a garbage or failing planner reply is an error, not a card", ctx do
     config = config(ctx, %{ctx.repo => ["make check"]})
 

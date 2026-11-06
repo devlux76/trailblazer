@@ -224,6 +224,30 @@ defmodule Trailblazer.Planner.Board do
     files = Enum.map(card_files(card), &("--file=" <> &1))
     args = ["--actor", "trailblazer", "assign", ref, "trailblazer", "--check", check] ++ files
 
+    # a retried failed card: Trailblazer's own block is released first, so
+    # the planner CLI records the failed case in the new assignment's history
+    released =
+      case card do
+        %{context: %{"failed" => true}} ->
+          run.([
+            "--actor",
+            "trailblazer",
+            "release",
+            ref,
+            "retry chosen by the planner after a failed case"
+          ])
+
+        _ ->
+          %{status: :pass}
+      end
+
+    case released do
+      %{status: :pass} -> assign_now(run, args)
+      result -> {:error, {:planner, result.output_tail}}
+    end
+  end
+
+  defp assign_now(run, args) do
     case run.(args) do
       %{status: :pass} -> :ok
       result -> {:error, {:planner, result.output_tail}}
@@ -291,10 +315,19 @@ defmodule Trailblazer.Planner.Board do
   defp repo_candidates(run, repo, check, self) do
     name = repo_name(repo)
 
-    with {:ok, board} <-
-           json(run, ["board", "--repo", name, "--column", "todo", "--limit", "#{@board_limit}"]) do
-      {:ok, Enum.flat_map(board_cards(board), &shown(run, &1, repo, check, name, self))}
-    end
+    # todo cards, and blocked ones: a card Trailblazer blocked after a failed
+    # case comes back to the planner with the reason (shown/6)
+    Enum.reduce_while(["todo", "blocked"], {:ok, []}, fn column, {:ok, acc} ->
+      case json(run, ["board", "--repo", name, "--column", column, "--limit", "#{@board_limit}"]) do
+        {:ok, board} ->
+          {:cont,
+           {:ok,
+            acc ++ Enum.flat_map(board_cards(board), &shown(run, &1, repo, check, name, self))}}
+
+        {:error, _} = error ->
+          {:halt, error}
+      end
+    end)
   end
 
   defp board_cards(%{"cards" => cards}) when is_list(cards), do: cards
@@ -307,8 +340,7 @@ defmodule Trailblazer.Planner.Board do
     with [ref, _actor, priority] when is_binary(ref) <- row,
          true <- String.starts_with?(ref, name <> ":") and repo != self,
          {:ok, shown} <- json(run, ["show", ref]),
-         true <- shown["column"] == "todo",
-         true <- shown["claim"] == nil,
+         {:ok, failure} <- standing(shown),
          true <- is_list(shown["labels"]) and "dispatch:ready" in shown["labels"],
          title when is_binary(title) <- shown["title"] do
       labels = shown["labels"]
@@ -320,26 +352,54 @@ defmodule Trailblazer.Planner.Board do
           ref: ref,
           check: check,
           repo: repo,
-          context: %{
-            "ref" => ref,
-            "repo" => name,
-            "title" => title,
-            "body" => body,
-            "priority" => priority,
-            "recent" => Enum.take(shown["recent"] || [], 3),
-            "check" => check,
-            # the routing facts (bug:4cc63df): the fetched labels and the
-            # routes the body's own markers admit to
-            "labels" => labels,
-            "files" => files,
-            "route" => to_string(Route.classify(%{"labels" => labels, "body" => body}))
-          }
+          context:
+            %{
+              "ref" => ref,
+              "repo" => name,
+              "title" => title,
+              "body" => body,
+              "priority" => priority,
+              "recent" => Enum.take(shown["recent"] || [], 3),
+              "check" => check,
+              # the routing facts (bug:4cc63df): the fetched labels and the
+              # routes the body's own markers admit to
+              "labels" => labels,
+              "files" => files,
+              "route" => to_string(Route.classify(%{"labels" => labels, "body" => body}))
+            }
+            |> failed(failure)
         }
       ]
     else
       _ -> []
     end
   end
+
+  # Which cards stand: an unclaimed or released (claim back at todo) todo
+  # card, or a card Trailblazer itself blocked after a failed case. The block
+  # note is the reason the planner is told; any other blocked or owned card
+  # is not the planner's to dispatch.
+  defp standing(%{"column" => "todo", "claim" => nil}), do: {:ok, nil}
+  defp standing(%{"column" => "todo", "claim" => %{"state" => "todo"}}), do: {:ok, nil}
+
+  defp standing(%{
+         "column" => "blocked",
+         "claim" => %{"actor" => "trailblazer", "state" => "blocked"} = claim
+       }) do
+    notes = if is_list(claim["notes"]), do: claim["notes"], else: []
+
+    reason =
+      notes
+      |> Enum.filter(&(is_map(&1) and &1["action"] == "block" and is_binary(&1["text"])))
+      |> List.last()
+
+    {:ok, (reason && reason["text"]) || "blocked by Trailblazer"}
+  end
+
+  defp standing(_), do: :skip
+
+  defp failed(context, nil), do: context
+  defp failed(context, reason), do: Map.merge(context, %{"failed" => true, "failure" => reason})
 
   # A parsed file list is context data even when empty; only a parse error has
   # nothing on the card to name.

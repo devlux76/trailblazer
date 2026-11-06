@@ -43,7 +43,10 @@ defmodule Trailblazer.Planner.Decision do
   repositories is forbidden. Waiting is normal. "target": "research" routes
   the chosen card to the outside research peer instead of the coding worker;
   use it only when the card is a bounded research request and the coding
-  worker would not be its owner.
+  worker would not be its owner. A card with "failed": true was already
+  dispatched and the worker could not finish it; "failure" says why. Pick it
+  again only when that reason no longer holds (its plan or files changed, or
+  the failure was transient); otherwise prefer other work or wait.
   """
 
   @schema %{
