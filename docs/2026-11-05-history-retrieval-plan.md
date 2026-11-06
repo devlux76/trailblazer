@@ -119,6 +119,32 @@ operator says so.
 - Measure throughput on a 500-commit sample first, then project the full
   backfill time and report it before running it.
 
+### Privacy (operator, 2026-11-05)
+
+The repos were squashed on 2026-10-25 to redact PII that AI tools had written
+into history. That is why the commit rules are strict. The corpus is a new
+copy of history and must not become a way around that redaction.
+
+- **One screen, the same one the commit rules use**:
+  `~/.config/git/pii-patterns` (as used by the global commit-msg hook), plus
+  the absolute-home-path rule. Every text field is checked before it is
+  embedded or stored: request, commit message, patch, case attempt and review
+  reason. A match drops the entry and logs only its commit and field, never
+  the text. The corpus never keeps its own copy of the patterns.
+- **Unscreened sources get the most suspicion.** git-bug card bodies and
+  comments, and Trailblazer case records (whole prompts with source), never
+  pass through the commit hooks.
+- **Reachable history only**: real branches and tags. Never `--all`, never
+  `refs/bugs`, never the reflog, and never objects that a squash left
+  unreachable.
+- **Derived data follows git.** Entries are keyed by commit. A commit that is
+  no longer reachable (squashed, rewritten, redacted) is purged from the
+  vectors and JSONL on the next ingest pass. Because the backfill is
+  resumable, a full rebuild after a redaction is cheap.
+- **Prompts that leave the machine** (the frontier fallback dossier) carry
+  examples only after they pass the screen. The screen runs again at render
+  time, so a pattern added later still applies.
+
 ## Part 3: recall into the prompt
 
 1. Query: design + plan + paths → Qdrant top 200 → keep cosine ≥ a threshold.
