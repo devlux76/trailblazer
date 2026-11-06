@@ -197,8 +197,11 @@ defmodule Trailblazer.Planner.Board do
                {:error, reason} -> {:halt, {:error, reason}}
              end
            end) do
+      # a failed card sorts after fresh work of its priority
       cards =
-        cards |> Enum.sort_by(&{&1.context["priority"] || "p2", &1.ref}) |> Enum.take(@limit)
+        cards
+        |> Enum.sort_by(&{&1.context["priority"] || "p2", &1.context["failed"] == true, &1.ref})
+        |> Enum.take(@limit)
 
       fingerprint =
         cards
@@ -242,8 +245,20 @@ defmodule Trailblazer.Planner.Board do
       end
 
     case released do
-      %{status: :pass} -> assign_now(run, args)
-      result -> {:error, {:planner, result.output_tail}}
+      %{status: :pass} ->
+        case {assign_now(run, args), card} do
+          {{:error, _} = error, %{context: %{"failed" => true, "failure" => reason}}} ->
+            # released but not assigned: blocked again with its reason, so it
+            # never reads as fresh work
+            run.(["--actor", "trailblazer", "block", ref, reason])
+            error
+
+          {result, _} ->
+            result
+        end
+
+      result ->
+        {:error, {:planner, result.output_tail}}
     end
   end
 
@@ -382,10 +397,30 @@ defmodule Trailblazer.Planner.Board do
   defp standing(%{"column" => "todo", "claim" => nil}), do: {:ok, nil}
   defp standing(%{"column" => "todo", "claim" => %{"state" => "todo"}}), do: {:ok, nil}
 
-  defp standing(%{
-         "column" => "blocked",
-         "claim" => %{"actor" => "trailblazer", "state" => "blocked"} = claim
-       }) do
+  # A failed card is offered back once: after a second failed case it stays
+  # blocked for the frontier or the operator, so a small planner cannot keep
+  # re-picking a card that keeps timing out. `assignments` is the planner
+  # CLI's count (current plus released); a blocked card was assigned at least once.
+  @retries 1
+
+  defp standing(
+         %{
+           "column" => "blocked",
+           "claim" => %{"actor" => "trailblazer", "state" => "blocked"} = claim
+         } = shown
+       ) do
+    assigned =
+      case shown["assignments"] do
+        n when is_integer(n) and n > 1 -> n
+        _ -> 1
+      end
+
+    if assigned > @retries, do: :skip, else: {:ok, {blocked_reason(claim), assigned}}
+  end
+
+  defp standing(_), do: :skip
+
+  defp blocked_reason(claim) do
     notes = if is_list(claim["notes"]), do: claim["notes"], else: []
 
     reason =
@@ -393,13 +428,13 @@ defmodule Trailblazer.Planner.Board do
       |> Enum.filter(&(is_map(&1) and &1["action"] == "block" and is_binary(&1["text"])))
       |> List.last()
 
-    {:ok, (reason && reason["text"]) || "blocked by Trailblazer"}
+    (reason && reason["text"]) || "blocked by Trailblazer"
   end
 
-  defp standing(_), do: :skip
-
   defp failed(context, nil), do: context
-  defp failed(context, reason), do: Map.merge(context, %{"failed" => true, "failure" => reason})
+
+  defp failed(context, {reason, assigned}),
+    do: Map.merge(context, %{"failed" => true, "failure" => reason, "failures" => assigned})
 
   # A parsed file list is context data even when empty; only a parse error has
   # nothing on the card to name.

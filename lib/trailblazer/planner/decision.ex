@@ -46,7 +46,8 @@ defmodule Trailblazer.Planner.Decision do
   worker would not be its owner. A card with "failed": true was already
   dispatched and the worker could not finish it; "failure" says why. Pick it
   again only when that reason no longer holds (its plan or files changed, or
-  the failure was transient); otherwise prefer other work or wait.
+  the failure was transient); otherwise prefer other work or wait. It is
+  offered back once only.
   """
 
   @schema %{
