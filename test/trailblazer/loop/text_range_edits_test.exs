@@ -111,26 +111,33 @@ defmodule Trailblazer.Loop.TextRangeEditsTest do
       <last>old</last>
       <replace>
       @re ~r/<edit>(.*?)</edit>/ </edit> x
-      <replace>foo</replace>
+        s = "<replace>foo</replace>"
       </replace>
       </edit>
       """
 
       assert {:ok, [b]} = text(reply)
-      assert b.replace == "@re ~r/<edit>(.*?)</edit>/ </edit> x\n<replace>foo</replace>\n"
+
+      assert b.replace ==
+               "@re ~r/<edit>(.*?)</edit>/ </edit> x\n  s = \"<replace>foo</replace>\"\n"
     end
 
-    test "a replacement holding a whole example block on its own lines keeps all of it" do
-      example =
-        "<edit path=\"lib/a.ex\" start=\"1\" end=\"1\">\n<first>x</first>\n<last>x</last>\n<replace>\nnew\n</replace>\n</edit>\n"
+    test "new text with lines that start like tags is refused, never guessed" do
+      example = fn path ->
+        "<edit path=\"#{path}\" start=\"1\" end=\"1\">\n<first>x</first>\n<last>x</last>\n<replace>\nother\n</replace>\n</edit>\n"
+      end
 
-      reply =
-        "<edit path=\"priv/p.md\" start=\"3\" end=\"4\">\n<first>old</first>\n<last>old2</last>\n<replace>\nThe format:\n\n" <>
-          example <> "\nEnd of prompt.\n</replace>\n</edit>\n"
+      # one example and two examples (the second once parsed as an invented edit)
+      for examples <- [example.("lib/a.ex"), example.("lib/a.ex") <> example.("lib/b.ex")] do
+        reply =
+          "<edit path=\"priv/p.md\" start=\"3\" end=\"4\">\n<first>old</first>\n<last>old2</last>\n<replace>\nThe format:\n\n" <>
+            examples <> "\nEnd of prompt.\n</replace>\n</edit>\n"
 
-      assert {:ok, [b]} = text(reply)
-      assert b.path == "priv/p.md"
-      assert b.replace == "The format:\n\n" <> example <> "\nEnd of prompt.\n"
+        assert {:error, msg} = text(reply)
+        assert msg =~ "lines that start with edit tags"
+      end
+
+      assert {:error, _} = text("<create path=\"p.md\">\n<edit path=\"a\">\n</create>\n")
     end
 
     test "comment lines ending in closing tags stay inside the replacement" do

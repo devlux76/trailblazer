@@ -465,8 +465,10 @@ defmodule Trailblazer.Loop.Tools do
   defp attrs(text),
     do: @tag_attr |> Regex.scan(text, capture: :all_but_first) |> Map.new(fn [k, v] -> {k, v} end)
 
-  defp tag_block("create", %{"path" => path}, body) when path != "",
-    do: {:ok, %{path: path, search: "", replace: raw_lines(body)}}
+  defp tag_block("create", %{"path" => path}, body) when path != "" do
+    with :ok <- no_tag_lines(body, path),
+         do: {:ok, %{path: path, search: "", replace: raw_lines(body)}}
+  end
 
   defp tag_block("create", _attrs, _body), do: {:error, ~s(<create> needs path="...")}
 
@@ -476,7 +478,8 @@ defmodule Trailblazer.Loop.Tools do
          {:ok, last} <- tag_int(attrs, "end", 0),
          {:ok, first_text} <- tag_inner(body, "first", path),
          {:ok, last_text} <- tag_inner(body, "last", path),
-         {:ok, replace} <- tag_inner(body, "replace", path) do
+         {:ok, replace} <- tag_inner(body, "replace", path),
+         :ok <- no_tag_lines(replace, path) do
       {:ok,
        %{
          path: path,
@@ -493,6 +496,20 @@ defmodule Trailblazer.Loop.Tools do
 
   defp tag_block("edit", _attrs, _body),
     do: {:error, ~s(<edit> needs path="..." start="N" end="M")}
+
+  # New text with lines that start like the dialect's own tags (a file that
+  # documents this format) cannot be told apart from where a block ends:
+  # two example blocks inside a replacement parse as a cut edit plus an
+  # invented one (review of 89337f5). Refused, never guessed; tags inside a
+  # line (strings, comments, regexes) are fine.
+  defp no_tag_lines(text, path) do
+    if Regex.match?(~r/^[ \t]*<\/?(?:edit|create|replace|first|last)\b/m, text),
+      do:
+        {:error,
+         "#{path}: the new text has lines that start with edit tags (<edit>, </replace>, ...), " <>
+           "so the host cannot tell where the block ends; keep those lines out of this edit's range"},
+      else: :ok
+  end
 
   # Seen live (Bolt, 2026-11-05): an <edit> holding only the new code, without
   # its quotes or <replace>. Said plainly; the loop adds the named lines.
