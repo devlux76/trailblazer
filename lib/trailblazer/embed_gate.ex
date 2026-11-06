@@ -15,8 +15,10 @@ defmodule Trailblazer.EmbedGate do
   behind every document already sent to it (measured: 194 s behind a batch of
   16). So a query is marked with `query/2` while it runs, and document work
   calls `clear/1` before each request: it waits while any query is running.
-  With requests kept small (`Trailblazer.Embed`), a query waits for at most
-  one request already on the embedder.
+  A query waits for at most the one request already on the embedder: a batch
+  of up to 16 definitions of at most 2,400 characters (about 25 s at worst on
+  the RX460). A steady stream of overlapping queries holds document work back
+  for as long as it lasts; that is the rule, not a fault.
 
   The history backfill registers as an owner at `idle_priority/0` (-1), below
   every indexer (theirs start at 0): it gets the gate only when no indexer
@@ -131,7 +133,7 @@ defmodule Trailblazer.EmbedGate do
 
   def handle_call(:query_begin, {pid, _}, s) do
     ref = Process.monitor(pid)
-    {:reply, ref, %{s | queries: Map.put(s.queries, ref, pid)}}
+    {:reply, ref, Map.put(s, :queries, Map.put(queries(s), ref, pid))}
   end
 
   def handle_call({:query_end, ref}, _, s) do
@@ -140,9 +142,9 @@ defmodule Trailblazer.EmbedGate do
   end
 
   def handle_call(:clear, from, s) do
-    if map_size(s.queries) == 0,
+    if map_size(queries(s)) == 0,
       do: {:reply, :ok, s},
-      else: {:noreply, %{s | clearing: [from | s.clearing]}}
+      else: {:noreply, Map.put(s, :clearing, [from | Map.get(s, :clearing, [])])}
   end
 
   def handle_call(:release, {job, _}, %{holder: {job, ref}} = s) do
@@ -154,10 +156,13 @@ defmodule Trailblazer.EmbedGate do
   def handle_call({:queued?, job}, _, s), do: {:reply, Map.has_key?(s.waiters, job), s}
 
   @impl true
-  def handle_info({:DOWN, ref, :process, _pid, _}, s) when is_map_key(s.queries, ref),
-    do: {:noreply, end_query(s, ref)}
+  def handle_info({:DOWN, ref, :process, pid, _} = down, s) do
+    if is_map_key(queries(s), ref),
+      do: {:noreply, end_query(s, ref)},
+      else: owner_down(down, s, pid, ref)
+  end
 
-  def handle_info({:DOWN, ref, :process, pid, _}, s) do
+  defp owner_down({:DOWN, ref, :process, pid, _}, s, pid, ref) do
     s =
       case s.repos[pid] do
         %{ref: ^ref} ->
@@ -180,15 +185,18 @@ defmodule Trailblazer.EmbedGate do
   end
 
   defp end_query(s, ref) do
-    s = %{s | queries: Map.delete(s.queries, ref)}
+    s = Map.put(s, :queries, Map.delete(queries(s), ref))
 
     if map_size(s.queries) == 0 do
-      for from <- Enum.reverse(s.clearing), do: GenServer.reply(from, :ok)
-      %{s | clearing: []}
+      for from <- Enum.reverse(Map.get(s, :clearing, [])), do: GenServer.reply(from, :ok)
+      Map.put(s, :clearing, [])
     else
       s
     end
   end
+
+  # State from before queries existed (a hot load keeps it): read with defaults.
+  defp queries(s), do: Map.get(s, :queries, %{})
 
   defp grant(%{holder: holder} = s) when not is_nil(holder), do: s
 

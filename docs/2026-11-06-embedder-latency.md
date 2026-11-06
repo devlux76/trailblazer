@@ -22,6 +22,12 @@ any query runs. A query now waits for at most the one request already on the
 embedder. Batch sizes and document limits are unchanged (16 per request, 2,400
 characters per definition): the code embedding mix stays as it was.
 
+Worst case, accepted: the request already on the embedder is a whole batch
+(up to 16 definitions of at most 2,400 characters, about 25 s on the RX460),
+and overlapping queries hold document work back while they last. History
+entries use the same sizes as definitions (2,400 characters, 16 per request),
+so the backfill never sends a longer request than the indexer does.
+
 The history backfill (`Trailblazer.History.ingest/2`) registers at
 `EmbedGate.idle_priority/0`, below every indexer. It takes the gate one batch
 at a time, only when no indexer has work, and queries preempt it between

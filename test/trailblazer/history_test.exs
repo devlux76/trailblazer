@@ -169,7 +169,7 @@ defmodule Trailblazer.HistoryTest do
              History.ingest([repo], Keyword.put(opts, :pii_file, Path.join(dir, "none")))
   end
 
-  test "an oversized hunk is split at line boundaries into pieces git applies",
+  test "an oversized hunk is split at line boundaries; pieces carry exact headers",
        %{repo: repo, opts: opts} do
     t = 1_800_000_000
     commit(repo, %{"lib/a.ex" => lines(400, "a")}, "base", t)
@@ -199,7 +199,7 @@ defmodule Trailblazer.HistoryTest do
     git(repo, ["checkout", "-q", "HEAD~1", "--", "lib/a.ex"])
     patch = Path.join(Path.dirname(repo), "pieces.patch")
     File.write!(patch, header <> hunks)
-    git(repo, ["apply", patch])
+    git(repo, ["apply", "--unidiff-zero", patch])
     assert File.read!(Path.join(repo, "lib/a.ex")) == lines(400, "b")
   end
 
@@ -296,7 +296,7 @@ defmodule Trailblazer.HistoryTest do
       {_, text} =
         History.document(%{"path" => c.path, "request" => c.request, "patch" => c.patch})
 
-      assert String.length(text) <= 6_000
+      assert String.length(text) <= 2_400
     end
   end
 

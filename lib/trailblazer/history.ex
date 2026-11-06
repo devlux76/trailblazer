@@ -49,8 +49,10 @@ defmodule Trailblazer.History do
   require Logger
   alias Trailblazer.{Config, Embed, EmbedGate, Vectors}
 
-  @doc_chars 6_000
-  @request_chars 1_500
+  # The code embedding cycle's sizes (operator, 2026-11-06): one entry is at
+  # most a definition's 2,400 characters (`Embed.node_text/4`), 16 per request.
+  @doc_chars 2_400
+  @request_chars 600
   @batch 16
   @fixup_seconds 24 * 3600
   @skip_dirs ~w(_build deps node_modules dist)
@@ -285,7 +287,8 @@ defmodule Trailblazer.History do
 
   # A file's diff cut at hunk boundaries so request + path + chunk fit the
   # embedder's input; an oversized hunk is split at line boundaries, each
-  # piece with its own correct `@@` header.
+  # piece with its own exact `@@` header (a piece cut inside a run of changes
+  # has no context lines, so it applies only with `git apply --unidiff-zero`).
   defp chunks(repo, home, c, bug, card, path, request, patch) do
     [header | hunks] = String.split(patch, ~r/^(?=@@ )/m)
     budget = @doc_chars - String.length(request) - String.length(path) - 32
@@ -548,12 +551,16 @@ defmodule Trailblazer.History do
 
   defp turn(gate, fun) do
     if gate && GenServer.whereis(gate) do
-      :ok = EmbedGate.acquire(self(), gate)
-
-      try do
-        fun.()
-      after
-        EmbedGate.release(gate)
+      # {:error, :owner_down} if the gate restarted: the ingest stops; the
+      # batches not yet written are embedded on the next run
+      with :ok <- EmbedGate.acquire(self(), gate) do
+        try do
+          fun.()
+        after
+          EmbedGate.release(gate)
+        end
+      else
+        error -> {:halt, error}
       end
     else
       fun.()

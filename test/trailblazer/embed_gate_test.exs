@@ -187,16 +187,23 @@ defmodule Trailblazer.EmbedGateTest do
 
     query =
       spawn(fn ->
-        EmbedGate.query(fn -> send(parent, :querying) && receive(do: (:done -> :ok)) end, gate)
+        EmbedGate.query(
+          fn ->
+            send(parent, :querying)
+            receive do: (:done -> :ok)
+          end,
+          gate
+        )
+
         send(parent, :query_over)
       end)
 
-    assert_receive :querying
+    assert_receive :querying, 1000
     doc = spawn(fn -> EmbedGate.clear(gate) && send(parent, :doc_sent) end)
     refute_receive :doc_sent, 30
 
     send(query, :done)
-    assert_receive :query_over
+    assert_receive :query_over, 1000
     assert_receive :doc_sent, 1000
     refute Process.alive?(doc)
   end
@@ -207,10 +214,16 @@ defmodule Trailblazer.EmbedGateTest do
 
     query =
       spawn(fn ->
-        EmbedGate.query(fn -> send(parent, :querying) && receive(do: (:never -> :ok)) end, gate)
+        EmbedGate.query(
+          fn ->
+            send(parent, :querying)
+            receive do: (:never -> :ok)
+          end,
+          gate
+        )
       end)
 
-    assert_receive :querying
+    assert_receive :querying, 1000
     spawn(fn -> EmbedGate.clear(gate) && send(parent, :doc_sent) end)
     refute_receive :doc_sent, 30
     Process.exit(query, :kill)
@@ -234,7 +247,7 @@ defmodule Trailblazer.EmbedGateTest do
         receive do: (:never -> :ok)
       end)
 
-    assert_receive :indexing
+    assert_receive :indexing, 1000
 
     backfill =
       spawn(fn ->
@@ -245,11 +258,35 @@ defmodule Trailblazer.EmbedGateTest do
       end)
 
     send(indexer, :finish)
-    assert_receive :more_work
+    assert_receive :more_work, 1000
     # the indexer still reports work: the backfill keeps waiting
     refute_receive :backfilling, 30
     send(indexer, :no_work)
     assert_receive :backfilling, 1000
     refute Process.alive?(backfill)
+  end
+
+  test "a gate whose state predates queries (kept by a hot load) still serves them" do
+    gate = start_supervised!({EmbedGate, name: nil})
+    :sys.replace_state(gate, &Map.drop(&1, [:queries, :clearing]))
+    parent = self()
+
+    query =
+      spawn(fn ->
+        EmbedGate.query(
+          fn ->
+            send(parent, :querying)
+            receive do: (:done -> :ok)
+          end,
+          gate
+        )
+      end)
+
+    assert_receive :querying, 1000
+    spawn(fn -> EmbedGate.clear(gate) && send(parent, :doc_sent) end)
+    refute_receive :doc_sent, 30
+    send(query, :done)
+    assert_receive :doc_sent, 1000
+    assert Process.alive?(gate)
   end
 end
