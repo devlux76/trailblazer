@@ -44,8 +44,21 @@ defmodule Trailblazer.Indexer.Restore do
   end
 
   def handle_continue(:prune, state) do
-    if Application.get_env(:trailblazer, :prune_vectors_on_start, false) do
-      keep = Enum.map(Store.watched_repos(), & &1.path) ++ [History.root(), Memory.root()]
+    # Only the production store, in its default state directory: a release
+    # started with another TRAILBLAZER_STATE_DIR would judge with its own
+    # registry, and every production collection would look abandoned.
+    prod_store? =
+      Path.expand(Trailblazer.Config.get(:state_dir)) ==
+        Path.join(System.user_home!(), ".local/share/trailblazer")
+
+    if Application.get_env(:trailblazer, :prune_vectors_on_start, false) and prod_store? do
+      # Running indexers too: a repository watched during boot has its
+      # collection before it is recorded as watched.
+      running = Registry.select(Trailblazer.Indexer.Registry, [{{:"$1", :_, :_}, [], [:"$1"]}])
+
+      keep =
+        Enum.map(Store.watched_repos(), & &1.path) ++
+          running ++ [History.root(), Memory.root()]
 
       case Vectors.prune(keep) do
         {:ok, %{dropped: n} = counts} when n > 0 ->
