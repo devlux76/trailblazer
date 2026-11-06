@@ -696,6 +696,12 @@ defmodule Trailblazer.Loop do
       end
 
     case chat(st, messages, tools, role, submit_only) do
+      # Text mode's final call offers no tools, yet the server still lifts
+      # the model's native edit(...) call out of the text (LFM2.5, live).
+      {:ok, %{tool_calls: [_ | _] = calls} = reply}
+      when tools == nil and st.task.edit_mode == :text ->
+        lifted_edits(st, reply, calls)
+
       {:ok, %{tool_calls: [_ | _] = calls} = reply} when tools != nil ->
         submissions =
           if st.task.edit_mode == :text,
@@ -763,6 +769,16 @@ defmodule Trailblazer.Loop do
 
       other ->
         other
+    end
+  end
+
+  defp lifted_edits(st, reply, calls) do
+    with true <- Enum.all?(calls, &(&1.name in Tools.edit_tools())),
+         {:ok, [_ | _] = blocks} <- Tools.native_call_blocks(Enum.map(calls, & &1.arguments)) do
+      record(st, :edit, %{status: :native_tool_calls, calls: length(calls)})
+      {:ok, Map.put(reply, :edit_blocks, blocks)}
+    else
+      _ -> {:ok, reply}
     end
   end
 

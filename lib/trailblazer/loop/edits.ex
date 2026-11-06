@@ -949,7 +949,25 @@ defmodule Trailblazer.Loop.Edits do
   # lstat so that a link whose target is missing counts as there: such a link
   # cannot be resolved and is refused (Codex's review of L2). Anything that
   # cannot be resolved is refused, never assumed inside.
+  # A model that invents a root (/workspace/src/a.ts) means the repository
+  # file at the longest tail of that path that exists; that tail is then
+  # checked like any relative path (the read tool does the same).
   defp contained(worktree, path) do
+    case Path.type(path) do
+      :relative -> contained_relative(worktree, path)
+      _ -> contained_relative(worktree, invented_tail(worktree, path) || path)
+    end
+  end
+
+  defp invented_tail(worktree, path) do
+    parts = path |> Path.split() |> Enum.reject(&(&1 in ["/", ".", ".."]))
+
+    0..max(length(parts) - 1, 0)//1
+    |> Enum.map(&(parts |> Enum.drop(&1) |> Path.join()))
+    |> Enum.find(&(&1 != "" and File.regular?(Path.join(worktree, &1))))
+  end
+
+  defp contained_relative(worktree, path) do
     with true <- Path.type(path) == :relative,
          {:ok, root} <- worktree |> Path.expand() |> real(),
          full = Path.expand(path, root),

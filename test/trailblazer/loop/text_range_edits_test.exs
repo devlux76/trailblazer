@@ -189,6 +189,26 @@ defmodule Trailblazer.Loop.TextRangeEditsTest do
       assert {:error, _} = Tools.native_call_blocks(["not json"])
     end
 
+    test "an invented root (/workspace/...) edits the repository file at its tail", %{dir: dir} do
+      write(dir, "lib/a.ex", "one\ntwo\n")
+
+      {:ok, [block]} =
+        Tools.native_call_blocks([
+          ~s({"path": "/workspace/lib/a.ex", "start": 2, "end": 2, "replace": "TWO"})
+        ])
+
+      assert {:ok, _} = Edits.apply(dir, [block])
+      assert read(dir, "lib/a.ex") == "one\nTWO\n"
+
+      # no such tail: still refused, nothing written outside
+      {:ok, [out]} =
+        Tools.native_call_blocks([
+          ~s({"path": "/etc/passwd", "start": 1, "end": 1, "replace": "x"})
+        ])
+
+      assert {:error, _} = Edits.apply(dir, [out])
+    end
+
     test "tags are text mode only; JSON stays accepted there without a digest" do
       reply =
         ~s(<edit path="a" start="1" end="1"><first>a</first><last>a</last><replace>b\n</replace></edit>)
