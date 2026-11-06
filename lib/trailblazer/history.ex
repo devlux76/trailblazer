@@ -336,7 +336,8 @@ defmodule Trailblazer.History do
       |> Enum.chunk_while(
         [],
         fn line, acc ->
-          if acc != [] and
+          # a "\ No newline" marker stays with the line it qualifies
+          if acc != [] and not String.starts_with?(line, "\\") and
                String.length(Enum.join(Enum.reverse([line | acc]))) > budget - @head_room,
              do: {:cont, Enum.reverse(acc), [line]},
              else: {:cont, [line | acc]}
