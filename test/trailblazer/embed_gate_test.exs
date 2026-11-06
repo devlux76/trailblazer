@@ -179,4 +179,77 @@ defmodule Trailblazer.EmbedGateTest do
     assert :ok = EmbedGate.hold(gate, 200)
     :ok = EmbedGate.release(gate)
   end
+
+  test "document requests wait while a query runs, and go on when it ends" do
+    gate = start_supervised!({EmbedGate, name: nil})
+    parent = self()
+    assert :ok = EmbedGate.clear(gate)
+
+    query =
+      spawn(fn ->
+        EmbedGate.query(fn -> send(parent, :querying) && receive(do: (:done -> :ok)) end, gate)
+        send(parent, :query_over)
+      end)
+
+    assert_receive :querying
+    doc = spawn(fn -> EmbedGate.clear(gate) && send(parent, :doc_sent) end)
+    refute_receive :doc_sent, 30
+
+    send(query, :done)
+    assert_receive :query_over
+    assert_receive :doc_sent, 1000
+    refute Process.alive?(doc)
+  end
+
+  test "a query whose process dies no longer holds documents back" do
+    gate = start_supervised!({EmbedGate, name: nil})
+    parent = self()
+
+    query =
+      spawn(fn ->
+        EmbedGate.query(fn -> send(parent, :querying) && receive(do: (:never -> :ok)) end, gate)
+      end)
+
+    assert_receive :querying
+    spawn(fn -> EmbedGate.clear(gate) && send(parent, :doc_sent) end)
+    refute_receive :doc_sent, 30
+    Process.exit(query, :kill)
+    assert_receive :doc_sent, 1000
+  end
+
+  test "the idle tier gets the gate only when no indexer has work" do
+    gate = start_supervised!({EmbedGate, name: nil})
+    parent = self()
+
+    indexer =
+      spawn(fn ->
+        :ok = EmbedGate.update(0, true, gate)
+        :ok = EmbedGate.acquire(self(), gate)
+        send(parent, :indexing)
+        receive do: (:finish -> :ok)
+        :ok = EmbedGate.release(gate)
+        :ok = EmbedGate.update(0, true, gate)
+        send(parent, :more_work)
+        receive do: (:no_work -> EmbedGate.update(0, false, gate))
+        receive do: (:never -> :ok)
+      end)
+
+    assert_receive :indexing
+
+    backfill =
+      spawn(fn ->
+        :ok = EmbedGate.update(EmbedGate.idle_priority(), true, gate)
+        :ok = EmbedGate.acquire(self(), gate)
+        send(parent, :backfilling)
+        EmbedGate.release(gate)
+      end)
+
+    send(indexer, :finish)
+    assert_receive :more_work
+    # the indexer still reports work: the backfill keeps waiting
+    refute_receive :backfilling, 30
+    send(indexer, :no_work)
+    assert_receive :backfilling, 1000
+    refute Process.alive?(backfill)
+  end
 end

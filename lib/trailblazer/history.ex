@@ -47,7 +47,7 @@ defmodule Trailblazer.History do
   """
 
   require Logger
-  alias Trailblazer.{Config, Embed, Vectors}
+  alias Trailblazer.{Config, Embed, EmbedGate, Vectors}
 
   @doc_chars 6_000
   @request_chars 1_500
@@ -517,24 +517,63 @@ defmodule Trailblazer.History do
     end
   end
 
+  # Background work: the corpus registers at the gate below every indexer and
+  # takes it one small batch at a time, so live indexing goes first and
+  # queries (trails, memory recall) preempt it between requests.
   defp embed_new(new, opts) do
-    new
-    |> Enum.chunk_every(@batch)
-    |> Enum.reduce_while(:ok, fn batch, :ok ->
-      docs = Enum.map(batch, &document/1)
+    gate = Keyword.get(opts, :gate, EmbedGate)
 
-      with {:ok, vectors} <- embed(opts).documents(docs, opts),
-           points =
-             Enum.zip_with(batch, vectors, fn e, v ->
-               %{id: e["point"], vector: v, payload: %{id: e["id"], repo: e["repo"]}}
-             end),
-           :ok <- vectors(opts).put(root(), points, opts) do
-        File.write!(file(), Enum.map(batch, &(Jason.encode!(&1) <> "\n")), [:append])
-        {:cont, :ok}
-      else
-        error -> {:halt, error}
-      end
+    idle(gate, fn ->
+      new
+      |> Enum.chunk_every(@batch)
+      |> Enum.reduce_while(:ok, fn batch, :ok ->
+        turn(gate, fn -> embed_batch(batch, opts) end)
+      end)
     end)
+  end
+
+  defp idle(gate, fun) do
+    if gate && GenServer.whereis(gate) do
+      :ok = EmbedGate.update(EmbedGate.idle_priority(), true, gate)
+
+      try do
+        fun.()
+      after
+        EmbedGate.update(EmbedGate.idle_priority(), false, gate)
+      end
+    else
+      fun.()
+    end
+  end
+
+  defp turn(gate, fun) do
+    if gate && GenServer.whereis(gate) do
+      :ok = EmbedGate.acquire(self(), gate)
+
+      try do
+        fun.()
+      after
+        EmbedGate.release(gate)
+      end
+    else
+      fun.()
+    end
+  end
+
+  defp embed_batch(batch, opts) do
+    docs = Enum.map(batch, &document/1)
+
+    with {:ok, vectors} <- embed(opts).documents(docs, opts),
+         points =
+           Enum.zip_with(batch, vectors, fn e, v ->
+             %{id: e["point"], vector: v, payload: %{id: e["id"], repo: e["repo"]}}
+           end),
+         :ok <- vectors(opts).put(root(), points, opts) do
+      File.write!(file(), Enum.map(batch, &(Jason.encode!(&1) <> "\n")), [:append])
+      {:cont, :ok}
+    else
+      error -> {:halt, error}
+    end
   end
 
   @doc "The text embedded for an entry: `{path, request + patch}`, at most #{@doc_chars} characters."

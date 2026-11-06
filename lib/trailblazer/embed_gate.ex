@@ -9,6 +9,18 @@ defmodule Trailblazer.EmbedGate do
   embedding (the code model, design §7.2): it waits for the running batch to
   finish, goes ahead of every indexer, and keeps the gate until `release/1`
   or until the holder exits.
+
+  Queries come first of all (operator, 2026-11-06: trails and memory recall
+  rest on them). The embedder has no priority of its own: a query queues
+  behind every document already sent to it (measured: 194 s behind a batch of
+  16). So a query is marked with `query/2` while it runs, and document work
+  calls `clear/1` before each request: it waits while any query is running.
+  With requests kept small (`Trailblazer.Embed`), a query waits for at most
+  one request already on the embedder.
+
+  The history backfill registers as an owner at `idle_priority/0` (-1), below
+  every indexer (theirs start at 0): it gets the gate only when no indexer
+  has work.
   """
   use GenServer
 
@@ -39,8 +51,39 @@ defmodule Trailblazer.EmbedGate do
   def release(server \\ __MODULE__), do: GenServer.call(server, :release, :infinity)
   def queued?(job, server \\ __MODULE__), do: GenServer.call(server, {:queued?, job}, :infinity)
 
+  @doc "Runs `fun` as a query: document requests wait until it returns."
+  def query(fun, server \\ __MODULE__) do
+    case GenServer.whereis(server) do
+      nil ->
+        fun.()
+
+      _ ->
+        ref = GenServer.call(server, :query_begin, :infinity)
+
+        try do
+          fun.()
+        after
+          GenServer.call(server, {:query_end, ref}, :infinity)
+        end
+    end
+  end
+
+  @doc "Returns once no query is running (at once without a gate)."
+  def clear(server \\ __MODULE__) do
+    case GenServer.whereis(server) do
+      nil -> :ok
+      _ -> GenServer.call(server, :clear, :infinity)
+    end
+  end
+
+  @doc "The lowest owner priority: below every indexer."
+  def idle_priority, do: -1
+
   @impl true
-  def init(_), do: {:ok, %{repos: %{}, waiters: %{}, holds: [], holder: nil, next: 0}}
+  def init(_) do
+    {:ok,
+     %{repos: %{}, waiters: %{}, holds: [], holder: nil, next: 0, queries: %{}, clearing: []}}
+  end
 
   @impl true
   def handle_call({:update, priority, pending?}, {owner, _}, s) do
@@ -86,6 +129,22 @@ defmodule Trailblazer.EmbedGate do
     {:reply, :ok, grant(%{s | holds: holds})}
   end
 
+  def handle_call(:query_begin, {pid, _}, s) do
+    ref = Process.monitor(pid)
+    {:reply, ref, %{s | queries: Map.put(s.queries, ref, pid)}}
+  end
+
+  def handle_call({:query_end, ref}, _, s) do
+    Process.demonitor(ref, [:flush])
+    {:reply, :ok, end_query(s, ref)}
+  end
+
+  def handle_call(:clear, from, s) do
+    if map_size(s.queries) == 0,
+      do: {:reply, :ok, s},
+      else: {:noreply, %{s | clearing: [from | s.clearing]}}
+  end
+
   def handle_call(:release, {job, _}, %{holder: {job, ref}} = s) do
     Process.demonitor(ref, [:flush])
     {:reply, :ok, grant(%{s | holder: nil})}
@@ -95,6 +154,9 @@ defmodule Trailblazer.EmbedGate do
   def handle_call({:queued?, job}, _, s), do: {:reply, Map.has_key?(s.waiters, job), s}
 
   @impl true
+  def handle_info({:DOWN, ref, :process, _pid, _}, s) when is_map_key(s.queries, ref),
+    do: {:noreply, end_query(s, ref)}
+
   def handle_info({:DOWN, ref, :process, pid, _}, s) do
     s =
       case s.repos[pid] do
@@ -115,6 +177,17 @@ defmodule Trailblazer.EmbedGate do
     s = if s.holder == {pid, ref}, do: %{s | holder: nil}, else: s
     holds = Enum.reject(s.holds, &(&1.ref == ref))
     {:noreply, grant(%{s | waiters: Map.delete(s.waiters, pid), holds: holds})}
+  end
+
+  defp end_query(s, ref) do
+    s = %{s | queries: Map.delete(s.queries, ref)}
+
+    if map_size(s.queries) == 0 do
+      for from <- Enum.reverse(s.clearing), do: GenServer.reply(from, :ok)
+      %{s | clearing: []}
+    else
+      s
+    end
   end
 
   defp grant(%{holder: holder} = s) when not is_nil(holder), do: s

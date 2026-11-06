@@ -19,6 +19,12 @@ defmodule Trailblazer.Embed do
   has. Queries go to the first one.
   With a single embedder the chunks are the batches of 16, sent in turn.
 
+  Queries come first (`Trailblazer.EmbedGate`): a query runs inside
+  `EmbedGate.query/2`, and every document request first waits on
+  `EmbedGate.clear/1`. The embedder serves requests in arrival order, so a
+  query waits for at most the request already on it. `opts[:gate]` names the
+  gate (false: none).
+
   `opts[:req_options]` is merged into every request (tests pass a `Req.Test`
   plug); `opts[:dims]` is the width expected (768).
   """
@@ -164,12 +170,22 @@ defmodule Trailblazer.Embed do
   end
 
   @doc false
-  def chunk(inputs, url, opts), do: embed(inputs, url, opts)
+  def chunk(inputs, url, opts), do: document_request(inputs, url, opts)
+
+  # A document request waits while any query runs: queries come first.
+  defp document_request(inputs, url, opts) do
+    case Keyword.get(opts, :gate, Trailblazer.EmbedGate) do
+      false -> :ok
+      gate -> Trailblazer.EmbedGate.clear(gate)
+    end
+
+    embed(inputs, url, opts)
+  end
 
   defp in_turn(chunks, url, opts) do
     chunks
     |> Enum.reduce_while({:ok, []}, fn chunk, {:ok, done} ->
-      case embed(chunk, url, opts) do
+      case document_request(chunk, url, opts) do
         {:ok, vectors} -> {:cont, {:ok, [vectors | done]}}
         {:error, _} = error -> {:halt, error}
       end
@@ -185,10 +201,15 @@ defmodule Trailblazer.Embed do
 
   @spec query(String.t(), keyword()) :: {:ok, [float()]} | {:error, term()}
   def query(text, opts \\ []) do
-    with {:ok, [vector]} <-
-           embed(["task: code retrieval | query: #{text}"], hd(urls(opts)), opts) do
-      {:ok, vector}
-    end
+    run = fn -> embed(["task: code retrieval | query: #{text}"], hd(urls(opts)), opts) end
+
+    result =
+      case Keyword.get(opts, :gate, Trailblazer.EmbedGate) do
+        false -> run.()
+        gate -> Trailblazer.EmbedGate.query(run, gate)
+      end
+
+    with {:ok, [vector]} <- result, do: {:ok, vector}
   end
 
   @doc """
