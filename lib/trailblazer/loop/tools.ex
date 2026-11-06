@@ -354,6 +354,7 @@ defmodule Trailblazer.Loop.Tools do
   # An <edit ...> or <create ...> opening tag at the start of a line (a tag
   # mentioned inside a sentence is not one).
   @native_open "<|tool_call_start|>"
+  @argkey_call ~r/<tool_call>\s*(?:edit|submit_edits)\s*<arg_key>/
   @tag_open ~r/^[ \t]*<(edit|create)\b([^>\n]*)>/m
 
   @doc """
@@ -370,6 +371,9 @@ defmodule Trailblazer.Loop.Tools do
     cond do
       text_mode? and not Regex.match?(@tag_open, text) and String.contains?(text, @native_open) ->
         native_edit_blocks(text)
+
+      text_mode? and not Regex.match?(@tag_open, text) and Regex.match?(@argkey_call, text) ->
+        argkey_edit_blocks(text)
 
       true ->
         tag_or_json_blocks(text, opts, text_mode?)
@@ -630,6 +634,27 @@ defmodule Trailblazer.Loop.Tools do
 
   defp stringify_numbers(map),
     do: Map.new(map, fn {k, v} -> {k, if(is_integer(v), do: Integer.to_string(v), else: v)} end)
+
+  # Spark-family native calls (lucet-coder, live 2026-11-06), raw values:
+  #   <tool_call>edit<arg_key>path</arg_key><arg_value>a.ts</arg_value>...</tool_call>
+  @doc false
+  def argkey_edit_blocks(text) do
+    ~r/<tool_call>\s*(?:edit|submit_edits)\s*(.*?)<\/tool_call>/s
+    |> Regex.scan(text, capture: :all_but_first)
+    |> Enum.map(fn [inner] ->
+      ~r/<arg_key>(.*?)<\/arg_key>\s*<arg_value>(.*?)<\/arg_value>/s
+      |> Regex.scan(inner, capture: :all_but_first)
+      |> Map.new(fn [k, v] -> {String.trim(k), v} end)
+    end)
+    |> case do
+      [] ->
+        {:error,
+         "a <tool_call> edit was not closed with </tool_call>; write <edit> blocks in plain text"}
+
+      calls ->
+        native_call_blocks(calls)
+    end
+  end
 
   defp native_calls(inner) do
     case :binary.match(inner, "edit(") do

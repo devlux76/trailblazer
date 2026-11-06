@@ -693,10 +693,23 @@ defmodule Trailblazer.Loop.Edits do
     end)
   end
 
+  # A quote that is not the file's text at its line but IS part of the
+  # block's own replacement is the new code put in the quote tag (both
+  # LFM2.5-24B and lucet did this live, 2026-11-06): dropped, then filled.
   defp fill_anchor(block, key, lines, n) do
-    if is_binary(Map.get(block, key)),
-      do: block,
-      else: Map.put(block, key, line_at(lines, n))
+    quoted = Map.get(block, key)
+
+    cond do
+      not is_binary(quoted) ->
+        Map.put(block, key, line_at(lines, n))
+
+      quoted != "" and not quoted_at?(lines, quoted, key, n) and
+          String.contains?(block.replace || "", String.trim(quoted)) ->
+        Map.merge(block, %{key => line_at(lines, n), quote_was_new_code: true})
+
+      true ->
+        block
+    end
   end
 
   defp validate_ranges(blocks, len, _text) do

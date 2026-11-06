@@ -209,6 +209,56 @@ defmodule Trailblazer.Loop.TextRangeEditsTest do
       assert {:error, _} = Edits.apply(dir, [out])
     end
 
+    test "live lucet: <tool_call>edit<arg_key>... is a range block", %{dir: dir} do
+      write(dir, "lib/c.ts", "import a from 'a'\nimport b from 'b'\n\nx()\n")
+
+      reply = """
+      <tool_call>edit<arg_key>path</arg_key><arg_value>lib/c.ts</arg_value><arg_key>start</arg_key><arg_value>1</arg_value><arg_key>end</arg_key><arg_value>2</arg_value><arg_key>replace</arg_key><arg_value>import a from 'a'
+      import b from 'b'
+      import { m } from 'm'</arg_value></tool_call>
+      """
+
+      assert {:ok, [block]} = text(reply)
+      assert {:ok, _} = Edits.apply(dir, [block])
+
+      assert read(dir, "lib/c.ts") ==
+               "import a from 'a'\nimport b from 'b'\nimport { m } from 'm'\n\nx()\n"
+    end
+
+    test "live: new code in <last> (not the file, part of replace) is dropped and filled", %{
+      dir: dir
+    } do
+      write(dir, "lib/c.ts", "for (a of b) {\n  if (old) return\n}\n")
+
+      reply = """
+      <edit path="lib/c.ts" start="2" end="2">
+      <first>  if (old) return</first>
+      <last>  if (bad) return
+        try { x() } catch { return }</last>
+      <replace>
+        if (bad) return
+        try { x() } catch { return }
+      </replace>
+      </edit>
+      """
+
+      assert {:ok, blocks} = text(reply)
+      assert {:ok, _} = Edits.apply(dir, blocks)
+
+      assert read(dir, "lib/c.ts") ==
+               "for (a of b) {\n  if (bad) return\n  try { x() } catch { return }\n}\n"
+
+      # a wrong quote that is NOT in the replacement still refuses
+      write(dir, "lib/c.ts", "one\ntwo\n")
+
+      {:ok, bad} =
+        text(
+          ~s(<edit path="lib/c.ts" start="2" end="2"><first>two</first><last>zwei</last><replace>\nTWO\n</replace></edit>)
+        )
+
+      assert {:error, [%{reason: :anchor_mismatch}]} = Edits.apply(dir, bad)
+    end
+
     test "tags are text mode only; JSON stays accepted there without a digest" do
       reply =
         ~s(<edit path="a" start="1" end="1"><first>a</first><last>a</last><replace>b\n</replace></edit>)
