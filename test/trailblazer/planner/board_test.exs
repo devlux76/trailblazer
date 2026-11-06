@@ -346,6 +346,18 @@ defmodule Trailblazer.Planner.BoardTest do
              Board.assign(config(ctx, %{}), info,
                run: fn _ -> %{status: :fail, exit: 1, output_tail: "already owned"} end
              )
+
+    # the card's Files: go along, one --file each, in order
+    filed = %{info | context: %{"files" => ["lib/parser.ex", "test/parser_test.exs"]}}
+    assert :ok = Board.assign(config(ctx, %{}), filed, run: run)
+    assert_receive {:assign_args, filed_args}
+
+    assert Enum.take(filed_args, -4) == [
+             "--file",
+             "lib/parser.ex",
+             "--file",
+             "test/parser_test.exs"
+           ]
   end
 
   describe "load_config!/1" do

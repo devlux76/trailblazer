@@ -212,12 +212,16 @@ defmodule Trailblazer.Planner.Board do
 
   @doc """
   Claims the card for this worker with the existing assignment command:
-  `planner --actor trailblazer assign REF trailblazer --check CHECK`.
+  `planner --actor trailblazer assign REF trailblazer --check CHECK [--file PATH]...`,
+  one `--file` per path on the card's `Files:` line.
   """
-  def assign(config, %{ref: ref, check: check}, opts \\ []) do
+  def assign(config, %{ref: ref, check: check} = card, opts \\ []) do
     run = runner(config, opts)
 
-    args = ["--actor", "trailblazer", "assign", ref, "trailblazer", "--check", check]
+    # The card's `Files:` (Route-parsed) go along, so the coder gets their
+    # source in its prompt instead of spending its window reading them.
+    files = Enum.flat_map(card_files(card), &["--file", &1])
+    args = ["--actor", "trailblazer", "assign", ref, "trailblazer", "--check", check] ++ files
 
     case run.(args) do
       %{status: :pass} -> :ok
@@ -338,6 +342,11 @@ defmodule Trailblazer.Planner.Board do
 
   # A parsed file list is context data even when empty; only a parse error has
   # nothing on the card to name.
+  defp card_files(%{context: %{"files" => files}}) when is_list(files),
+    do: Enum.filter(files, &is_binary/1)
+
+  defp card_files(_), do: []
+
   defp of_files({:ok, files}) when is_list(files), do: files
   defp of_files(_), do: []
 
