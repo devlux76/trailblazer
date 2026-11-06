@@ -1026,7 +1026,8 @@ defmodule Trailblazer.Loop do
         record(st, :edit, %{status: :unparsed, error: message})
 
         {:retry, :unparsed,
-         "Your edits could not be read: #{message}. Submit them #{submit_how(st)}."}
+         "Your edits could not be read: #{message}. Submit them #{submit_how(st)}." <>
+           named_lines(st, reply.content)}
 
       :none ->
         record(st, :edit, %{status: :no_blocks})
@@ -1045,6 +1046,62 @@ defmodule Trailblazer.Loop do
 
       :none ->
         legacy_blocks(st, reply)
+    end
+  end
+
+  # For an unreadable text-mode reply: the lines each of its <edit> tags
+  # names, as they are now, and that block filled in with them. A 4B model
+  # copies a concrete shape far better than it follows a rule (live, Bolt,
+  # 2026-11-05: two attempts of bare code inside <edit>).
+  @named_edit ~r/^[ \t]*<edit\b[^>\n]*\bpath="([^"]+)"[^>\n]*>/m
+  @named_cap 40
+
+  defp named_lines(st, content) do
+    @named_edit
+    |> Regex.scan(content)
+    |> Enum.map(fn [tag, path] ->
+      {path, tag_number(tag, "start"), tag_number(tag, "end")}
+    end)
+    |> Enum.uniq()
+    |> Enum.take(3)
+    |> Enum.map_join("", fn
+      {path, s, e} when is_integer(s) and is_integer(e) and s >= 1 and e >= s ->
+        case Files.read(st.ws.path, path) do
+          {:ok, text} ->
+            lines = text |> String.split(~r/\r?\n/) |> Enum.with_index(1)
+
+            shown =
+              Enum.filter(lines, fn {_, n} -> n >= s and n <= min(e, s + @named_cap - 1) end)
+
+            line = fn n -> lines |> Enum.find({"", n}, &(elem(&1, 1) == n)) |> elem(0) end
+
+            if shown == [],
+              do: "",
+              else:
+                "\n\n#{path} lines #{s}-#{e} are now:\n" <>
+                  Enum.map_join(shown, "\n", fn {l, n} -> "#{n}| #{l}" end) <>
+                  "\nWritten as a block (keep start/end only if these are the lines to replace):\n" <>
+                  "<edit path=\"#{path}\" start=\"#{s}\" end=\"#{e}\">\n" <>
+                  "<first>" <>
+                  line.(s) <>
+                  "</first>\n<last>" <>
+                  line.(e) <>
+                  "</last>\n<replace>\n" <>
+                  "the new lines\n</replace>\n</edit>"
+
+          _ ->
+            ""
+        end
+
+      _ ->
+        ""
+    end)
+  end
+
+  defp tag_number(tag, key) do
+    case Regex.run(~r/\b#{key}="(\d+)"/, tag, capture: :all_but_first) do
+      [n] -> String.to_integer(n)
+      _ -> nil
     end
   end
 
@@ -1978,7 +2035,10 @@ defmodule Trailblazer.Loop do
   # What the model said before its first block, in a few lines.
   defp explanation(content) do
     content
-    # the fence is optional, as in `Edits`: live T3 wrote `path` then SEARCH
+    # text mode's first <edit>/<create> tag, then a SEARCH block (the fence is
+    # optional, as in `Edits`: live T3 wrote `path` then SEARCH)
+    |> String.split(~r/^[ \t]*<(?:edit|create)\b/m, parts: 2)
+    |> hd()
     |> String.split(~r/^[^\n]*\n(?:```[^\n]*\n)?<{5,9} SEARCH/m, parts: 2)
     |> hd()
     |> String.split("\n")

@@ -66,7 +66,7 @@ defmodule Trailblazer.Loop.TextRangeEditsTest do
 
     test "malformed tags are refused with the exact problem" do
       assert {:error, msg} = text(~s(<edit path="a" start="1" end="1">\n<first>x</first>))
-      assert msg =~ "no complete"
+      assert msg =~ "not closed"
 
       assert {:error, msg} =
                text(
@@ -118,6 +118,51 @@ defmodule Trailblazer.Loop.TextRangeEditsTest do
 
       assert {:ok, [b]} = text(reply)
       assert b.replace == "@re ~r/<edit>(.*?)</edit>/ </edit> x\n<replace>foo</replace>\n"
+    end
+
+    test "a replacement holding a whole example block on its own lines keeps all of it" do
+      example =
+        "<edit path=\"lib/a.ex\" start=\"1\" end=\"1\">\n<first>x</first>\n<last>x</last>\n<replace>\nnew\n</replace>\n</edit>\n"
+
+      reply =
+        "<edit path=\"priv/p.md\" start=\"3\" end=\"4\">\n<first>old</first>\n<last>old2</last>\n<replace>\nThe format:\n\n" <>
+          example <> "\nEnd of prompt.\n</replace>\n</edit>\n"
+
+      assert {:ok, [b]} = text(reply)
+      assert b.path == "priv/p.md"
+      assert b.replace == "The format:\n\n" <> example <> "\nEnd of prompt.\n"
+    end
+
+    test "comment lines ending in closing tags stay inside the replacement" do
+      reply =
+        "<edit path=\"lib/t.ex\" start=\"1\" end=\"2\">\n<first>a</first>\n<last>b</last>\n<replace>\n  #     </replace>\n  #     </edit>\n  real_code()\n</replace>\n</edit>\n"
+
+      assert {:ok, [b]} = text(reply)
+      assert b.replace == "  #     </replace>\n  #     </edit>\n  real_code()\n"
+    end
+
+    test "two blocks stay two blocks" do
+      block = fn n ->
+        "<edit path=\"a\" start=\"#{n}\" end=\"#{n}\">\n<first>l#{n}</first>\n<last>l#{n}</last>\n<replace>\nL#{n}\n</replace>\n</edit>\n"
+      end
+
+      assert {:ok, [a, b]} = text(block.(1) <> "\n" <> block.(5))
+      assert {a.start, a.replace, b.start, b.replace} == {1, "L1\n", 5, "L5\n"}
+    end
+
+    test "a <replace> left open runs to the end of its block (seen live)" do
+      reply =
+        "<edit path=\"lib/s.ex\" start=\"14\" end=\"16\">\n<first>  @doc \"x\"</first>\n<last>end</last>\n<replace>\n  @doc \"x\"\n  def peek(s), do: s\nend\n</edit>\n"
+
+      assert {:ok, [b]} = text(reply)
+      assert b.replace == "  @doc \"x\"\n  def peek(s), do: s\nend\n"
+    end
+
+    test "an edit holding only bare code is refused with what it lacks" do
+      reply = "<edit path=\"lib/s.ex\" start=\"14\" end=\"16\">\ndef peek(s), do: s\n</edit>\n"
+      assert {:error, msg} = text(reply)
+      assert msg =~ "lib/s.ex lines 14-16: the <edit> holds only code"
+      assert msg =~ "<first> (exact text of line 14)"
     end
 
     test "a new file holding </create> mid-line keeps all of it" do

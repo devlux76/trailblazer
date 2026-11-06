@@ -1606,6 +1606,27 @@ defmodule Trailblazer.LoopTest do
     assert report.attempts == 2
   end
 
+  test "a bare-code <edit> is answered with the named lines and the block to fill", %{
+    repo: repo,
+    opts: opts
+  } do
+    bare =
+      ~s[<edit path="lib/greeting.ex" start="2" end="2">\n  def hello(name), do: "Hello, " <> name\n</edit>\n]
+
+    fixed = fn messages, _ ->
+      feedback = Enum.at(messages, 1).content
+      assert feedback =~ "holds only code"
+      assert feedback =~ ~s(lib/greeting.ex lines 2-2 are now:\n2|   def hello)
+      assert feedback =~ ~s[<first>  def hello(name), do: "Hello " <> name</first>]
+      reply(@fix_tags)
+    end
+
+    script([reply(bare), fixed, reply("PASS")])
+    report = Loop.run(task(repo, %{read_rounds: 0, edit_mode: :text}), opts)
+    assert report.status == :fixed
+    assert report.attempts == 2
+  end
+
   test "restating edits carried from a failed attempt goes on to verification", %{
     repo: repo,
     opts: opts

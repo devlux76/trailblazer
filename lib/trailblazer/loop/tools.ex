@@ -366,15 +366,15 @@ defmodule Trailblazer.Loop.Tools do
   def text_edit_blocks(text, opts \\ []) when is_binary(text) do
     if Keyword.get(opts, :mode) == :text and Regex.match?(@tag_open, text) do
       case tag_blocks(text) do
-        # no complete block: a reply that only mentions a tag may carry JSON
-        {:error, :none, message} ->
+        {:ok, _} = ok ->
+          ok
+
+        # a reply that only mentions a tag may still carry JSON
+        {:error, message} ->
           case json_edit_blocks(text, opts) do
             {:ok, _} = ok -> ok
             _ -> {:error, message}
           end
-
-        other ->
-          other
       end
     else
       json_edit_blocks(text, opts)
@@ -399,46 +399,66 @@ defmodule Trailblazer.Loop.Tools do
   #     </create>
 
   # Code may itself contain these tags (an HTML file, a prompt, this module),
-  # so the structure is read by position, never by the first closing tag:
-  # an opening tag starts a line; a block ends at its closing tag at the end
-  # of a line; first/last are one line each; replace runs to the LAST
-  # </replace> in its block. The model's bytes are kept as written (a CRLF
-  # file's replacement may carry its CRs).
+  # so the structure is read by position and checked as a whole: an opening
+  # tag starts a line; a block ends at one of its closing tags that end a
+  # line, the first one after which the rest of the reply also reads cleanly
+  # (more blocks or plain text, never a stray closing tag, which would mean
+  # the block was cut inside its own code); first/last are one line each;
+  # replace runs to the LAST </replace> in its block. The model's bytes are
+  # kept as written (a CRLF file's replacement may carry its CRs).
   @tag_attr ~r/(\w+)\s*=\s*"([^"]*)"/
+  @tag_stray ~r/<\/(?:edit|create|replace)>[ \t]*\r?$/m
   @tag_unclosed "no complete <edit> or <create> block: end each with </edit> or </create> at the end of a line"
 
-  defp tag_blocks(text), do: scan_tags(text, [])
+  defp tag_blocks(text) do
+    case scan_tags(text) do
+      {:ok, []} -> {:error, @tag_unclosed}
+      other -> other
+    end
+  end
 
-  defp scan_tags(text, acc) do
+  defp scan_tags(text) do
     case Regex.run(@tag_open, text, return: :index, capture: :all) do
-      nil when acc == [] ->
-        {:error, :none, @tag_unclosed}
-
       nil ->
-        {:ok, Enum.reverse(acc)}
+        if Regex.match?(@tag_stray, text),
+          do: {:error, "a closing tag has no opening <edit> or <create>"},
+          else: {:ok, []}
 
-      [{at, len}, kind, attrs] ->
-        kind = binary_part(text, elem(kind, 0), elem(kind, 1))
-        attrs = binary_part(text, elem(attrs, 0), elem(attrs, 1))
+      [{at, len}, {k_at, k_len}, {a_at, a_len}] ->
+        kind = binary_part(text, k_at, k_len)
+        attrs = attrs(binary_part(text, a_at, a_len))
         rest = binary_part(text, at + len, byte_size(text) - at - len)
 
-        case Regex.run(~r/<\/#{kind}>[ \t]*\r?(?=\n|\z)/, rest, return: :index) do
-          nil when acc == [] ->
-            {:error, :none, @tag_unclosed}
+        cond do
+          Regex.match?(@tag_stray, binary_part(text, 0, at)) ->
+            {:error, "a closing tag has no opening <edit> or <create>"}
 
-          nil ->
-            {:error,
-             "an <#{kind}> block is not closed: end it with </#{kind}> at the end of a line"}
+          true ->
+            case Regex.scan(~r/<\/#{kind}>[ \t]*\r?(?=\n|\z)/, rest, return: :index) do
+              [] ->
+                {:error,
+                 "an <#{kind}> block is not closed: end it with </#{kind}> at the end of a line"}
 
-          [{c_at, c_len}] ->
-            body = binary_part(rest, 0, c_at)
-            tail = binary_part(rest, c_at + c_len, byte_size(rest) - c_at - c_len)
-
-            case tag_block(kind, attrs(attrs), body) do
-              {:ok, block} -> scan_tags(tail, [block | acc])
-              {:error, message} -> {:error, message}
+              closings ->
+                close_block(kind, attrs, rest, Enum.map(closings, &hd/1))
             end
         end
+    end
+  end
+
+  defp close_block(kind, attrs, rest, [{c_at, c_len} | later]) do
+    body = binary_part(rest, 0, c_at)
+    tail = binary_part(rest, c_at + c_len, byte_size(rest) - c_at - c_len)
+
+    result =
+      with {:ok, block} <- tag_block(kind, attrs, body),
+           {:ok, blocks} <- scan_tags(tail),
+           do: {:ok, [block | blocks]}
+
+    case result do
+      {:ok, _} -> result
+      _ when later != [] -> close_block(kind, attrs, rest, later)
+      error -> error
     end
   end
 
@@ -451,7 +471,8 @@ defmodule Trailblazer.Loop.Tools do
   defp tag_block("create", _attrs, _body), do: {:error, ~s(<create> needs path="...")}
 
   defp tag_block("edit", %{"path" => path} = attrs, body) when path != "" do
-    with {:ok, start} <- tag_int(attrs, "start", 1),
+    with :ok <- not_bare_code(body, path, attrs),
+         {:ok, start} <- tag_int(attrs, "start", 1),
          {:ok, last} <- tag_int(attrs, "end", 0),
          {:ok, first_text} <- tag_inner(body, "first", path),
          {:ok, last_text} <- tag_inner(body, "last", path),
@@ -473,6 +494,18 @@ defmodule Trailblazer.Loop.Tools do
   defp tag_block("edit", _attrs, _body),
     do: {:error, ~s(<edit> needs path="..." start="N" end="M")}
 
+  # Seen live (Bolt, 2026-11-05): an <edit> holding only the new code, without
+  # its quotes or <replace>. Said plainly; the loop adds the named lines.
+  defp not_bare_code(body, path, attrs) do
+    if Regex.match?(~r/<(?:first|last|replace)>/, body),
+      do: :ok,
+      else:
+        {:error,
+         "#{path} lines #{attrs["start"]}-#{attrs["end"]}: the <edit> holds only code; " <>
+           "it needs <first> (exact text of line #{attrs["start"]}), <last> (exact text of line " <>
+           "#{attrs["end"]}) and the new lines inside <replace>...</replace>"}
+  end
+
   defp tag_int(attrs, key, min) do
     case Integer.parse(Map.get(attrs, key, "")) do
       {n, ""} when n >= min -> {:ok, n}
@@ -489,8 +522,20 @@ defmodule Trailblazer.Loop.Tools do
         else: ~r/<#{tag}>([^\n]*)<\/#{tag}>/
 
     case Regex.run(re, body, capture: :all_but_first) do
-      [inner] -> {:ok, inner}
-      nil -> {:error, "#{path}: <edit> needs <#{tag}>...</#{tag}>"}
+      [inner] ->
+        {:ok, inner}
+
+      # Seen live (Bolt, 2026-11-05): <replace> opened, the block closed by
+      # </edit> with no </replace>. The block's end is already settled, so
+      # the replacement is the rest of the block.
+      nil when tag == "replace" ->
+        case Regex.run(~r/<replace>(.*)\z/s, body, capture: :all_but_first) do
+          [inner] -> {:ok, inner}
+          nil -> {:error, "#{path}: <edit> needs <replace>...</replace>"}
+        end
+
+      nil ->
+        {:error, "#{path}: <edit> needs <#{tag}>...</#{tag}>"}
     end
   end
 
