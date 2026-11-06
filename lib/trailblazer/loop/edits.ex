@@ -430,6 +430,7 @@ defmodule Trailblazer.Loop.Edits do
         with {:ok, text} <- read_full(Path.join(worktree, rel)),
              :ok <- check_digests(blocks, text),
              {:ok, offsets} <- line_offsets(text),
+             blocks = fill_anchors(blocks, text),
              :ok <- validate_ranges(blocks, length(offsets) - 1, text),
              {:ok, blocks} <- check_anchors(blocks, text),
              :ok <- check_spans(blocks, offsets) do
@@ -671,6 +672,31 @@ defmodule Trailblazer.Loop.Edits do
           {:ok, offsets ++ [byte_size(text)]}
         end
     end
+  end
+
+  # A text-mode block missing a quote (no <last>, or the model's native
+  # edit(...) call with none) takes it from the file at its stated line: the
+  # numbers came from the numbered source this attempt showed, and the check
+  # and review still judge the result. Never for a digest block (JSON mode).
+  defp fill_anchors(blocks, text) do
+    lines = source_lines(text)
+
+    Enum.map(blocks, fn
+      %{digest: nil, type: :range, start: s, end: e} = block
+      when is_integer(s) and is_integer(e) ->
+        block
+        |> fill_anchor(:first, lines, s)
+        |> fill_anchor(:last, lines, e)
+
+      block ->
+        block
+    end)
+  end
+
+  defp fill_anchor(block, key, lines, n) do
+    if is_binary(Map.get(block, key)),
+      do: block,
+      else: Map.put(block, key, line_at(lines, n))
   end
 
   defp validate_ranges(blocks, len, _text) do

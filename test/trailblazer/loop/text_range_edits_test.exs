@@ -75,12 +75,101 @@ defmodule Trailblazer.Loop.TextRangeEditsTest do
 
       assert msg =~ ~s(start="N")
 
-      assert {:error, msg} =
+      # a missing <last> is no longer refused: Edits fills it from the file
+      assert {:ok, [%{first: "a", last: nil}]} =
                text(
                  ~s(<edit path="a" start="1" end="1"><first>a</first><replace>\n</replace></edit>)
                )
+    end
 
-      assert msg =~ "<last>"
+    test "live LFM2.5 reply: two lines in <first>, no <last>; the range is replaced", %{dir: dir} do
+      write(
+        dir,
+        "lib/c.ts",
+        "// head\nimport a from 'a'\nimport b from 'b'\n\nexport const x = 1\n"
+      )
+
+      reply = """
+      <edit path="lib/c.ts" start="2" end="4">
+      <first>import a from 'a'
+      import b from 'b'
+      </first>
+      <replace>
+      import a from 'a'
+      import b from 'b'
+      import { m } from 'm'
+      </replace>
+      </edit>
+      """
+
+      assert {:ok, [block]} = text(reply)
+      assert block.first == "import a from 'a'\nimport b from 'b'"
+      assert block.last == nil
+      assert {:ok, ["lib/c.ts"]} = Edits.apply(dir, [block])
+
+      assert read(dir, "lib/c.ts") ==
+               "// head\nimport a from 'a'\nimport b from 'b'\nimport { m } from 'm'\nexport const x = 1\n"
+    end
+
+    test "a quoted <first> that is wrong still refuses, even with <last> missing", %{dir: dir} do
+      write(dir, "lib/a.ex", "one\ntwo\nthree\n")
+
+      {:ok, blocks} =
+        text(
+          ~s(<edit path="lib/a.ex" start="2" end="2"><first>zwei</first><replace>\nTWO\n</replace></edit>)
+        )
+
+      assert {:error, [%{reason: :anchor_mismatch}]} = Edits.apply(dir, blocks)
+      assert read(dir, "lib/a.ex") == "one\ntwo\nthree\n"
+    end
+
+    test "live LFM2.5 native call: edit(...) in <|tool_call_start|> is a range block", %{dir: dir} do
+      write(
+        dir,
+        "lib/c.ts",
+        "import type { P } from '../t.ts'\nimport { C } from './d.ts'\n\nexport {}\n"
+      )
+
+      reply =
+        ~S"""
+        <|tool_call_start|>[edit(path='lib/c.ts', start='1', end='3', replace='import type { P } from \'../t.ts\'\nimport { C } from \'./d.ts\'\nimport { multiaddr } from \'@multiformats/multiaddr\'')]<|tool_call_end|>
+        """
+
+      assert {:ok, [block]} = text(reply)
+      assert {block.start, block.end, block.first, block.last} == {1, 3, nil, nil}
+      assert {:ok, ["lib/c.ts"]} = Edits.apply(dir, [block])
+
+      assert read(dir, "lib/c.ts") ==
+               "import type { P } from '../t.ts'\nimport { C } from './d.ts'\nimport { multiaddr } from '@multiformats/multiaddr'\nexport {}\n"
+    end
+
+    test "native calls: several in one list, double quotes, bare numbers, junk refused" do
+      reply =
+        ~S"""
+        <|tool_call_start|>[edit(path="a", start=2, end=2, replace="x \"q\"\n"), edit(path='b', start='1', end='0', replace='y')]<|tool_call_end|>
+        """
+
+      assert {:ok, [a, b]} = text(reply)
+      assert {a.path, a.start, a.end, a.replace} == {"a", 2, 2, ~S(x "q") <> "\n"}
+      assert {b.path, b.start, b.end, b.replace} == {"b", 1, 0, "y\n"}
+
+      assert {:error, _} =
+               text(~S"""
+               <|tool_call_start|>[read(path='a')]<|tool_call_end|>
+               """)
+
+      assert {:error, _} =
+               text(~S"""
+               <|tool_call_start|>[edit(path='a', start='x', end='1', replace='')]<|tool_call_end|>
+               """)
+
+      # JSON mode is untouched by the native form
+      refute match?(
+               {:ok, [_ | _]},
+               Tools.text_edit_blocks(~S"""
+               <|tool_call_start|>[edit(path='a', start=1, end=1, replace='z')]<|tool_call_end|>
+               """)
+             )
     end
 
     test "tags are text mode only; JSON stays accepted there without a digest" do

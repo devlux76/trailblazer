@@ -353,6 +353,7 @@ defmodule Trailblazer.Loop.Tools do
 
   # An <edit ...> or <create ...> opening tag at the start of a line (a tag
   # mentioned inside a sentence is not one).
+  @native_open "<|tool_call_start|>"
   @tag_open ~r/^[ \t]*<(edit|create)\b([^>\n]*)>/m
 
   @doc """
@@ -364,7 +365,19 @@ defmodule Trailblazer.Loop.Tools do
   ```json fence.
   """
   def text_edit_blocks(text, opts \\ []) when is_binary(text) do
-    if Keyword.get(opts, :mode) == :text and Regex.match?(@tag_open, text) do
+    text_mode? = Keyword.get(opts, :mode) == :text
+
+    cond do
+      text_mode? and not Regex.match?(@tag_open, text) and String.contains?(text, @native_open) ->
+        native_edit_blocks(text)
+
+      true ->
+        tag_or_json_blocks(text, opts, text_mode?)
+    end
+  end
+
+  defp tag_or_json_blocks(text, opts, text_mode?) do
+    if text_mode? and Regex.match?(@tag_open, text) do
       case tag_blocks(text) do
         {:ok, _} = ok ->
           ok
@@ -476,8 +489,8 @@ defmodule Trailblazer.Loop.Tools do
     with :ok <- not_bare_code(body, path, attrs),
          {:ok, start} <- tag_int(attrs, "start", 1),
          {:ok, last} <- tag_int(attrs, "end", 0),
-         {:ok, first_text} <- tag_inner(body, "first", path),
-         {:ok, last_text} <- tag_inner(body, "last", path),
+         first_text = optional_inner(body, "first"),
+         last_text = optional_inner(body, "last"),
          {:ok, replace} <- tag_inner(body, "replace", path),
          :ok <- no_tag_lines(replace, path) do
       {:ok,
@@ -486,8 +499,8 @@ defmodule Trailblazer.Loop.Tools do
          digest: nil,
          start: start,
          end: last,
-         first: anchor(first_text),
-         last: anchor(last_text),
+         first: first_text && anchor(first_text),
+         last: last_text && anchor(last_text),
          replace: raw_lines(replace),
          type: :range
        }}
@@ -555,6 +568,137 @@ defmodule Trailblazer.Loop.Tools do
         {:error, "#{path}: <edit> needs <#{tag}>...</#{tag}>"}
     end
   end
+
+  # <first>/<last> are optional and may quote several lines (seen live,
+  # LFM2.5-24B 2026-11-06: lines 7-8 inside <first>, no <last>); a missing one
+  # is filled from the file at its stated line by Edits. Up to the first
+  # closing tag, so a quote never runs into the next one.
+  defp optional_inner(body, tag) do
+    case Regex.run(~r/<#{tag}>(.*?)<\/#{tag}>/s, body, capture: :all_but_first) do
+      [inner] -> inner
+      nil -> nil
+    end
+  end
+
+  ## The model's native call syntax (text mode)
+  #
+  # LFM models answer in their own tool-call form even when told to write
+  # tags (seen live 2026-11-06):
+  #
+  #     <|tool_call_start|>[edit(path='a.ts', start='7', end='9', replace='x\ny')]<|tool_call_end|>
+  #
+  # Read as range blocks: string values are Python literals (quotes and
+  # backslash escapes), numbers may be bare or quoted; first/last optional.
+  @doc false
+  def native_edit_blocks(text) do
+    calls =
+      ~r/<\|tool_call_start\|>(.*?)(?:<\|tool_call_end\|>|\z)/s
+      |> Regex.scan(text, capture: :all_but_first)
+      |> Enum.flat_map(fn [inner] -> native_calls(inner) end)
+
+    case calls do
+      [] ->
+        {:error,
+         "the tool call holds no edit(path=..., start=..., end=..., replace=...); write <edit> blocks in plain text"}
+
+      calls ->
+        Enum.reduce_while(calls, {:ok, []}, fn args, {:ok, acc} ->
+          case native_block(args) do
+            {:ok, block} -> {:cont, {:ok, acc ++ [block]}}
+            error -> {:halt, error}
+          end
+        end)
+    end
+  end
+
+  defp native_calls(inner) do
+    case :binary.match(inner, "edit(") do
+      :nomatch ->
+        []
+
+      {at, len} ->
+        rest = binary_part(inner, at + len, byte_size(inner) - at - len)
+
+        case native_args(rest, %{}) do
+          {:ok, args, tail} -> [args | native_calls(tail)]
+          :error -> []
+        end
+    end
+  end
+
+  defp native_args(text, acc) do
+    text = String.trim_leading(text)
+
+    cond do
+      String.starts_with?(text, ")") ->
+        {:ok, acc, binary_part(text, 1, byte_size(text) - 1)}
+
+      String.starts_with?(text, ",") ->
+        native_args(binary_part(text, 1, byte_size(text) - 1), acc)
+
+      true ->
+        with [_, key, after_eq] <- Regex.run(~r/\A(\w+)\s*=\s*(.*)\z/s, text),
+             {:ok, value, rest} <- native_value(after_eq) do
+          native_args(rest, Map.put(acc, key, value))
+        else
+          _ -> :error
+        end
+    end
+  end
+
+  defp native_value(<<q, rest::binary>>) when q in [?', ?"], do: native_string(rest, q, [])
+
+  defp native_value(text) do
+    case Regex.run(~r/\A(-?\d+)(.*)\z/s, text) do
+      [_, n, rest] -> {:ok, n, rest}
+      _ -> :error
+    end
+  end
+
+  defp native_string(<<>>, _q, _acc), do: :error
+
+  defp native_string(<<?\\, c, rest::binary>>, q, acc) do
+    ch =
+      case c do
+        ?n -> "\n"
+        ?t -> "\t"
+        ?r -> "\r"
+        other -> <<other>>
+      end
+
+    native_string(rest, q, [ch | acc])
+  end
+
+  defp native_string(<<c, rest::binary>>, q, acc) when c == q,
+    do: {:ok, acc |> Enum.reverse() |> IO.iodata_to_binary(), rest}
+
+  defp native_string(<<c, rest::binary>>, q, acc), do: native_string(rest, q, [<<c>> | acc])
+
+  defp native_block(%{"path" => path} = args) when path != "" do
+    with {:ok, start} <- tag_int(args, "start", 1),
+         {:ok, last} <- tag_int(args, "end", 0),
+         replace when is_binary(replace) <- Map.get(args, "replace") do
+      replace =
+        if replace == "" or String.ends_with?(replace, "\n"), do: replace, else: replace <> "\n"
+
+      {:ok,
+       %{
+         path: path,
+         digest: nil,
+         start: start,
+         end: last,
+         first: args["first"] && anchor(args["first"]),
+         last: args["last"] && anchor(args["last"]),
+         replace: replace,
+         type: :range
+       }}
+    else
+      nil -> {:error, "#{path}: edit(...) needs replace='the new lines'"}
+      error -> error
+    end
+  end
+
+  defp native_block(_args), do: {:error, "edit(...) needs path='...', start=N, end=M"}
 
   # One quoted line; a copied "12| " number prefix from the numbered source is
   # not part of it.
