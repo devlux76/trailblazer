@@ -220,7 +220,8 @@ defmodule Trailblazer.Planner.Board do
 
     # The card's `Files:` (Route-parsed) go along, so the coder gets their
     # source in its prompt instead of spending its window reading them.
-    files = Enum.flat_map(card_files(card), &["--file", &1])
+    # `--file=PATH` as one argument: a path starting with "-" stays a value
+    files = Enum.map(card_files(card), &("--file=" <> &1))
     args = ["--actor", "trailblazer", "assign", ref, "trailblazer", "--check", check] ++ files
 
     case run.(args) do

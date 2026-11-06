@@ -352,12 +352,7 @@ defmodule Trailblazer.Planner.BoardTest do
     assert :ok = Board.assign(config(ctx, %{}), filed, run: run)
     assert_receive {:assign_args, filed_args}
 
-    assert Enum.take(filed_args, -4) == [
-             "--file",
-             "lib/parser.ex",
-             "--file",
-             "test/parser_test.exs"
-           ]
+    assert Enum.take(filed_args, -2) == ["--file=lib/parser.ex", "--file=test/parser_test.exs"]
   end
 
   describe "load_config!/1" do
