@@ -17,7 +17,11 @@ defmodule Trailblazer.HistoryTest do
     def ensure(_root, _opts), do: :ok
 
     def put(_root, points, _opts) do
-      Process.put(:points, Map.merge(Process.get(:points, %{}), Map.new(points, &{&1.id, &1.vector})))
+      Process.put(
+        :points,
+        Map.merge(Process.get(:points, %{}), Map.new(points, &{&1.id, &1.vector}))
+      )
+
       :ok
     end
 
@@ -72,9 +76,10 @@ defmodule Trailblazer.HistoryTest do
     git(repo, ["add", "-A"])
     date = "#{at} +0000"
 
-    git(repo, ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", message],
-      [{"GIT_AUTHOR_DATE", date}, {"GIT_COMMITTER_DATE", date}]
-    )
+    git(repo, ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", message], [
+      {"GIT_AUTHOR_DATE", date},
+      {"GIT_COMMITTER_DATE", date}
+    ])
 
     String.trim(git(repo, ["rev-parse", "HEAD"]))
   end
@@ -99,8 +104,12 @@ defmodule Trailblazer.HistoryTest do
     git(repo, ["branch", "-q", "-D", "gone"])
 
     {:ok, entries, info} = History.entries(repo, opts)
+
     assert Enum.map(entries, &{&1.path, &1.commit}) |> Enum.sort() ==
-             [{"lib/a.ex", a}, {"lib/b.ex", entries |> Enum.find(&(&1.path == "lib/b.ex")) |> Map.get(:commit)}]
+             [
+               {"lib/a.ex", a},
+               {"lib/b.ex", entries |> Enum.find(&(&1.path == "lib/b.ex")) |> Map.get(:commit)}
+             ]
 
     assert info.dropped == 0
     e = Enum.find(entries, &(&1.path == "lib/a.ex"))
@@ -113,7 +122,14 @@ defmodule Trailblazer.HistoryTest do
 
   test "PII drops the entry; the home path is written as ~", %{repo: repo, opts: opts} do
     commit(repo, %{"lib/a.ex" => "token SECRET-42\n"}, "leak", 1_800_000_000)
-    commit(repo, %{"lib/b.ex" => "path /home/someone/x\n"}, "see /home/someone/notes", 1_800_000_100)
+
+    commit(
+      repo,
+      %{"lib/b.ex" => "path /home/someone/x\n"},
+      "see /home/someone/notes",
+      1_800_000_100
+    )
+
     {:ok, [e], info} = History.entries(repo, opts)
     assert info.dropped == 1
     assert e.path == "lib/b.ex"
@@ -122,13 +138,106 @@ defmodule Trailblazer.HistoryTest do
     refute e.patch =~ "/home/someone"
   end
 
+  test "the screen ignores case, covers the path and drops text that is not utf-8",
+       %{repo: repo, opts: opts} do
+    t = 1_800_000_000
+    commit(repo, %{"lib/a.ex" => "token secret-42\n"}, "lowercase leak", t)
+    commit(repo, %{"lib/Secret-7.ex" => "x\n"}, "leak in a path", t + 10)
+    commit(repo, %{"lib/latin.ex" => <<"caf", 0xE9, "\n">>}, "latin-1", t + 20)
+    commit(repo, %{"lib/ok.ex" => "fine\n"}, "fine", t + 30)
+
+    {:ok, entries, info} = History.entries(repo, opts)
+    assert Enum.map(entries, & &1.path) == ["lib/ok.ex"]
+    assert info.dropped == 3
+  end
+
+  test "missing, empty or broken patterns refuse the run", %{repo: repo, opts: opts} do
+    commit(repo, %{"lib/a.ex" => "a\n"}, "a", 1_800_000_000)
+    dir = Path.dirname(repo)
+
+    assert {:error, :pii_patterns} =
+             History.entries(repo, Keyword.put(opts, :pii_file, Path.join(dir, "none")))
+
+    for {name, text} <- [{"empty", "# only a comment\n\n"}, {"broken", "unclosed(\n"}] do
+      File.write!(Path.join(dir, name), text)
+
+      assert {:error, :pii_patterns} =
+               History.entries(repo, Keyword.put(opts, :pii_file, Path.join(dir, name)))
+    end
+
+    assert {:error, :pii_patterns} =
+             History.ingest([repo], Keyword.put(opts, :pii_file, Path.join(dir, "none")))
+  end
+
+  test "an oversized hunk is split at line boundaries into pieces git applies",
+       %{repo: repo, opts: opts} do
+    t = 1_800_000_000
+    commit(repo, %{"lib/a.ex" => lines(400, "a")}, "base", t)
+    commit(repo, %{"lib/a.ex" => lines(400, "b")}, "rewrite every line", t + 100)
+
+    chunks =
+      History.entries(repo, opts)
+      |> elem(1)
+      |> Enum.filter(&(&1.request == "rewrite every line"))
+      |> Enum.sort_by(& &1.chunk)
+
+    assert length(chunks) > 1
+
+    for c <- chunks do
+      assert String.starts_with?(c.patch, "--- a/lib/a.ex\n+++ b/lib/a.ex\n@@ -")
+      refute c.old_ranges == []
+    end
+
+    # every piece's header counts are right: together they apply to the parent
+    [header | _] = String.split(hd(chunks).patch, ~r/^(?=@@ )/m)
+
+    hunks =
+      Enum.map_join(chunks, "", fn c ->
+        c.patch |> String.split(~r/^(?=@@ )/m) |> tl() |> Enum.join()
+      end)
+
+    git(repo, ["checkout", "-q", "HEAD~1", "--", "lib/a.ex"])
+    patch = Path.join(Path.dirname(repo), "pieces.patch")
+    File.write!(patch, header <> hunks)
+    git(repo, ["apply", patch])
+    assert File.read!(Path.join(repo, "lib/a.ex")) == lines(400, "b")
+  end
+
+  test "context lines do not make a later change a fix-up", %{repo: repo, opts: opts} do
+    t = 1_800_000_000
+    commit(repo, %{"lib/a.ex" => lines(10, "a")}, "base", t)
+
+    first =
+      commit(
+        repo,
+        %{"lib/a.ex" => String.replace(lines(10, "a"), "a line 1\n", "A line 1\n")},
+        "One bug:4444444",
+        t + 10
+      )
+
+    later =
+      String.replace(lines(10, "a"), "a line 1\n", "A line 1\n")
+      |> String.replace("a line 4\n", "A line 4\n")
+
+    commit(repo, %{"lib/a.ex" => later}, "Four bug:4444444", t + 20)
+
+    {:ok, entries, _} = History.entries(repo, opts)
+    e = Enum.find(entries, &(&1.commit == first))
+    assert e.new_ranges == [[1, 1]]
+    assert e.label == "succeeded"
+  end
+
   test "labels: reverted, fixed up within a day by the same bug, else succeeded",
        %{repo: repo, opts: opts} do
     t = 1_800_000_000
     first = commit(repo, %{"lib/a.ex" => lines(5, "a")}, "Write a bug:2222222", t)
 
-    commit(repo, %{"lib/a.ex" => String.replace(lines(5, "a"), "a line 3", "A line 3")},
-      "Fix a bug:2222222", t + 3600)
+    commit(
+      repo,
+      %{"lib/a.ex" => String.replace(lines(5, "a"), "a line 3", "A line 3")},
+      "Fix a bug:2222222",
+      t + 3600
+    )
 
     b = commit(repo, %{"lib/b.ex" => "b\n"}, "Add b", t + 7200)
     git(repo, ["-c", "user.name=t", "-c", "user.email=t@t", "revert", "--no-edit", b])
@@ -145,7 +254,17 @@ defmodule Trailblazer.HistoryTest do
   end
 
   test "an open card labels its entries open" do
-    e = %{commit: "abc", bug: "1234567", path: "p", at: 1, old_ranges: [], new_ranges: [], card_status: "open", label: "succeeded"}
+    e = %{
+      commit: "abc",
+      bug: "1234567",
+      path: "p",
+      at: 1,
+      old_ranges: [],
+      new_ranges: [],
+      card_status: "open",
+      label: "succeeded"
+    }
+
     assert [%{label: "open"}] = History.label([e], [])
     assert [%{label: "succeeded"}] = History.label([%{e | card_status: "closed"}], [])
   end
@@ -159,7 +278,9 @@ defmodule Trailblazer.HistoryTest do
       lines(2000, "a")
       |> String.split("\n")
       |> Enum.with_index(1)
-      |> Enum.map_join("\n", fn {l, i} -> if rem(i, 40) == 0, do: l <> " changed #{String.duplicate("x", 60)}", else: l end)
+      |> Enum.map_join("\n", fn {l, i} ->
+        if rem(i, 40) == 0, do: l <> " changed #{String.duplicate("x", 60)}", else: l
+      end)
 
     commit(repo, %{"lib/a.ex" => changed}, "many hunks", t + 100)
     {:ok, entries, _} = History.entries(repo, opts)
@@ -171,7 +292,10 @@ defmodule Trailblazer.HistoryTest do
 
     for c <- chunks do
       assert String.starts_with?(c.patch, "--- a/lib/a.ex\n+++ b/lib/a.ex\n@@ ")
-      {_, text} = History.document(%{"path" => c.path, "request" => c.request, "patch" => c.patch})
+
+      {_, text} =
+        History.document(%{"path" => c.path, "request" => c.request, "patch" => c.patch})
+
       assert String.length(text) <= 6_000
     end
   end
@@ -200,6 +324,14 @@ defmodule Trailblazer.HistoryTest do
     assert map_size(Process.get(:points)) == 1
 
     assert {:ok, [{_, %{"path" => "lib/a.ex"}}]} = History.similar("a.ex", 1, opts)
+
+    # stored text that no longer matches what would be embedded is re-embedded
+    file = Path.join(History.root(), "entries.jsonl")
+    [e] = Map.values(History.load())
+    File.write!(file, Jason.encode!(Map.put(e, "doc", "stale")) <> "\n")
+    assert {:ok, %{"repo" => %{new: 1, purged: 0}}} = History.ingest([repo], opts)
+    assert_received {:embedded, 1}
+    assert map_size(Process.get(:points)) == 1
   end
 
   test "a point id already held by another entry is refused", %{repo: repo, opts: opts} do
@@ -207,7 +339,16 @@ defmodule Trailblazer.HistoryTest do
     {:ok, [e], _} = History.entries(repo, opts)
     File.mkdir_p!(History.root())
 
-    squatter = %{"id" => "other", "point" => e.point, "repo_path" => "/elsewhere", "at" => 0, "repo" => "x", "path" => "p", "chunk" => 0}
+    squatter = %{
+      "id" => "other",
+      "point" => e.point,
+      "repo_path" => "/elsewhere",
+      "at" => 0,
+      "repo" => "x",
+      "path" => "p",
+      "chunk" => 0
+    }
+
     File.write!(Path.join(History.root(), "entries.jsonl"), Jason.encode!(squatter) <> "\n")
 
     assert {:error, {:point_collision, _, "other"}} = History.ingest([repo], opts)

@@ -161,9 +161,10 @@ defmodule Trailblazer.Memory do
         })
       end)
 
-    with :ok <- vectors(opts).drop(root(), opts),
+    # embed first: an embedder failure leaves the old collection in place
+    with {:ok, vectors} <- if(docs == [], do: {:ok, []}, else: embed(opts).documents(docs, opts)),
+         :ok <- vectors(opts).drop(root(), opts),
          :ok <- vectors(opts).ensure(root(), opts),
-         {:ok, vectors} <- if(docs == [], do: {:ok, []}, else: embed(opts).documents(docs, opts)),
          points =
            Enum.zip_with(outcomes, vectors, fn o, v ->
              %{id: point_id(o["case"]), vector: v, payload: %{case: o["case"]}}
