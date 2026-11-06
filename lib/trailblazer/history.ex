@@ -75,8 +75,8 @@ defmodule Trailblazer.History do
 
     with {:ok, patterns} <- patterns(opts),
          {:ok, refs} <- refs(repo),
-         {:ok, commits} <- commits(repo, refs) do
-      cards = cards(repo, commits)
+         {:ok, commits} <- commits(repo, refs),
+         {:ok, cards} <- cards(repo, commits) do
       home = home(opts)
 
       result =
@@ -137,12 +137,22 @@ defmodule Trailblazer.History do
   end
 
   # One git-bug card per bug id cited in the history: %{title, status, text}.
+  # git-bug itself must run (it is in ~/.local/bin, outside the service's
+  # PATH): without it every card would silently fall back to the commit
+  # message. A cited id with no card still falls back.
   defp cards(repo, commits) do
-    commits
-    |> Enum.map(&bug(&1.message))
-    |> Enum.reject(&is_nil/1)
-    |> Enum.uniq()
-    |> Map.new(fn id -> {id, card(repo, id)} end)
+    ids = commits |> Enum.map(&bug(&1.message)) |> Enum.reject(&is_nil/1) |> Enum.uniq()
+
+    cond do
+      ids == [] ->
+        {:ok, %{}}
+
+      match?({:ok, _}, git(repo, ["bug", "version"])) ->
+        {:ok, Map.new(ids, &{&1, card(repo, &1)})}
+
+      true ->
+        {:error, :git_bug_unavailable}
+    end
   end
 
   defp card(repo, id) do
@@ -587,7 +597,9 @@ defmodule Trailblazer.History do
   end
 
   defp git(repo, args) do
-    case System.cmd("git", args, cd: repo, stderr_to_stdout: true) do
+    path = Enum.join([Path.expand("~/.local/bin"), System.get_env("PATH", "")], ":")
+
+    case System.cmd("git", args, cd: repo, stderr_to_stdout: true, env: [{"PATH", path}]) do
       {out, 0} -> {:ok, out}
       {out, status} -> {:error, {:git, status, String.slice(out, 0, 300)}}
     end
