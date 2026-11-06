@@ -158,6 +158,8 @@ defmodule Trailblazer.Planner.DecisionTest do
       assert_receive {:posted, url2, body}
       assert url2 == root <> "/completion"
       assert body.prompt == "RENDERED<think></think>"
+      assert body.model == Trailblazer.Config.get(:planner_model)
+      assert body.stream == false
       assert body.n_predict == 384
       assert body.temperature == 0
       assert body.json_schema["properties"]["target"]["enum"] == ["trailblazer", nil, "research"]
@@ -183,6 +185,37 @@ defmodule Trailblazer.Planner.DecisionTest do
       end
 
       assert {:error, {:http, 500}} = Decision.choose(@cards, post: failed)
+
+      down = fn url, _ ->
+        if String.ends_with?(url, "/apply-template"),
+          do: {:error, "connection refused"},
+          else: flunk("must not complete without a rendered prompt")
+      end
+
+      assert {:error, {:http_error, "connection refused"}} = Decision.choose(@cards, post: down)
+
+      unfinished = fn url, _ ->
+        if String.ends_with?(url, "/apply-template"),
+          do: {:ok, %{status: 200, body: %{"prompt" => "P"}}},
+          else: {:ok, %{status: 200, body: %{"content" => "{}", "stop_type" => "none"}}}
+      end
+
+      assert {:error, {:completion, "none"}} = Decision.choose(@cards, post: unfinished)
+    end
+
+    test "an empty planner_prefill keeps the chat request" do
+      Application.put_env(:trailblazer, :planner_prefill, "")
+      on_exit(fn -> Application.delete_env(:trailblazer, :planner_prefill) end)
+      parent = self()
+
+      post = fn url, body ->
+        send(parent, {:posted, url, body})
+        reply(~s({"ref": "probe:bbbb22", "target": "trailblazer", "reason": "next"}))
+      end
+
+      assert {:ok, %{ref: "probe:bbbb22"}} = Decision.choose(@cards, post: post)
+      assert_receive {:posted, url, %{response_format: %{"type" => "json_schema"}}}
+      assert String.ends_with?(url, "/chat/completions")
     end
 
     test "refuses a non-loopback model URL without calling anything" do

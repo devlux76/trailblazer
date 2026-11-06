@@ -115,9 +115,13 @@ defmodule Trailblazer.Planner.Decision do
   # The server renders its own template; the prefill follows the rendered
   # generation prompt verbatim. A failed render is the reply (an error).
   defp prefilled(post, root, cards, prefill) do
-    case post.(root <> "/apply-template", %{messages: messages(cards)}) do
+    # `model` picks the backend on a router; a single-model server ignores it
+    model = Config.get(:planner_model)
+
+    case post.(root <> "/apply-template", %{model: model, messages: messages(cards)}) do
       {:ok, %{status: 200, body: %{"prompt" => prompt}}} when is_binary(prompt) ->
         post.(root <> "/completion", %{
+          model: model,
           prompt: prompt <> prefill,
           n_predict: @max_tokens,
           temperature: 0,
