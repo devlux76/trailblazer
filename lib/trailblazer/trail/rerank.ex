@@ -41,9 +41,22 @@ defmodule Trailblazer.Trail.Rerank do
           String.slice(c.signature || "", 0, 200)
       end)
 
+    ask(@system, "Change request:\n#{request}\n\nCandidates:\n#{listing}", numbered, opts)
+  end
+
+  @doc """
+  One reranker call with any selection prompt (`Trailblazer.Loop.Examples`
+  picks past changes with its own): `system` asks for candidate numbers, best
+  first; `numbered` is `[{candidate, n}]`, each candidate with an `:id`. With
+  `allow_none: true` an answer of `0` alone is `{:ok, []}` (nothing fits);
+  otherwise naming nothing is `{:error, :nothing_named}`, as for `select/3`.
+  """
+  @spec ask(String.t(), String.t(), [{map(), pos_integer()}], keyword()) ::
+          {:ok, [term()]} | {:error, term()}
+  def ask(system, user, numbered, opts \\ []) do
     messages = [
-      %{role: "system", content: String.trim(@system)},
-      %{role: "user", content: "Change request:\n#{request}\n\nCandidates:\n#{listing}"}
+      %{role: "system", content: String.trim(system)},
+      %{role: "user", content: user}
     ]
 
     chat = Keyword.get(opts, :rerank_chat, &Model.chat/2)
@@ -56,15 +69,20 @@ defmodule Trailblazer.Trail.Rerank do
            backstop_ms: Config.get(:rerank_backstop_ms),
            backstop_kind: :rerank_call
          ) do
-      {:ok, %{content: content}} when is_binary(content) -> parse(content, numbered)
-      {:ok, _} -> {:error, :no_answer}
-      {:error, reason} -> {:error, reason}
+      {:ok, %{content: content}} when is_binary(content) ->
+        parse(content, numbered, Keyword.get(opts, :allow_none, false))
+
+      {:ok, _} ->
+        {:error, :no_answer}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   rescue
     e -> {:error, Exception.message(e)}
   end
 
-  defp parse(content, numbered) do
+  defp parse(content, numbered, allow_none?) do
     by_n = Map.new(numbered, fn {c, n} -> {n, c.id} end)
 
     # The numbers of the first line that has any: an echoed "path:12-30"
@@ -78,6 +96,10 @@ defmodule Trailblazer.Trail.Rerank do
       |> Enum.flat_map(&List.wrap(by_n[&1]))
       |> Enum.uniq()
 
-    if ids == [], do: {:error, :nothing_named}, else: {:ok, ids}
+    cond do
+      ids != [] -> {:ok, ids}
+      allow_none? and line |> String.trim() |> String.trim(".") == "0" -> {:ok, []}
+      true -> {:error, :nothing_named}
+    end
   end
 end

@@ -183,6 +183,11 @@ defmodule Trailblazer.Config do
   defp default(:rerank_model), do: "lfm3-1.7b:q8"
   defp default(:rerank_model_url), do: "http://127.0.0.1:8094/v1"
   defp default(:rerank_backstop_ms), do: 180_000
+  # "Similar past changes" in the coder prompt (Loop.Examples): off until the
+  # replay eval (history plan step 6) measures it; a task's `examples` overrides.
+  defp default(:history_examples), do: false
+  # Three entries' worth (History's 2,400 characters each) plus their headings.
+  defp default(:history_examples_chars), do: 8_000
   # Optional %{temperature, top_p, top_k, thinking} per role; nil keeps the
   # Model defaults (1.0 / 0.95 / 0, thinking on).
   defp default(:code_model_sampling), do: nil

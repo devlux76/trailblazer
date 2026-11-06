@@ -477,6 +477,18 @@ defmodule Trailblazer.TrailTest do
 
       chat = fn _m, _o -> {:ok, %{content: "1, 1, 5"}} end
       assert {:ok, [7]} = Trailblazer.Trail.Rerank.select("x", cands, rerank_chat: chat)
+
+      # "0" is "none fits" only where a caller allows it (Loop.Examples)
+      chat = fn _m, _o -> {:ok, %{content: "0"}} end
+
+      assert {:error, :nothing_named} =
+               Trailblazer.Trail.Rerank.select("x", cands, rerank_chat: chat)
+
+      assert {:ok, []} =
+               Trailblazer.Trail.Rerank.ask("pick", "x", [{hd(cands), 1}],
+                 rerank_chat: chat,
+                 allow_none: true
+               )
     end
   end
 

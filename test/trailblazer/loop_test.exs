@@ -157,6 +157,68 @@ defmodule Trailblazer.LoopTest do
     }
   end
 
+  # Recall runs in a job of its own, so the test's pid is found globally.
+  defmodule ExamplesAt do
+    def recall(task, opts) do
+      send(:persistent_term.get(:examples_test_pid), {:recall, task.request, opts[:before]})
+      {:ok, %{text: "PAST CHANGE", ids: ["e1"], how: :rerank, considered: 4, rerank_error: nil}}
+    end
+  end
+
+  test "with examples on, the coder sees similar past changes from before the base, and the ids are recorded",
+       %{repo: repo, opts: opts} do
+    base_time =
+      repo |> git(["show", "-s", "--format=%ct", "HEAD"]) |> String.trim() |> String.to_integer()
+
+    :persistent_term.put(:examples_test_pid, self())
+    on_exit(fn -> :persistent_term.erase(:examples_test_pid) end)
+
+    script([
+      fn messages, _ ->
+        user = Enum.map_join(messages, "\n", &(&1[:content] || ""))
+        assert user =~ "## Similar past changes\n\nPAST CHANGE"
+        reply(@fix_tags)
+      end,
+      reply("PASS")
+    ])
+
+    report =
+      Loop.run(
+        task(repo, %{read_rounds: 0, edit_mode: :text, examples: true}),
+        Keyword.put(opts, :examples, ExamplesAt)
+      )
+
+    assert report.status == :fixed
+    assert_received {:recall, "Greet with a comma", ^base_time}
+
+    assert %{"ids" => ["e1"], "how" => "rerank", "considered" => 4} =
+             Enum.find_value(CaseRecord.get(report.case).events, fn e ->
+               e.kind == "attempt" and e.data["stage"] == "examples" and e.data
+             end)
+
+    # off (the default): no recall, no section
+    script([
+      fn messages, _ ->
+        user = Enum.map_join(messages, "\n", &(&1[:content] || ""))
+        refute user =~ "Similar past changes"
+        reply(@fix_tags)
+      end,
+      reply("PASS")
+    ])
+
+    repo2 = repo <> "-off"
+    File.cp_r!(repo, repo2)
+    on_exit(fn -> File.rm_rf!(repo2) end)
+
+    assert Loop.run(
+             task(repo2, %{read_rounds: 0, edit_mode: :text}),
+             Keyword.put(opts, :examples, ExamplesAt)
+           ).status ==
+             :fixed
+
+    refute_received {:recall, _, _}
+  end
+
   test "a complete fenced JSON edit array uses the same check review and commit path", %{
     repo: repo,
     opts: opts

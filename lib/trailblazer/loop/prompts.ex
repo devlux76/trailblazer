@@ -33,8 +33,9 @@ defmodule Trailblazer.Loop.Prompts do
   tail or the review's findings), nil on the first attempt.
 
   `head` is the head start (design §6.5): `:check`, the command the change
-  must pass, and `:pattern`, a `{path, text}` test to follow when the request
-  asks for a test. Everything that stays the same between attempts comes
+  must pass, `:pattern`, a `{path, text}` test to follow when the request
+  asks for a test, and `:examples`, the rendered similar past changes
+  (`Trailblazer.Loop.Examples`). Everything that stays the same between attempts comes
   first, including `:evidence` installed-source excerpts shared with the reviewer,
   and what failed is appended last, so the model server's prompt cache
   spares a retry the re-read (E25).
@@ -54,6 +55,7 @@ defmodule Trailblazer.Loop.Prompts do
       [
         section("Request", field(task, :request)),
         section("Design", design(task)),
+        section("Similar past changes", head[:examples]),
         section("Trail", trail),
         section("Files", named(files)),
         section("Current source", sources(head[:sources] || [])),

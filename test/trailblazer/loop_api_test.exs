@@ -146,6 +146,24 @@ defmodule Trailblazer.LoopAPITest do
     refute_received {:started, _, _, _}
   end
 
+  test "examples is passed through as a boolean; anything else is rejected", %{opts: opts} do
+    for invalid <- ["true", 1, nil] do
+      assert request(opts, "run", %{repo: "/fixture", request: "fix", examples: invalid}).status ==
+               400
+    end
+
+    refute_received {:started, _, _, _}
+
+    assert request(opts, "run", %{repo: "/fixture", request: "fix", examples: true}).status == 202
+    assert_receive {:started, %{examples: true}, worker, _id}
+    send(worker, :finish)
+
+    assert request(opts, "run", %{repo: "/fixture", request: "fix"}).status == 202
+    assert_receive {:started, task, worker, _id}
+    refute Map.has_key?(task, :examples)
+    send(worker, :finish)
+  end
+
   test "invalid reasoning budgets are rejected before opening a case", %{opts: opts} do
     for invalid <- [-1, true, false, nil, "1024", 1.5, 1_000_000] do
       assert request(opts, "run", %{

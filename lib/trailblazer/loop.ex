@@ -122,6 +122,10 @@ defmodule Trailblazer.Loop do
 
     case open_workspace(st) do
       {:ok, st} ->
+        examples_job =
+          if st.task.examples and is_nil(st.task.replay_reply_from),
+            do: job(fn -> examples(st) end)
+
         trail = await_job(trail_job, st)
         files = files(st)
         check = st.task.check || mod(st, :check, Check).default(st.ws.path)
@@ -131,7 +135,9 @@ defmodule Trailblazer.Loop do
           Map.put(st, :head, %{
             check: check,
             pattern: pattern,
-            evidence: Trailblazer.Loop.DependencyEvidence.gather(st.task)
+            evidence: Trailblazer.Loop.DependencyEvidence.gather(st.task),
+            examples:
+              examples_job && recorded_examples(st, await_job(examples_job, st, :examples, nil))
           })
 
         record(st, :attempt, %{
@@ -169,17 +175,56 @@ defmodule Trailblazer.Loop do
     {token, pid, mon}
   end
 
-  defp await_job({token, _pid, mon}, st) do
+  defp await_job({token, _pid, mon}, st, stage \\ :trail, dead \\ "") do
     receive do
       {^token, result} ->
         Process.demonitor(mon, [:flush])
         result
 
       {:DOWN, ^mon, :process, _pid, reason} ->
-        record(st, :attempt, %{stage: :trail, error: Exception.format_exit(reason)})
-        ""
+        record(st, :attempt, %{stage: stage, error: Exception.format_exit(reason)})
+        dead
     end
   end
+
+  # Similar past changes (Loop.Examples), recalled in a job beside the trail;
+  # only entries committed before the case's base are eligible.
+  defp examples(st) do
+    before =
+      case System.cmd("git", ["show", "-s", "--format=%ct", st.ws.base],
+             cd: st.ws.path,
+             stderr_to_stdout: true
+           ) do
+        {out, 0} -> out |> String.trim() |> String.to_integer()
+        _ -> nil
+      end
+
+    if before,
+      do: mod(st, :examples, Trailblazer.Loop.Examples).recall(st.task, before: before),
+      else: {:error, :base_time}
+  rescue
+    e -> {:error, Exception.message(e)}
+  end
+
+  # Each prompt records which entries it showed, so outcomes trace back to them.
+  defp recorded_examples(st, {:ok, r}) do
+    record(st, :attempt, %{
+      stage: :examples,
+      how: r.how,
+      considered: r.considered,
+      ids: r.ids,
+      rerank_error: r.rerank_error && inspect(r.rerank_error)
+    })
+
+    r.text
+  end
+
+  defp recorded_examples(st, {:error, reason}) do
+    record(st, :attempt, %{stage: :examples, error: inspect(reason)})
+    nil
+  end
+
+  defp recorded_examples(_st, nil), do: nil
 
   defp stop_job({token, pid, mon}) do
     Process.demonitor(mon, [:flush])
@@ -2007,6 +2052,14 @@ defmodule Trailblazer.Loop do
     unless is_nil(reasoning_budget) or Model.valid_reasoning_budget?(reasoning_budget),
       do: raise(ArgumentError, "invalid reasoning_budget_tokens")
 
+    # Similar past changes in the coder prompt: the task's own say, else config.
+    examples =
+      case Map.get(task, :examples, Map.get(task, "examples")) do
+        nil -> Config.get(:history_examples) == true
+        value when is_boolean(value) -> value
+        _ -> raise(ArgumentError, "examples must be true or false")
+      end
+
     edit_mode =
       case Map.get(task, :edit_mode, Map.get(task, "edit_mode")) || Config.get(:code_edit_mode) do
         mode when mode in [:tool, "tool"] -> :tool
@@ -2028,6 +2081,7 @@ defmodule Trailblazer.Loop do
       reasoning_budget_tokens: reasoning_budget,
       edit_mode: edit_mode,
       replay_reply_from: replay,
+      examples: examples,
       from: get.(:from) || "cli"
     }
   end
