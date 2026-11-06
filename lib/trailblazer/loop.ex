@@ -773,10 +773,21 @@ defmodule Trailblazer.Loop do
     Map.merge(reply, %{content: content, prefill: prefill})
   end
 
+  # A prefilled turn goes back into history exactly as the server rendered
+  # it: llama.cpp renders a final assistant prefill after an empty think
+  # block (measured with LFM2.5, /apply-template), and a hybrid model's cache
+  # cannot rewind to a divergence, so any other history text re-reads the
+  # whole prompt on the next call (5.5 minutes on the CPU).
   defp assistant_message(reply) do
+    prefill =
+      case Map.get(reply, :prefill) do
+        nil -> ""
+        prefill -> "<think></think>" <> prefill
+      end
+
     %{
       role: "assistant",
-      content: Map.get(reply, :prefill, "") <> (reply.content || ""),
+      content: prefill <> (reply.content || ""),
       tool_calls:
         Enum.map(reply.tool_calls, fn call ->
           %{

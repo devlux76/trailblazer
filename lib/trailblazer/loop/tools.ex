@@ -703,7 +703,7 @@ defmodule Trailblazer.Loop.Tools do
     end
   end
 
-  defp answer("read", t, args, _opts) do
+  defp answer("read", t, args, opts) do
     with {:ok, path} <- required_string(args, "read", "path"),
          {:ok, first} <- optional_integer(args, "read", "start", 1, 1..1_000_000_000),
          {:ok, last} <-
@@ -738,8 +738,22 @@ defmodule Trailblazer.Loop.Tools do
           header <> body
 
         {:error, :outside_repo} ->
-          {:error,
-           "#{path} is outside the repository; " <> relative_hint(t.worktree || t.repo, path)}
+          # a model that invents a root (/testbed/..., /workspace/...) keeps
+          # asking for it: the tail that is a real file is read instead
+          case relative_tail(t.worktree || t.repo, path) do
+            nil ->
+              {:error, "#{path} is outside the repository; paths are repository-relative"}
+
+            found ->
+              case answer("read", t, Map.put(args, "path", found), opts) do
+                text when is_binary(text) ->
+                  "note: #{path} is outside the repository; read #{found} (paths are repository-relative)\n" <>
+                    text
+
+                other ->
+                  other
+              end
+          end
 
         {:error, _} ->
           {:error, "no file #{path}"}
@@ -758,18 +772,14 @@ defmodule Trailblazer.Loop.Tools do
     end
   end
 
-  # Small models invent absolute roots (e.g. /home/x/workspace/src/a.ts): name
-  # the longest tail of the path that is a real repository file.
-  defp relative_hint(root, path) do
+  # Small models invent absolute roots (e.g. /home/x/workspace/src/a.ts): the
+  # longest tail of the path that is a real repository file, or nil.
+  defp relative_tail(root, path) do
     parts = path |> Path.split() |> Enum.reject(&(&1 in ["/", ".", ".."]))
 
     0..max(length(parts) - 1, 0)//1
     |> Enum.map(&(parts |> Enum.drop(&1) |> Path.join()))
     |> Enum.find(&(&1 != "" and match?({:ok, _}, Files.read(root, &1))))
-    |> case do
-      nil -> "paths are repository-relative"
-      found -> "paths are repository-relative; did you mean #{found}?"
-    end
   end
 
   defp definition(n) do

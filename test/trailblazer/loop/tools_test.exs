@@ -197,13 +197,16 @@ defmodule Trailblazer.Loop.ToolsTest do
     assert wide =~ "cut here"
   end
 
-  test "an invented absolute root on read names the repository-relative file", %{dir: dir} do
+  test "an invented absolute root on read reads the repository-relative file, with a note", %{
+    dir: dir
+  } do
     File.mkdir_p!(Path.join(dir, "src/core"))
     File.write!(Path.join(dir, "src/core/contact.ts"), "x\n")
 
     text = Tools.call(dir, "read", ~s({"path": "/home/someone/workspace/src/core/contact.ts"}))
-    assert text =~ "outside the repository"
-    assert text =~ "did you mean src/core/contact.ts?"
+    assert text =~ "outside the repository; read src/core/contact.ts"
+    assert text =~ "path: src/core/contact.ts"
+    assert text =~ "1| x"
 
     text = Tools.call(dir, "read", ~s({"path": "/etc/passwd"}))
     assert text =~ "paths are repository-relative"

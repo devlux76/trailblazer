@@ -284,7 +284,7 @@ defmodule Trailblazer.LoopTest do
         earlier =
           Enum.find(messages, &(&1[:role] == "assistant" and &1[:tool_calls] not in [nil, []]))
 
-        assert earlier.content =~ ~r/\A<think>.*## Trail.*<\/think>\z/s
+        assert earlier.content =~ ~r/\A<think><\/think><think>.*## Trail.*<\/think>\z/s
         assert Enum.count(messages, &(&1[:role] == "assistant")) == 2
         reply(@fix_tags)
       end,
