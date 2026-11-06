@@ -217,13 +217,33 @@ defmodule Trailblazer.Loop.Tools do
 
   def edit_call_blocks(_name, _arguments), do: {:error, "not an edit tool"}
 
-  @doc "Validates model arguments before the existing all-or-nothing edit application."
-  def edit_blocks(arguments) when is_binary(arguments) do
+  @doc """
+  Validates model arguments before the existing all-or-nothing edit application.
+
+  `opts[:mode] == :text` is the plain-text coder's dialect: a range block may
+  leave out `sha256` (a small model copying 64 hex characters makes them up;
+  the first/last quotes already catch a stale or miscounted range), and a
+  `{path, search, replace}` block is accepted only with an empty search, to
+  create a file. Its refusals name the exact problem.
+  """
+  def edit_blocks(arguments, opts \\ [])
+
+  def edit_blocks(arguments, opts) when is_binary(arguments) do
+    mode = Keyword.get(opts, :mode)
+
     with {:ok, %{"blocks" => [_ | _] = blocks} = args} when map_size(args) == 1 <-
            Jason.decode(arguments),
-         {:ok, decoded} <- decode_blocks(blocks) do
+         {:ok, decoded} <- decode_blocks(blocks, mode) do
       {:ok, decoded}
     else
+      {:error, message} when is_binary(message) and mode == :text ->
+        {:error, message}
+
+      _ when mode == :text ->
+        {:error,
+         "the edits must be one JSON array of blocks: range blocks " <>
+           "{path, start, end, first, last, replace} and, to create a file, {path, search: \"\", replace}"}
+
       _ ->
         {:error,
          "submit_edits requires a nonempty blocks array; each block is either " <>
@@ -232,14 +252,14 @@ defmodule Trailblazer.Loop.Tools do
     end
   end
 
-  def edit_blocks(_), do: {:error, "submit_edits arguments must be JSON"}
+  def edit_blocks(_, _opts), do: {:error, "submit_edits arguments must be JSON"}
 
   @hex64 ~r/\A[0-9a-f]{64}\z/
 
-  defp decode_blocks(blocks) do
+  defp decode_blocks(blocks, mode) do
     blocks
     |> Enum.reduce_while({:ok, []}, fn block, {:ok, acc} ->
-      case decode_block(block) do
+      case decode_block(block, mode) do
         {:ok, decoded} -> {:cont, {:ok, [decoded | acc]}}
         {:error, message} -> {:halt, {:error, message}}
       end
@@ -250,13 +270,26 @@ defmodule Trailblazer.Loop.Tools do
     end
   end
 
-  defp decode_block(%{"path" => path, "search" => search, "replace" => replace} = block)
+  defp decode_block(%{"path" => path, "search" => search, "replace" => replace} = block, mode)
        when map_size(block) == 3 do
-    if is_binary(path) and path != "" and is_binary(search) and is_binary(replace) do
-      {:ok, %{path: path, search: search, replace: replace}}
-    else
-      {:error, "legacy block needs a non-empty path and string search/replace"}
+    cond do
+      not (is_binary(path) and path != "" and is_binary(search) and is_binary(replace)) ->
+        {:error, "legacy block needs a non-empty path and string search/replace"}
+
+      mode == :text and search != "" ->
+        {:error,
+         "#{path}: a {path, search, replace} block only creates a new file (empty search); " <>
+           "change an existing file with a range block {path, start, end, first, last, replace}"}
+
+      true ->
+        {:ok, %{path: path, search: search, replace: replace}}
     end
+  end
+
+  # Text mode: the same range block without sha256 (see edit_blocks/2).
+  defp decode_block(%{"start" => _, "first" => _, "last" => _} = block, :text)
+       when map_size(block) == 6 and not is_map_key(block, "sha256") do
+    decode_block(Map.put(block, "sha256", nil), :text)
   end
 
   defp decode_block(
@@ -268,14 +301,16 @@ defmodule Trailblazer.Loop.Tools do
            "first" => first_text,
            "last" => last_text,
            "replace" => replace
-         } = block
+         } = block,
+         mode
        )
        when map_size(block) == 7 do
     cond do
       not (is_binary(path) and path != "") ->
         {:error, "range block needs a non-empty path"}
 
-      not (is_binary(sha256) and Regex.match?(@hex64, sha256)) ->
+      not ((mode == :text and is_nil(sha256)) or
+               (is_binary(sha256) and Regex.match?(@hex64, sha256))) ->
         {:error, "range block sha256 must be a lowercase 64-hex string"}
 
       not (is_integer(start) and start >= 1) ->
@@ -305,14 +340,133 @@ defmodule Trailblazer.Loop.Tools do
     end
   end
 
-  defp decode_block(_block),
+  defp decode_block(_block, :text),
+    do:
+      {:error,
+       "each block must be exactly a range block {path, start, end, first, last, replace} " <>
+         "(sha256 optional) or, to create a file, {path, search: \"\", replace}"}
+
+  defp decode_block(_block, _mode),
     do:
       {:error,
        "each block must be exactly {path, search, replace} or {path, sha256, start, end, first, last, replace}"}
 
-  @doc "Strict whole-message JSON fallback; code bytes and edit validation stay unchanged."
-  def text_edit_blocks(text) when is_binary(text) do
+  @doc """
+  Strict whole-message JSON fallback; code bytes and edit validation stay unchanged.
+
+  With `mode: :text` (the plain-text coder) a reply holding `<edit>`/`<create>`
+  tags is read as tags (code raw, see below); otherwise its JSON is read in the
+  text dialect of `edit_blocks/2`, and may follow a sentence or two in one
+  ```json fence.
+  """
+  def text_edit_blocks(text, opts \\ []) when is_binary(text) do
+    if Keyword.get(opts, :mode) == :text and Regex.match?(~r/<(?:edit|create)\b/, text),
+      do: tag_blocks(text),
+      else: json_edit_blocks(text, opts)
+  end
+
+  ## The tag dialect (text mode)
+  #
+  # Code goes raw between tags, so a small model never escapes quotes,
+  # backslashes or newlines (JSON strings would make it):
+  #
+  #     <edit path="lib/a.ex" start="3" end="4">
+  #     <first>exact text of line 3</first>
+  #     <last>exact text of line 4</last>
+  #     <replace>
+  #     whole replacement lines
+  #     </replace>
+  #     </edit>
+  #
+  #     <create path="lib/new.ex">
+  #     the whole new file
+  #     </create>
+
+  @tag_block ~r/<(edit|create)\b([^>]*)>(.*?)<\/\1>/s
+  @tag_attr ~r/(\w+)\s*=\s*"([^"]*)"/
+
+  # The model's bytes are kept as written (a CRLF file's replacement may carry
+  # its CRs); only the layout newline after an opening tag is dropped.
+  defp tag_blocks(text) do
+    case Regex.scan(@tag_block, text, capture: :all_but_first) do
+      [] ->
+        {:error, "an <edit> or <create> tag is not closed (</edit>, </create>)"}
+
+      found ->
+        found
+        |> Enum.reduce_while({:ok, []}, fn [kind, attrs, body], {:ok, acc} ->
+          case tag_block(kind, attrs(attrs), body) do
+            {:ok, block} -> {:cont, {:ok, [block | acc]}}
+            {:error, message} -> {:halt, {:error, message}}
+          end
+        end)
+        |> case do
+          {:ok, blocks} -> {:ok, Enum.reverse(blocks)}
+          other -> other
+        end
+    end
+  end
+
+  defp attrs(text),
+    do: @tag_attr |> Regex.scan(text, capture: :all_but_first) |> Map.new(fn [k, v] -> {k, v} end)
+
+  defp tag_block("create", %{"path" => path}, body) when path != "",
+    do: {:ok, %{path: path, search: "", replace: raw_lines(body)}}
+
+  defp tag_block("create", _attrs, _body), do: {:error, ~s(<create> needs path="...")}
+
+  defp tag_block("edit", %{"path" => path} = attrs, body) when path != "" do
+    with {:ok, start} <- tag_int(attrs, "start", 1),
+         {:ok, last} <- tag_int(attrs, "end", 0),
+         {:ok, first_text} <- tag_inner(body, "first", path),
+         {:ok, last_text} <- tag_inner(body, "last", path),
+         {:ok, replace} <- tag_inner(body, "replace", path) do
+      {:ok,
+       %{
+         path: path,
+         digest: nil,
+         start: start,
+         end: last,
+         first: anchor(first_text),
+         last: anchor(last_text),
+         replace: raw_lines(replace),
+         type: :range
+       }}
+    end
+  end
+
+  defp tag_block("edit", _attrs, _body),
+    do: {:error, ~s(<edit> needs path="..." start="N" end="M")}
+
+  defp tag_int(attrs, key, min) do
+    case Integer.parse(Map.get(attrs, key, "")) do
+      {n, ""} when n >= min -> {:ok, n}
+      _ -> {:error, ~s(<edit> needs #{key}="N", a whole number >= #{min})}
+    end
+  end
+
+  defp tag_inner(body, tag, path) do
+    case Regex.run(~r/<#{tag}>(.*?)<\/#{tag}>/s, body, capture: :all_but_first) do
+      [inner] -> {:ok, inner}
+      nil -> {:error, "#{path}: <edit> needs <#{tag}>...</#{tag}>"}
+    end
+  end
+
+  # One quoted line; a copied "12| " number prefix from the numbered source is
+  # not part of it.
+  defp anchor(text),
+    do: text |> String.trim("\n") |> String.trim("\r") |> String.replace(~r/\A\d+\| ?/, "")
+
+  # Whole lines: the newline after the opening tag is layout, and a non-empty
+  # body ends with one.
+  defp raw_lines(body) do
+    body = String.replace(body, ~r/\A\r?\n/, "")
+    if body == "" or String.ends_with?(body, "\n"), do: body, else: body <> "\n"
+  end
+
+  defp json_edit_blocks(text, opts) do
     text = String.trim(text)
+    text_mode? = Keyword.get(opts, :mode) == :text
     structured? = String.starts_with?(text, ["[", "{", "```json", "```JSON"])
 
     payload =
@@ -321,10 +475,17 @@ defmodule Trailblazer.Loop.Tools do
         _ -> text
       end
 
+    {structured?, payload} =
+      case {structured?,
+            text_mode? && Regex.run(~r/^```json[ \t]*\R([\s\S]*?)\R```[ \t]*$/im, text)} do
+        {false, [_, json]} -> {true, json}
+        _ -> {structured?, payload}
+      end
+
     if structured? do
       case Jason.decode(payload) do
-        {:ok, blocks} when is_list(blocks) -> edit_blocks(Jason.encode!(%{blocks: blocks}))
-        {:ok, args} when is_map(args) -> edit_blocks(Jason.encode!(args))
+        {:ok, blocks} when is_list(blocks) -> edit_blocks(Jason.encode!(%{blocks: blocks}), opts)
+        {:ok, args} when is_map(args) -> edit_blocks(Jason.encode!(args), opts)
         _ -> {:error, "structured edits must be one complete JSON array or blocks object"}
       end
     else

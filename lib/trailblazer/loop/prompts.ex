@@ -168,10 +168,21 @@ defmodule Trailblazer.Loop.Prompts do
   defp section(_title, ""), do: nil
   defp section(title, body), do: "## #{title}\n\n#{body}"
 
-  # Text mode only: SEARCH must copy exact text, so small named files go
-  # whole (the loop bounds them); others stay names, read on demand.
+  # Text mode only: edits name line ranges and quote their first/last lines,
+  # so small named files go whole and numbered as `read` numbers them (the
+  # loop bounds them); others stay names, read on demand.
   defp sources([]), do: nil
-  defp sources(files), do: Enum.map_join(files, "\n\n", &file/1)
+  defp sources(files), do: Enum.map_join(files, "\n\n", &numbered_file/1)
+
+  defp numbered_file({path, text}) do
+    lines = text |> String.split(~r/\r?\n/) |> drop_trailing_empty()
+    body = lines |> Enum.with_index(1) |> Enum.map_join("\n", fn {l, n} -> "#{n}| #{l}" end)
+    "#{path} (#{length(lines)} lines)\n" <> fenced(body, lang(path))
+  end
+
+  defp drop_trailing_empty(lines) do
+    if List.last(lines) == "", do: Enum.drop(lines, -1), else: lines
+  end
 
   defp named([]), do: nil
 

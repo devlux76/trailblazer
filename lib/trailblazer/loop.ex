@@ -600,7 +600,7 @@ defmodule Trailblazer.Loop do
   defp converse(st, messages, tools, role, round \\ 1, corrections \\ 0)
 
   # Text mode: once reading ends the coder answers in plain text, so the
-  # final call offers no tools; its SEARCH/REPLACE reply is parsed by blocks/2.
+  # final call offers no tools; its <edit>/<create> reply is parsed by blocks/2.
   defp converse(%{task: %{edit_mode: :text}} = st, messages, tools, :coder, round, corrections)
        when tools != nil and round > st.task.read_rounds do
     messages =
@@ -609,7 +609,7 @@ defmodule Trailblazer.Loop do
           %{
             role: "user",
             content:
-              "Reading is complete. Reply now with the complete change as SEARCH/REPLACE blocks only; call no tool."
+              "Reading is complete. Reply now with the complete change as <edit>/<create> blocks only; call no tool."
           }
         ]
 
@@ -819,7 +819,7 @@ defmodule Trailblazer.Loop do
          role: "tool",
          tool_call_id: call.id,
          content:
-           "error: there is no edit tool in this mode; when reading is complete, reply with SEARCH/REPLACE blocks in plain text."
+           "error: there is no edit tool in this mode; when reading is complete, reply with <edit>/<create> blocks in plain text."
        }
 
   defp answer_call(st, call), do: answer_tool(st, call)
@@ -1015,6 +1015,25 @@ defmodule Trailblazer.Loop do
 
   defp blocks(_st, %{edit_blocks: blocks}), do: {:ok, blocks}
 
+  # Text mode answers in the range-block dialect only (Tools.edit_blocks/2):
+  # SEARCH/REPLACE text is no longer accepted from it.
+  defp blocks(%{task: %{edit_mode: :text}} = st, reply) do
+    case Tools.text_edit_blocks(reply.content, mode: :text) do
+      {:ok, edits} ->
+        {:ok, edits}
+
+      {:error, message} ->
+        record(st, :edit, %{status: :unparsed, error: message})
+
+        {:retry, :unparsed,
+         "Your edits could not be read: #{message}. Submit them #{submit_how(st)}."}
+
+      :none ->
+        record(st, :edit, %{status: :no_blocks})
+        {:retry, :no_blocks, "Your reply had no edits. Submit them #{submit_how(st)}."}
+    end
+  end
+
   defp blocks(st, reply) do
     case Tools.text_edit_blocks(reply.content) do
       {:ok, edits} ->
@@ -1059,6 +1078,25 @@ defmodule Trailblazer.Loop do
            shown: Map.get(st.task, :files, []),
            on_relocate: relocate
          ) do
+      # The batch applied but changed no byte: the model is repeating itself.
+      # Said once; a second empty batch in a row ends the case.
+      {:ok, []} ->
+        record(st, :edit, %{status: :no_change, blocks: blocks})
+
+        if match?(%{why: :no_change}, List.last(st.failures)) do
+          {:stop,
+           report(
+             st,
+             :failed,
+             "no_change: two attempts in a row submitted edits that change nothing.",
+             %{attempts: length(st.failures) + 1, reason: :no_change}
+           )}
+        else
+          {:retry, :no_change,
+           "Your edits applied but changed nothing: every replacement equals the current text. " <>
+             "Change the code the request needs, #{submit_how(st)}."}
+        end
+
       {:ok, paths} ->
         record(st, :edit, %{status: :applied, blocks: blocks, paths: paths})
         tally(:changed, Enum.uniq(tally(:changed) ++ paths))
@@ -1824,23 +1862,44 @@ defmodule Trailblazer.Loop do
     end
   end
 
-  # A text-mode reply that has started repeating blocks that change nothing
-  # (SEARCH equal to REPLACE) is looping: the host ends it there, so what it
-  # wrote is applied and checked in seconds instead of at the generation limit.
+  # A text-mode reply that has started looping is ended by the host there, so
+  # what it wrote is applied and checked in seconds instead of at the
+  # generation limit. Looping is the same <edit>/<create> block written for the
+  # third time, or a third block that changes nothing (a one-line edit whose
+  # replacement is its own quoted line; SEARCH equal to REPLACE in old replies).
   @noop_block ~r/^<{5,9} SEARCH>?[ \t]*\R(.*?)\R?^={5,9}[ \t]*\R(.*?)\R?^>{5,9} REPLACE/ms
+  @tag_block ~r/<(edit|create)\b[^>]*>.*?<\/\1>/s
+  @tag_noop ~r/<edit\b[^>]*\bstart="(\d+)"[^>]*\bend="\1"[^>]*>\s*<first>(.*?)<\/first>.*?<replace>(.*?)<\/replace>\s*<\/edit>/s
   @looping_noops 3
 
   @doc false
   def looping_blocks?(content) do
-    @noop_block
-    |> Regex.scan(content, capture: :all_but_first)
-    |> Enum.count(fn [search, replace] -> String.trim(search) == String.trim(replace) end)
-    |> Kernel.>=(@looping_noops)
+    search_noops =
+      @noop_block
+      |> Regex.scan(content, capture: :all_but_first)
+      |> Enum.count(fn [search, replace] -> String.trim(search) == String.trim(replace) end)
+
+    tag_noops =
+      @tag_noop
+      |> Regex.scan(content, capture: :all_but_first)
+      |> Enum.count(fn [_n, first, replace] -> String.trim(first) == String.trim(replace) end)
+
+    repeated =
+      @tag_block
+      |> Regex.scan(content, capture: :first)
+      |> Enum.frequencies()
+      |> Map.values()
+      |> Enum.max(fn -> 0 end)
+
+    search_noops >= @looping_noops or tag_noops >= @looping_noops or repeated >= @looping_noops
   end
 
-  # A recorded unparsed reply: strict JSON text first, else SEARCH/REPLACE text.
+  # A recorded unparsed reply: <edit>/<create> tags, else JSON text, else
+  # SEARCH/REPLACE text; whatever was valid when it was recorded.
   defp replay_blocks(content) do
-    case Tools.text_edit_blocks(content) do
+    opts = if Regex.match?(~r/<(?:edit|create)\b/, content), do: [mode: :text], else: []
+
+    case Tools.text_edit_blocks(content, opts) do
       :none ->
         case Edits.parse(content) do
           {:ok, [_ | _] = blocks} -> {:ok, blocks}
@@ -1852,7 +1911,10 @@ defmodule Trailblazer.Loop do
     end
   end
 
-  defp submit_how(%{task: %{edit_mode: :text}}), do: "as plain-text SEARCH/REPLACE blocks"
+  defp submit_how(%{task: %{edit_mode: :text}}),
+    do:
+      ~s[as plain-text <edit path start end> blocks with <first>, <last> and <replace> (<create path> for a new file)]
+
   defp submit_how(_st), do: "with submit_edits or edit"
 
   defp tally(key), do: Process.get(@tally, %{}) |> Map.get(key, 0)

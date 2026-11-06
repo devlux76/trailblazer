@@ -200,17 +200,120 @@ defmodule Trailblazer.Loop.Edits do
       end)
 
     if failures == [] do
-      unless opts[:dry_run] do
-        for {path, text} <- contents do
-          full = Path.join(worktree, path)
-          File.mkdir_p!(Path.dirname(full))
-          File.write!(full, text)
-        end
-      end
+      # only files whose bytes change: a batch that changes nothing returns []
+      changed =
+        for {path, text} <- contents,
+            File.read(Path.join(worktree, path)) != {:ok, text},
+            into: %{},
+            do: {path, text}
 
-      {:ok, contents |> Map.keys() |> Enum.sort()}
+      paths = changed |> Map.keys() |> Enum.sort()
+
+      cond do
+        opts[:dry_run] ->
+          {:ok, paths}
+
+        true ->
+          case write_by_patch(worktree, changed) do
+            :ok ->
+              {:ok, paths}
+
+            {:error, output} ->
+              block = %{path: Enum.join(paths, ", "), type: :patch, search: "", replace: ""}
+              {:error, [failure(block, :patch_failed, output)]}
+          end
+      end
     else
       {:error, Enum.reverse(failures)}
+    end
+  end
+
+  # Every write is one unified diff (`diff -u`) applied with `git apply`:
+  # vendored tooling writes the files, all of them or none, and the bytes it
+  # wrote are compared with what the edits produced (the differential check
+  # the vendored step is gated by). Any disagreement restores the originals.
+  defp write_by_patch(_worktree, changed) when map_size(changed) == 0, do: :ok
+
+  defp write_by_patch(worktree, changed) do
+    scratch =
+      Path.join(System.tmp_dir!(), "trailblazer-patch-#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(scratch)
+
+    try do
+      files =
+        changed
+        |> Enum.sort()
+        |> Enum.with_index()
+        |> Enum.map(fn {{path, text}, i} ->
+          full = Path.join(worktree, path)
+          new = Path.join(scratch, "new-#{i}")
+          File.write!(new, text)
+          old = if File.regular?(full), do: File.read!(full), else: nil
+          %{path: path, full: full, new: new, text: text, old: old}
+        end)
+
+      with {:ok, patch, direct} <- unified_diff(files),
+           :ok <- git_apply(worktree, scratch, patch) do
+        for f <- direct do
+          File.mkdir_p!(Path.dirname(f.full))
+          File.write!(f.full, f.text)
+        end
+
+        case Enum.reject(files, &(File.read(&1.full) == {:ok, &1.text})) do
+          [] ->
+            :ok
+
+          wrong ->
+            restore(files)
+
+            {:error,
+             "git apply wrote different bytes than the edits produced in " <>
+               Enum.map_join(wrong, ", ", & &1.path) <> "; nothing was changed"}
+        end
+      end
+    after
+      File.rm_rf(scratch)
+    end
+  end
+
+  defp unified_diff(files) do
+    Enum.reduce_while(files, {:ok, "", []}, fn f, {:ok, patch, direct} ->
+      {old, old_label} = if f.old, do: {f.full, "a/" <> f.path}, else: {"/dev/null", "/dev/null"}
+
+      case System.cmd("diff", ["-u", "--label", old_label, "--label", "b/" <> f.path, old, f.new],
+             stderr_to_stdout: true
+           ) do
+        # an empty new file has no hunk to apply: it is written directly
+        {"", 0} -> {:cont, {:ok, patch, [f | direct]}}
+        {out, 1} -> {:cont, {:ok, patch <> out, direct}}
+        {out, _} -> {:halt, {:error, "diff failed for #{f.path}: #{String.trim(out)}"}}
+      end
+    end)
+  end
+
+  defp git_apply(_worktree, _scratch, ""), do: :ok
+
+  defp git_apply(worktree, scratch, patch) do
+    file = Path.join(scratch, "edits.patch")
+    File.write!(file, patch)
+    args = ["apply", "--whitespace=nowarn", file]
+
+    with {_, 0} <-
+           System.cmd("git", ["apply", "--check" | tl(args)],
+             cd: worktree,
+             stderr_to_stdout: true
+           ),
+         {_, 0} <- System.cmd("git", args, cd: worktree, stderr_to_stdout: true) do
+      :ok
+    else
+      {out, _} -> {:error, "git apply refused the edits: #{String.trim(out)}"}
+    end
+  end
+
+  defp restore(files) do
+    for f <- files do
+      if f.old, do: File.write!(f.full, f.old), else: File.rm(f.full)
     end
   end
 
@@ -336,9 +439,11 @@ defmodule Trailblazer.Loop.Edits do
     end
   end
 
+  # A block without a digest (the text coder's dialect) relies on its
+  # first/last quotes alone.
   defp check_digests(blocks, text) do
     sha = sha256(text)
-    mismatched = Enum.reject(blocks, &(&1.digest == sha))
+    mismatched = Enum.reject(blocks, &(is_nil(&1.digest) or &1.digest == sha))
 
     case mismatched do
       [] -> :ok
@@ -559,9 +664,12 @@ defmodule Trailblazer.Loop.Edits do
            {:error,
             Enum.map(blocks, &failure(&1, :invalid_range, "start and end must be integers"))}}
 
-        block.digest == nil ->
+        # no digest (text mode): the first/last quotes alone bind the range
+        is_nil(block.digest) and
+            not (is_binary(Map.get(block, :first)) and is_binary(Map.get(block, :last))) ->
           {:halt,
-           {:error, Enum.map(blocks, &failure(&1, :invalid_range, "a digest is required"))}}
+           {:error,
+            Enum.map(blocks, &failure(&1, :invalid_range, "first and last quotes are required"))}}
 
         block.start < 1 or block.start > len + 1 ->
           {:halt,
@@ -1042,6 +1150,8 @@ defmodule Trailblazer.Loop.Edits do
         hint <> "\n"
 
   defp note_body(%{reason: :stale_digest, closest: hint}), do: hint <> "\n"
+
+  defp note_body(%{reason: :patch_failed, closest: output}), do: output <> "\n"
 
   defp note_body(%{reason: :anchor_mismatch, closest: hint}), do: hint <> "\n"
 

@@ -88,6 +88,19 @@ defmodule Trailblazer.LoopTest do
   ```
   """
 
+  # The same fix in text mode's tag dialect: code raw, no digest.
+  @fix_tags """
+  Add a comma after Hello.
+
+  <edit path="lib/greeting.ex" start="2" end="2">
+  <first>  def hello(name), do: "Hello " <> name</first>
+  <last>  def hello(name), do: "Hello " <> name</last>
+  <replace>
+    def hello(name), do: "Hello, " <> name
+  </replace>
+  </edit>
+  """
+
   @check "grep -q 'Hello, ' lib/greeting.ex"
 
   # A retry continues from the previous attempt's edits, so corrections are
@@ -1523,25 +1536,93 @@ defmodule Trailblazer.LoopTest do
     assert File.read!(Path.join(report.worktree, "lib/greeting.ex")) == @greeting
   end
 
-  test "text edit mode: no edit tool, text system prompt, SEARCH/REPLACE reply applied", %{
+  test "text edit mode: no edit tool, numbered source, tag reply applied", %{
     repo: repo,
     opts: opts
   } do
     coder = fn messages, options ->
       assert hd(messages).content =~ "There is no edit tool"
+      assert hd(messages).content =~ "<edit path="
       user = Enum.at(messages, 1).content
       assert user =~ "## Current source"
-      assert user =~ "lib/greeting.ex\n```elixir\n" <> @greeting
+
+      assert user =~
+               "lib/greeting.ex (3 lines)\n```elixir\n1| defmodule Greeting do\n" <>
+                 ~s[2|   def hello(name), do: "Hello " <> name\n3| end\n```]
+
       refute options[:tools]
       refute options[:tool_choice]
-      assert List.last(messages).content =~ "SEARCH/REPLACE blocks only"
-      reply(@fix)
+      assert List.last(messages).content =~ "<edit>/<create> blocks only"
+      reply(@fix_tags)
     end
 
     script([coder, reply("PASS")])
     report = Loop.run(task(repo, %{read_rounds: 0, edit_mode: "text"}), opts)
     assert report.status == :fixed
     assert git(repo, ["show", "#{report.commit}:lib/greeting.ex"]) =~ "Hello, "
+  end
+
+  test "text mode refuses SEARCH/REPLACE and takes the corrected tag reply", %{
+    repo: repo,
+    opts: opts
+  } do
+    fixed = fn messages, _ ->
+      assert Enum.at(messages, 1).content =~ "Your reply had no edits"
+      assert Enum.at(messages, 1).content =~ "<edit path start end>"
+      reply(@fix_tags)
+    end
+
+    script([reply(@fix), fixed, reply("PASS")])
+    report = Loop.run(task(repo, %{read_rounds: 0, edit_mode: :text}), opts)
+    assert report.status == :fixed
+    assert report.attempts == 2
+  end
+
+  test "text mode: a miscounted range is refused by its quotes, not applied", %{
+    repo: repo,
+    opts: opts
+  } do
+    # quotes found once elsewhere: the range moves to them (line 1 survives)
+    miscounted = String.replace(@fix_tags, ~s(start="2" end="2"), ~s(start="1" end="1"))
+    script([reply(miscounted), reply("PASS")])
+    report = Loop.run(task(repo, %{read_rounds: 0, edit_mode: :text}), opts)
+    assert report.status == :fixed
+    file = git(repo, ["show", "#{report.commit}:lib/greeting.ex"])
+    assert file =~ "defmodule Greeting do"
+    assert file =~ "Hello, "
+
+    # quotes found nowhere: refused with the current lines, nothing written
+    invented =
+      String.replace(@fix_tags, "<first>  def hello", "<first>  def greet")
+
+    fixed = fn messages, _ ->
+      assert Enum.at(messages, 1).content =~ "anchor_mismatch"
+      reply(@fix_tags)
+    end
+
+    script([reply(invented), fixed, reply("PASS")])
+    report = Loop.run(task(repo, %{read_rounds: 0, edit_mode: :text}), opts)
+    assert report.status == :fixed
+    assert report.attempts == 2
+  end
+
+  test "an edit that changes nothing is said once and ends the case the second time", %{
+    repo: repo,
+    opts: opts
+  } do
+    noop = String.replace(@fix_tags, ~s("Hello, "), ~s("Hello "))
+    refute noop == @fix_tags
+
+    second = fn messages, _ ->
+      assert Enum.at(messages, 1).content =~ "changed nothing"
+      reply(noop)
+    end
+
+    script([reply(noop), second])
+    report = Loop.run(task(repo, %{read_rounds: 0, edit_mode: :text}), opts)
+    assert report.status == :failed
+    assert report.summary =~ "no_change"
+    assert report.cost.model_calls == 2
   end
 
   test "text edit mode reads with tools but never offers submit_edits", %{repo: repo, opts: opts} do
@@ -1558,7 +1639,7 @@ defmodule Trailblazer.LoopTest do
     final = fn messages, options ->
       refute options[:tools]
       assert Enum.any?(messages, &(&1.role == "tool"))
-      reply(@fix)
+      reply(@fix_tags)
     end
 
     script([read, final, reply("PASS")])
@@ -1580,7 +1661,7 @@ defmodule Trailblazer.LoopTest do
       refute options[:tool_choice]
       tool = Enum.find(messages, &(&1.role == "tool"))
       assert tool.content =~ "no edit tool in this mode"
-      reply(@fix)
+      reply(@fix_tags)
     end
 
     script([rogue, final, reply("PASS")])
@@ -1680,7 +1761,7 @@ defmodule Trailblazer.LoopTest do
     final = fn messages, options ->
       refute options[:tools]
       assert Enum.find(messages, &(&1.role == "tool")).content =~ "no edit tool in this mode"
-      reply(@fix)
+      reply(@fix_tags)
     end
 
     script([rogue, final, reply("PASS")])
