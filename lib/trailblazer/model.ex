@@ -161,6 +161,7 @@ defmodule Trailblazer.Model do
       partials: partials,
       on_delta: opts[:on_delta],
       on_progress: opts[:on_progress],
+      stop_when: opts[:stop_when],
       started: started,
       token: false,
       first_token_ms: nil,
@@ -237,6 +238,7 @@ defmodule Trailblazer.Model do
         before = {byte_size(state.reasoning), byte_size(state.content)}
         state = Enum.reduce(frames, %{state | parser: parser}, &frame/2)
         delta(state, before)
+        state = host_stop(state)
 
         token? = state.content != "" or state.reasoning != "" or map_size(state.calls) > 0
 
@@ -264,6 +266,18 @@ defmodule Trailblazer.Model do
   end
 
   defp delta(_, _), do: :ok
+
+  # opts[:stop_when] sees the content so far; true ends the reply as if the
+  # model had finished (finish_reason "host_stop"), and closing the stream
+  # stops the server generating.
+  defp host_stop(%{stop_when: stop, done: false, content: content} = s)
+       when is_function(stop, 1) and content != "" do
+    if stop.(content),
+      do: %{s | done: true, choice: true, finish: true, finish_reason: "host_stop"},
+      else: s
+  end
+
+  defp host_stop(s), do: s
 
   defp frame(_, %{error: error} = s) when not is_nil(error), do: s
   defp frame(:done, s), do: %{s | done: true}

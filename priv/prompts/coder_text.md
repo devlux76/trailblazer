@@ -13,7 +13,7 @@ replacement lines
 >>>>>>> REPLACE
 ```
 
-Each block names the repository-relative path alone on the line before the fence. SEARCH copies existing lines exactly, including indentation, from the current source or a read, and must match one place in the file; never reconstruct or guess it. Use more context or several blocks when text repeats. An empty SEARCH creates a new file. Submit the complete change together; at most two explanatory sentences before the blocks.
+Each block names the repository-relative path alone on the line before the fence. SEARCH copies existing lines exactly, including indentation, from the current source or a read, and must match one place in the file; never reconstruct or guess it, and never abbreviate it with placeholders such as `// ...`. Keep each SEARCH to the few lines being changed plus enough context to be unique, and write a block only where something changes. Use more context or several blocks when text repeats. An empty SEARCH creates a new file. Submit the complete change together; at most two explanatory sentences before the blocks.
 
 The host applies all blocks or none: if one SEARCH misses, nothing is written and you are told which. The host runs checks and an independent reviewer; you do not run commands.
 

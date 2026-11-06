@@ -1891,6 +1891,17 @@ defmodule Trailblazer.LoopTest do
     refute_received {:asked, _, _}
   end
 
+  test "a text reply repeating blocks that change nothing is looping; real edits are not" do
+    block = fn search, replace ->
+      "a.ex\n```\n<<<<<<< SEARCH\n#{search}\n=======\n#{replace}\n>>>>>>> REPLACE\n```\n"
+    end
+
+    real = block.("x = 1", "x = 2") <> block.("y = 1", "y = 2") <> block.("z = 1", "z = 2")
+    assert Loop.looping_blocks?(real) == false
+    assert Loop.looping_blocks?(real <> block.("a", "a") <> block.("b", "b")) == false
+    assert Loop.looping_blocks?(real <> block.("a", "a") <> block.("b", "b") <> block.("c", "c"))
+  end
+
   @tag :hour_of_code
   test "after the configured local attempts the frontier is pinged with a written brief", %{
     repo: repo,

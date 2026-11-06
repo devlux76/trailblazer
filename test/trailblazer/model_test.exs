@@ -242,6 +242,27 @@ defmodule Trailblazer.ModelTest do
              Model.chat([], options(:model_never) ++ [backstop_ms: 50])
   end
 
+  test "stop_when ends an endless stream as a finished reply with what it had" do
+    Req.Test.stub(:model_stop, fn conn ->
+      conn =
+        conn
+        |> Plug.Conn.put_resp_content_type("text/event-stream")
+        |> Plug.Conn.send_chunked(200)
+
+      Enum.reduce(["one ", "loop ", "after"], conn, fn text, conn ->
+        {:ok, conn} =
+          Plug.Conn.chunk(conn, "data: " <> Jason.encode!(event(%{content: text})) <> "\r\n\r\n")
+
+        conn
+      end)
+    end)
+
+    stop = &String.contains?(&1, "loop")
+
+    assert {:ok, %{content: "one loop ", finish_reason: "host_stop"}} =
+             Model.chat([], options(:model_stop) ++ [stop_when: stop])
+  end
+
   test "on_delta is handed each chunk's reasoning and content as they stream" do
     Req.Test.stub(:model_delta, fn conn ->
       stream(conn, [

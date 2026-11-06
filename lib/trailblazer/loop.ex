@@ -882,6 +882,11 @@ defmodule Trailblazer.Loop do
     opts = opts ++ if(tools, do: [tools: tools], else: [])
 
     opts =
+      if role == :coder and st.task.edit_mode == :text,
+        do: opts ++ [stop_when: &looping_blocks?/1],
+        else: opts
+
+    opts =
       if submit_only,
         do: opts ++ [tool_choice: "required"],
         else: opts
@@ -1817,6 +1822,20 @@ defmodule Trailblazer.Loop do
 
       Process.put(call, {r2, c2, answering or content != ""})
     end
+  end
+
+  # A text-mode reply that has started repeating blocks that change nothing
+  # (SEARCH equal to REPLACE) is looping: the host ends it there, so what it
+  # wrote is applied and checked in seconds instead of at the generation limit.
+  @noop_block ~r/^<{5,9} SEARCH>?[ \t]*\R(.*?)\R?^={5,9}[ \t]*\R(.*?)\R?^>{5,9} REPLACE/ms
+  @looping_noops 3
+
+  @doc false
+  def looping_blocks?(content) do
+    @noop_block
+    |> Regex.scan(content, capture: :all_but_first)
+    |> Enum.count(fn [search, replace] -> String.trim(search) == String.trim(replace) end)
+    |> Kernel.>=(@looping_noops)
   end
 
   # A recorded unparsed reply: strict JSON text first, else SEARCH/REPLACE text.
