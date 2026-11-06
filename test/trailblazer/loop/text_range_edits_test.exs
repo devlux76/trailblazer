@@ -275,6 +275,71 @@ defmodule Trailblazer.Loop.TextRangeEditsTest do
       assert b.replace =~ "z()"
     end
 
+    test "live lucet miscount: unquoted 28-30 whose new text starts with line 27 shifts to 27-29",
+         %{dir: dir} do
+      src = """
+      export function openContact (contact, peer) {
+        if (addrs.length < 1 || addrs.length > 8) return undefined
+        for (const addr of addrs) {
+          if (typeof addr !== 'string' || !addr.endsWith('/p2p/' + peer)) return undefined
+        }
+        return addrs
+      }
+      """
+
+      write(dir, "lib/c.ts", src)
+
+      reply = """
+      <tool_call>edit path="lib/c.ts" start="4" end="6" replace</arg_key><arg_value>  for (const addr of addrs) {
+          try {
+            check(addr)
+          } catch {
+            return undefined
+          }
+        }
+      </arg_value></tool_call>
+      """
+
+      assert {:ok, blocks} = text(reply)
+      assert {:ok, _} = Edits.apply(dir, blocks)
+
+      assert read(dir, "lib/c.ts") == """
+             export function openContact (contact, peer) {
+               if (addrs.length < 1 || addrs.length > 8) return undefined
+               for (const addr of addrs) {
+                 try {
+                   check(addr)
+                 } catch {
+                   return undefined
+                 }
+               }
+               return addrs
+             }
+             """
+    end
+
+    test "no shift when the model quoted its anchors, or the overlap is only a brace", %{dir: dir} do
+      write(dir, "lib/a.ts", "a()\n}\nb()\nc()\n")
+      # quoted and matching: the range is affirmed, a repeated line is kept
+      {:ok, q} =
+        text(
+          ~s[<edit path="lib/a.ts" start="3" end="3"><first>b()</first><last>b()</last><replace>\n}\nB()\n</replace></edit>]
+        )
+
+      assert {:ok, _} = Edits.apply(dir, q)
+      assert read(dir, "lib/a.ts") == "a()\n}\n}\nB()\nc()\n"
+
+      write(dir, "lib/a.ts", "a()\n}\nb()\nc()\n")
+
+      {:ok, [u]} =
+        Tools.native_call_blocks([
+          ~s[{"path": "lib/a.ts", "start": 3, "end": 3, "replace": "}\\nB()"}]
+        ])
+
+      assert {:ok, _} = Edits.apply(dir, [u])
+      assert read(dir, "lib/a.ts") == "a()\n}\n}\nB()\nc()\n"
+    end
+
     test "tags are text mode only; JSON stays accepted there without a digest" do
       reply =
         ~s(<edit path="a" start="1" end="1"><first>a</first><last>a</last><replace>b\n</replace></edit>)

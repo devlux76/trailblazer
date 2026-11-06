@@ -685,8 +685,10 @@ defmodule Trailblazer.Loop.Edits do
       %{digest: nil, type: :range, start: s, end: e} = block
       when is_integer(s) and is_integer(e) ->
         block
+        |> Map.put(:filled, [])
         |> fill_anchor(:first, lines, s)
         |> fill_anchor(:last, lines, e)
+        |> shift_miscount(lines)
 
       block ->
         block
@@ -701,16 +703,79 @@ defmodule Trailblazer.Loop.Edits do
 
     cond do
       not is_binary(quoted) ->
-        Map.put(block, key, line_at(lines, n))
+        Map.merge(block, %{key => line_at(lines, n), filled: [key | block.filled]})
 
       quoted != "" and not quoted_at?(lines, quoted, key, n) and
           String.contains?(block.replace || "", String.trim(quoted)) ->
-        Map.merge(block, %{key => line_at(lines, n), quote_was_new_code: true})
+        Map.merge(block, %{
+          key => line_at(lines, n),
+          quote_was_new_code: true,
+          filled: [key | block.filled]
+        })
 
       true ->
         block
     end
   end
+
+  # A range the model numbered but did not quote (both anchors filled) can be
+  # off by a line or two (live, lucet 2026-11-06: "28-30" for a replacement
+  # that starts with line 27's `for`). diff/patch writes exactly the range it
+  # is given, so the range is corrected first: when the replacement's first
+  # lines repeat the lines just ABOVE start (or its last lines the lines just
+  # BELOW end), the whole range shifts by that many lines, keeping its length.
+  # Only exact lines with real content count (never "}" or blank), at most 3.
+  defp shift_miscount(%{filled: filled, start: s, end: e} = block, lines)
+       when length(filled) == 2 and e >= s do
+    new = block.replace |> String.split("\n") |> drop_last_blank()
+
+    up = repeated_lines(Enum.take(new, 3), fn k -> slice(lines, s - k, s - 1) end)
+
+    down =
+      repeated_lines(new |> Enum.take(-3) |> Enum.reverse(), fn k ->
+        slice(lines, e + 1, e + k) |> Enum.reverse()
+      end)
+
+    shift =
+      cond do
+        up > 0 -> -up
+        down > 0 -> down
+        true -> 0
+      end
+
+    if shift == 0 or s + shift < 1 or e + shift > tuple_size(lines) do
+      block
+    else
+      Map.merge(block, %{
+        start: s + shift,
+        end: e + shift,
+        first: line_at(lines, s + shift),
+        last: line_at(lines, e + shift),
+        relocated_from: {s, e}
+      })
+    end
+  end
+
+  defp shift_miscount(block, _lines), do: block
+
+  # The largest k (1..3) where the first k replacement lines equal the k file
+  # lines the function names, all of them substantive.
+  defp repeated_lines(head, file_lines) do
+    Enum.find(min(length(head), 3)..1//-1, 0, fn k ->
+      want = Enum.take(head, k)
+      want == file_lines.(k) and Enum.all?(want, &substantive?/1)
+    end)
+  end
+
+  defp slice(lines, from, to) when from >= 1 and to <= tuple_size(lines) and from <= to,
+    do: for(i <- from..to, do: elem(lines, i - 1))
+
+  defp slice(_lines, _from, _to), do: [:none]
+
+  defp substantive?(line), do: String.length(String.replace(line, ~r/[\s{}()\[\];,]/, "")) >= 4
+
+  defp drop_last_blank(parts),
+    do: if(List.last(parts) == "", do: Enum.drop(parts, -1), else: parts)
 
   defp validate_ranges(blocks, len, _text) do
     Enum.reduce_while(blocks, :ok, fn block, :ok ->
