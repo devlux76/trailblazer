@@ -351,6 +351,10 @@ defmodule Trailblazer.Loop.Tools do
       {:error,
        "each block must be exactly {path, search, replace} or {path, sha256, start, end, first, last, replace}"}
 
+  # An <edit ...> or <create ...> opening tag at the start of a line (a tag
+  # mentioned inside a sentence is not one).
+  @tag_open ~r/^[ \t]*<(edit|create)\b([^>\n]*)>/m
+
   @doc """
   Strict whole-message JSON fallback; code bytes and edit validation stay unchanged.
 
@@ -360,9 +364,21 @@ defmodule Trailblazer.Loop.Tools do
   ```json fence.
   """
   def text_edit_blocks(text, opts \\ []) when is_binary(text) do
-    if Keyword.get(opts, :mode) == :text and Regex.match?(~r/<(?:edit|create)\b/, text),
-      do: tag_blocks(text),
-      else: json_edit_blocks(text, opts)
+    if Keyword.get(opts, :mode) == :text and Regex.match?(@tag_open, text) do
+      case tag_blocks(text) do
+        # no complete block: a reply that only mentions a tag may carry JSON
+        {:error, :none, message} ->
+          case json_edit_blocks(text, opts) do
+            {:ok, _} = ok -> ok
+            _ -> {:error, message}
+          end
+
+        other ->
+          other
+      end
+    else
+      json_edit_blocks(text, opts)
+    end
   end
 
   ## The tag dialect (text mode)
@@ -382,27 +398,46 @@ defmodule Trailblazer.Loop.Tools do
   #     the whole new file
   #     </create>
 
-  @tag_block ~r/<(edit|create)\b([^>]*)>(.*?)<\/\1>/s
+  # Code may itself contain these tags (an HTML file, a prompt, this module),
+  # so the structure is read by position, never by the first closing tag:
+  # an opening tag starts a line; a block ends at its closing tag at the end
+  # of a line; first/last are one line each; replace runs to the LAST
+  # </replace> in its block. The model's bytes are kept as written (a CRLF
+  # file's replacement may carry its CRs).
   @tag_attr ~r/(\w+)\s*=\s*"([^"]*)"/
+  @tag_unclosed "no complete <edit> or <create> block: end each with </edit> or </create> at the end of a line"
 
-  # The model's bytes are kept as written (a CRLF file's replacement may carry
-  # its CRs); only the layout newline after an opening tag is dropped.
-  defp tag_blocks(text) do
-    case Regex.scan(@tag_block, text, capture: :all_but_first) do
-      [] ->
-        {:error, "an <edit> or <create> tag is not closed (</edit>, </create>)"}
+  defp tag_blocks(text), do: scan_tags(text, [])
 
-      found ->
-        found
-        |> Enum.reduce_while({:ok, []}, fn [kind, attrs, body], {:ok, acc} ->
-          case tag_block(kind, attrs(attrs), body) do
-            {:ok, block} -> {:cont, {:ok, [block | acc]}}
-            {:error, message} -> {:halt, {:error, message}}
-          end
-        end)
-        |> case do
-          {:ok, blocks} -> {:ok, Enum.reverse(blocks)}
-          other -> other
+  defp scan_tags(text, acc) do
+    case Regex.run(@tag_open, text, return: :index, capture: :all) do
+      nil when acc == [] ->
+        {:error, :none, @tag_unclosed}
+
+      nil ->
+        {:ok, Enum.reverse(acc)}
+
+      [{at, len}, kind, attrs] ->
+        kind = binary_part(text, elem(kind, 0), elem(kind, 1))
+        attrs = binary_part(text, elem(attrs, 0), elem(attrs, 1))
+        rest = binary_part(text, at + len, byte_size(text) - at - len)
+
+        case Regex.run(~r/<\/#{kind}>[ \t]*\r?(?=\n|\z)/, rest, return: :index) do
+          nil when acc == [] ->
+            {:error, :none, @tag_unclosed}
+
+          nil ->
+            {:error,
+             "an <#{kind}> block is not closed: end it with </#{kind}> at the end of a line"}
+
+          [{c_at, c_len}] ->
+            body = binary_part(rest, 0, c_at)
+            tail = binary_part(rest, c_at + c_len, byte_size(rest) - c_at - c_len)
+
+            case tag_block(kind, attrs(attrs), body) do
+              {:ok, block} -> scan_tags(tail, [block | acc])
+              {:error, message} -> {:error, message}
+            end
         end
     end
   end
@@ -445,8 +480,15 @@ defmodule Trailblazer.Loop.Tools do
     end
   end
 
+  # first/last: within one line, up to the line's last closing tag;
+  # replace: across lines, up to the block's last </replace>.
   defp tag_inner(body, tag, path) do
-    case Regex.run(~r/<#{tag}>(.*?)<\/#{tag}>/s, body, capture: :all_but_first) do
+    re =
+      if tag == "replace",
+        do: ~r/<replace>(.*)<\/replace>/s,
+        else: ~r/<#{tag}>([^\n]*)<\/#{tag}>/
+
+    case Regex.run(re, body, capture: :all_but_first) do
       [inner] -> {:ok, inner}
       nil -> {:error, "#{path}: <edit> needs <#{tag}>...</#{tag}>"}
     end
@@ -455,13 +497,22 @@ defmodule Trailblazer.Loop.Tools do
   # One quoted line; a copied "12| " number prefix from the numbered source is
   # not part of it.
   defp anchor(text),
-    do: text |> String.trim("\n") |> String.trim("\r") |> String.replace(~r/\A\d+\| ?/, "")
+    do: text |> String.replace(~r/\A[\r\n]+|[\r\n]+\z/, "") |> String.replace(~r/\A\d+\| ?/, "")
 
-  # Whole lines: the newline after the opening tag is layout, and a non-empty
-  # body ends with one.
-  defp raw_lines(body) do
-    body = String.replace(body, ~r/\A\r?\n/, "")
-    if body == "" or String.ends_with?(body, "\n"), do: body, else: body <> "\n"
+  @doc false
+  # Whole lines: the newline after the opening tag and the indentation before
+  # the closing tag are layout; a non-empty body ends with a newline.
+  def raw_lines(body) do
+    body =
+      body
+      |> String.replace(~r/\A\r?\n/, "")
+      |> String.replace(~r/(\r?\n)[ \t]*\z/, "\\1")
+
+    cond do
+      Regex.match?(~r/\A[ \t]*\z/, body) -> ""
+      String.ends_with?(body, "\n") -> body
+      true -> body <> "\n"
+    end
   end
 
   defp json_edit_blocks(text, opts) do

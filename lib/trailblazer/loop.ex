@@ -1073,14 +1073,20 @@ defmodule Trailblazer.Loop do
       tally(:relocations, [r | tally(:relocations)])
     end
 
+    # paths changed before this batch (edits carried from the last attempt)
+    carried = if is_list(tally(:changed)), do: tally(:changed), else: []
+
     case Edits.apply(st.ws.path, blocks,
            files: tracked(st.ws.path),
            shown: Map.get(st.task, :files, []),
            on_relocate: relocate
          ) do
-      # The batch applied but changed no byte: the model is repeating itself.
-      # Said once; a second empty batch in a row ends the case.
-      {:ok, []} ->
+      # The batch applied but changed no byte and the worktree holds no change
+      # at all: the model is repeating itself. Said once; a second such batch
+      # in a row ends the case. (A batch that only restates edits carried from
+      # the last attempt goes on to verification: that attempt may have failed
+      # on something flaky.)
+      {:ok, []} when carried == [] ->
         record(st, :edit, %{status: :no_change, blocks: blocks})
 
         if match?(%{why: :no_change}, List.last(st.failures)) do
@@ -1882,7 +1888,7 @@ defmodule Trailblazer.Loop do
     tag_noops =
       @tag_noop
       |> Regex.scan(content, capture: :all_but_first)
-      |> Enum.count(fn [_n, first, replace] -> String.trim(first) == String.trim(replace) end)
+      |> Enum.count(fn [_n, first, replace] -> Tools.raw_lines(replace) == first <> "\n" end)
 
     repeated =
       @tag_block

@@ -228,17 +228,20 @@ defmodule Trailblazer.Loop.Edits do
     end
   end
 
-  # Every write is one unified diff (`diff -u`) applied with `git apply`:
-  # vendored tooling writes the files, all of them or none, and the bytes it
-  # wrote are compared with what the edits produced (the differential check
-  # the vendored step is gated by). Any disagreement restores the originals.
+  # Every batch is checked by vendored tooling before a byte is written: one
+  # unified diff (`diff -u`) of all files, applied with `git apply` to scratch
+  # copies of the originals outside any repository (so the worktree's
+  # autocrlf/eol attributes and symlinks play no part), must reproduce exactly
+  # the bytes the edits produced. Only then are the files written, as before
+  # (through symlinks). Any disagreement writes nothing.
   defp write_by_patch(_worktree, changed) when map_size(changed) == 0, do: :ok
 
   defp write_by_patch(worktree, changed) do
     scratch =
       Path.join(System.tmp_dir!(), "trailblazer-patch-#{System.unique_integer([:positive])}")
 
-    File.mkdir_p!(scratch)
+    tree = Path.join(scratch, "tree")
+    File.mkdir_p!(tree)
 
     try do
       files =
@@ -247,28 +250,43 @@ defmodule Trailblazer.Loop.Edits do
         |> Enum.with_index()
         |> Enum.map(fn {{path, text}, i} ->
           full = Path.join(worktree, path)
+          copy = Path.join(tree, path)
           new = Path.join(scratch, "new-#{i}")
           File.write!(new, text)
-          old = if File.regular?(full), do: File.read!(full), else: nil
-          %{path: path, full: full, new: new, text: text, old: old}
+
+          old =
+            case File.read(full) do
+              {:ok, bytes} ->
+                File.mkdir_p!(Path.dirname(copy))
+                File.write!(copy, bytes)
+                bytes
+
+              _ ->
+                nil
+            end
+
+          %{path: path, full: full, copy: copy, new: new, text: text, old: old}
         end)
 
       with {:ok, patch, direct} <- unified_diff(files),
-           :ok <- git_apply(worktree, scratch, patch) do
-        for f <- direct do
-          File.mkdir_p!(Path.dirname(f.full))
-          File.write!(f.full, f.text)
-        end
+           :ok <- git_apply(tree, scratch, patch) do
+        direct_paths = MapSet.new(direct, & &1.path)
 
-        case Enum.reject(files, &(File.read(&1.full) == {:ok, &1.text})) do
+        case Enum.reject(
+               files,
+               &(&1.path in direct_paths or File.read(&1.copy) == {:ok, &1.text})
+             ) do
           [] ->
+            for f <- files do
+              File.mkdir_p!(Path.dirname(f.full))
+              File.write!(f.full, f.text)
+            end
+
             :ok
 
           wrong ->
-            restore(files)
-
             {:error,
-             "git apply wrote different bytes than the edits produced in " <>
+             "git apply produced different bytes than the edits in " <>
                Enum.map_join(wrong, ", ", & &1.path) <> "; nothing was changed"}
         end
       end
@@ -279,9 +297,12 @@ defmodule Trailblazer.Loop.Edits do
 
   defp unified_diff(files) do
     Enum.reduce_while(files, {:ok, "", []}, fn f, {:ok, patch, direct} ->
-      {old, old_label} = if f.old, do: {f.full, "a/" <> f.path}, else: {"/dev/null", "/dev/null"}
+      {old, old_label} = if f.old, do: {f.copy, "a/" <> f.path}, else: {"/dev/null", "/dev/null"}
 
-      case System.cmd("diff", ["-u", "--label", old_label, "--label", "b/" <> f.path, old, f.new],
+      # -a: compare as text even when a file looks binary to diff
+      case System.cmd(
+             "diff",
+             ["-u", "-a", "--label", old_label, "--label", "b/" <> f.path, old, f.new],
              stderr_to_stdout: true
            ) do
         # an empty new file has no hunk to apply: it is written directly
@@ -292,28 +313,24 @@ defmodule Trailblazer.Loop.Edits do
     end)
   end
 
-  defp git_apply(_worktree, _scratch, ""), do: :ok
+  defp git_apply(_tree, _scratch, ""), do: :ok
 
-  defp git_apply(worktree, scratch, patch) do
+  # Outside any repository: GIT_CEILING_DIRECTORIES stops git from finding one
+  # above the scratch tree, and autocrlf is off, so git apply acts as a plain,
+  # byte-exact patch tool.
+  defp git_apply(tree, scratch, patch) do
     file = Path.join(scratch, "edits.patch")
     File.write!(file, patch)
-    args = ["apply", "--whitespace=nowarn", file]
 
-    with {_, 0} <-
-           System.cmd("git", ["apply", "--check" | tl(args)],
-             cd: worktree,
-             stderr_to_stdout: true
-           ),
-         {_, 0} <- System.cmd("git", args, cd: worktree, stderr_to_stdout: true) do
-      :ok
-    else
+    case System.cmd(
+           "git",
+           ["-c", "core.autocrlf=false", "apply", "--whitespace=nowarn", file],
+           cd: tree,
+           env: [{"GIT_CEILING_DIRECTORIES", scratch}, {"GIT_DIR", nil}, {"GIT_WORK_TREE", nil}],
+           stderr_to_stdout: true
+         ) do
+      {_, 0} -> :ok
       {out, _} -> {:error, "git apply refused the edits: #{String.trim(out)}"}
-    end
-  end
-
-  defp restore(files) do
-    for f <- files do
-      if f.old, do: File.write!(f.full, f.old), else: File.rm(f.full)
     end
   end
 

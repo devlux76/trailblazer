@@ -1606,6 +1606,20 @@ defmodule Trailblazer.LoopTest do
     assert report.attempts == 2
   end
 
+  test "restating edits carried from a failed attempt goes on to verification", %{
+    repo: repo,
+    opts: opts
+  } do
+    # the review fails attempt 1; attempt 2 restates the (now carried) fixed
+    # line as it stands, which changes no byte but must still be checked and
+    # reviewed
+    restated = String.replace(@fix_tags, ~s("Hello " <> name</), ~s("Hello, " <> name</))
+    script([reply(@fix_tags), reply("FAIL: flaky"), reply(restated), reply("PASS")])
+    report = Loop.run(task(repo, %{read_rounds: 0, edit_mode: :text}), opts)
+    assert report.status == :fixed
+    assert report.attempts == 2
+  end
+
   test "an edit that changes nothing is said once and ends the case the second time", %{
     repo: repo,
     opts: opts

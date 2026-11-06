@@ -66,7 +66,7 @@ defmodule Trailblazer.Loop.TextRangeEditsTest do
 
     test "malformed tags are refused with the exact problem" do
       assert {:error, msg} = text(~s(<edit path="a" start="1" end="1">\n<first>x</first>))
-      assert msg =~ "not closed"
+      assert msg =~ "no complete"
 
       assert {:error, msg} =
                text(
@@ -100,6 +100,92 @@ defmodule Trailblazer.Loop.TextRangeEditsTest do
       json = ~s([{"path":"a","search":"x","replace":"y"}])
       assert {:error, msg} = text(json)
       assert msg =~ "only creates a new file"
+    end
+  end
+
+  describe "tags inside the code (review of 0cc6e53)" do
+    test "a replacement holding </replace>, </edit> or <edit> keeps all of it" do
+      reply = """
+      <edit path="lib/p.ex" start="1" end="1">
+      <first>old</first>
+      <last>old</last>
+      <replace>
+      @re ~r/<edit>(.*?)</edit>/ </edit> x
+      <replace>foo</replace>
+      </replace>
+      </edit>
+      """
+
+      assert {:ok, [b]} = text(reply)
+      assert b.replace == "@re ~r/<edit>(.*?)</edit>/ </edit> x\n<replace>foo</replace>\n"
+    end
+
+    test "a new file holding </create> mid-line keeps all of it" do
+      reply = "<create path=\"t.md\">\nsee </create> tag\nend\n</create>\n"
+      assert {:ok, [b]} = text(reply)
+      assert b.replace == "see </create> tag\nend\n"
+    end
+
+    test "an indented closing tag adds no whitespace line" do
+      reply =
+        "<edit path=\"a\" start=\"1\" end=\"1\">\n  <first>x</first>\n  <last>x</last>\n  <replace>\n  y\n  </replace>\n</edit>\n"
+
+      assert {:ok, [b]} = text(reply)
+      assert b.replace == "  y\n"
+    end
+
+    test "CRLF replies: quotes carry no line break, replacement keeps its CRs" do
+      reply =
+        "<edit path=\"a\" start=\"1\" end=\"1\">\r\n<first>foo</first>\r\n<last>foo</last>\r\n<replace>\r\nbar\r\n</replace>\r\n</edit>\r\n"
+
+      assert {:ok, [b]} = text(reply)
+      assert {b.first, b.last, b.replace} == {"foo", "foo", "bar\r\n"}
+    end
+
+    test "a tag mentioned in prose does not hide the JSON that follows" do
+      json = ~s([{"path":"a","start":1,"end":1,"first":"a","last":"a","replace":"b\\n"}])
+      reply = "I'll use <edit> tags next time.\n\n```json\n#{json}\n```\n"
+      assert {:ok, [%{type: :range, replace: "b\n"}]} = text(reply)
+    end
+
+    test "stripping trailing whitespace from one line is not a no-op" do
+      edit = fn n ->
+        ~s(<edit path="a" start="#{n}" end="#{n}">\n<first>foo  </first>\n<last>foo  </last>\n<replace>\nfoo\n</replace>\n</edit>\n)
+      end
+
+      refute Loop.looping_blocks?(Enum.map_join(1..3, &edit.(&1)))
+    end
+  end
+
+  describe "the patch check ignores the worktree's git settings" do
+    defp git!(dir, args), do: {_, 0} = System.cmd("git", args, cd: dir, stderr_to_stdout: true)
+
+    test "autocrlf and eol=crlf attributes do not change the bytes written", %{dir: dir} do
+      git!(dir, ["init", "-q"])
+      git!(dir, ["config", "core.autocrlf", "true"])
+      write(dir, ".gitattributes", "* text=auto eol=crlf\n")
+      write(dir, "lib/a.ex", "a\nb\n")
+      blocks = [%{path: "lib/a.ex", search: "b\n", replace: "B\n"}]
+      assert {:ok, ["lib/a.ex"]} = Edits.apply(dir, blocks)
+      assert read(dir, "lib/a.ex") == "a\nB\n"
+    end
+
+    test "files reached through a symlinked directory or a symlink are edited", %{dir: dir} do
+      git!(dir, ["init", "-q"])
+      File.mkdir_p!(Path.join(dir, "real"))
+      write(dir, "real/f.txt", "one\n")
+      write(dir, "real/g.txt", "two\n")
+      File.ln_s!("real", Path.join(dir, "link"))
+      File.ln_s!("g.txt", Path.join(dir, "real/h.txt"))
+
+      blocks = [
+        %{path: "link/f.txt", search: "one\n", replace: "ONE\n"},
+        %{path: "real/h.txt", search: "two\n", replace: "TWO\n"}
+      ]
+
+      assert {:ok, _} = Edits.apply(dir, blocks)
+      assert read(dir, "real/f.txt") == "ONE\n"
+      assert read(dir, "real/g.txt") == "TWO\n"
     end
   end
 
