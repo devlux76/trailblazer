@@ -702,7 +702,19 @@ defmodule Trailblazer.Loop do
             do: [],
             else: Enum.filter(calls, &(&1.name in Tools.edit_tools()))
 
+        # Text mode: the server may lift the model's native edit(...) call
+        # into tool_calls (LFM2.5, live 2026-11-06), leaving no text to
+        # parse. Read those calls as the native range blocks they are.
+        text_calls =
+          if st.task.edit_mode == :text and Enum.all?(calls, &(&1.name in Tools.edit_tools())),
+            do: Tools.native_call_blocks(Enum.map(calls, & &1.arguments)),
+            else: :none
+
         cond do
+          match?({:ok, [_ | _]}, text_calls) ->
+            record(st, :edit, %{status: :native_tool_calls, calls: length(calls)})
+            {:ok, Map.put(reply, :edit_blocks, elem(text_calls, 1))}
+
           submissions != [] and length(submissions) == length(calls) ->
             case batch_blocks(submissions) do
               {:ok, blocks} ->

@@ -611,6 +611,26 @@ defmodule Trailblazer.Loop.Tools do
     end
   end
 
+  @doc """
+  Native edit calls the server lifted into tool_calls: each argument object
+  (a map or its JSON) read like the text form's `edit(...)`; numbers may be
+  integers there. `{:error, _}` when any is not a complete range edit.
+  """
+  def native_call_blocks(arguments) when is_list(arguments) do
+    Enum.reduce_while(arguments, {:ok, []}, fn args, {:ok, acc} ->
+      with {:ok, %{} = map} <- decode(args),
+           {:ok, block} <- native_block(stringify_numbers(map)) do
+        {:cont, {:ok, acc ++ [block]}}
+      else
+        {:error, _} = error -> {:halt, error}
+        _ -> {:halt, {:error, "edit arguments must be an object"}}
+      end
+    end)
+  end
+
+  defp stringify_numbers(map),
+    do: Map.new(map, fn {k, v} -> {k, if(is_integer(v), do: Integer.to_string(v), else: v)} end)
+
   defp native_calls(inner) do
     case :binary.match(inner, "edit(") do
       :nomatch ->

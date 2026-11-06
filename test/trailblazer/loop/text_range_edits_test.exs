@@ -172,6 +172,23 @@ defmodule Trailblazer.Loop.TextRangeEditsTest do
              )
     end
 
+    test "native edit calls lifted into tool_calls read as range blocks" do
+      assert {:ok, [a, b]} =
+               Tools.native_call_blocks([
+                 ~s({"path": "lib/c.ts", "start": 7, "end": 9, "replace": "x\\ny"}),
+                 %{"path" => "lib/d.ts", "start" => "2", "end" => "1", "replace" => "z\n"}
+               ])
+
+      assert {a.path, a.start, a.end, a.replace, a.first} == {"lib/c.ts", 7, 9, "x\ny\n", nil}
+      assert {b.start, b.end, b.replace} == {2, 1, "z\n"}
+      # the live second attempt: no replace
+      assert {:error, msg} =
+               Tools.native_call_blocks([~s({"path": "a", "start": "7", "end": "9"})])
+
+      assert msg =~ "replace"
+      assert {:error, _} = Tools.native_call_blocks(["not json"])
+    end
+
     test "tags are text mode only; JSON stays accepted there without a digest" do
       reply =
         ~s(<edit path="a" start="1" end="1"><first>a</first><last>a</last><replace>b\n</replace></edit>)
