@@ -36,6 +36,37 @@ defmodule Trailblazer.Vectors do
   end
 
   @doc """
+  Drops every `trailblazer_` collection that is not the collection of one of
+  `keep` (repository paths or corpus roots, under this store's state
+  directory): what tests, deleted worktrees, unwatched repositories and older
+  embedding models left behind. Other prefixes (ranger's) are never touched.
+  Returns `{:ok, %{kept: n, dropped: n}}`.
+  """
+  @spec prune([Path.t()], keyword()) :: {:ok, map()} | {:error, term()}
+  def prune(keep, opts \\ []) do
+    keep = MapSet.new(keep, &collection/1)
+
+    case request(:get, "/collections", nil, opts) do
+      {:ok, 200, %{"result" => %{"collections" => collections}}} ->
+        ours = for %{"name" => "trailblazer_" <> _ = name} <- collections, do: name
+        {kept, stale} = Enum.split_with(ours, &MapSet.member?(keep, &1))
+
+        dropped =
+          Enum.count(stale, fn name ->
+            match?(
+              {:ok, status, _} when status in [200, 404],
+              request(:delete, "/collections/#{name}", nil, opts)
+            )
+          end)
+
+        {:ok, %{kept: length(kept), dropped: dropped}}
+
+      other ->
+        failure(other)
+    end
+  end
+
+  @doc """
   Makes sure the repository's collection exists for vectors of 768 cosine;
   `{:error, {:dims, size}}` when it exists with another width.
   """

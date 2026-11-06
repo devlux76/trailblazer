@@ -9,12 +9,19 @@ defmodule Trailblazer.Indexer.Restore do
   supervisor, as the last child of `Trailblazer.Indexer.Supervisor`, and is
   started again with them. `:restore_watch_opts` in the application
   environment is passed to each watch (tests use it for fakes).
+
+  Then it prunes Qdrant (operator, 2026-11-06): every `trailblazer_`
+  collection that belongs to no registered repository (gone directories
+  included, as their graphs are kept), the history corpus or memory is
+  dropped. Only the production release does this (`:prune_vectors_on_start`,
+  set for `:prod` in config): any other store would prune with its own
+  registry and drop production collections.
   """
 
   use GenServer
   require Logger
 
-  alias Trailblazer.{Indexer, Store}
+  alias Trailblazer.{History, Indexer, Memory, Store, Vectors}
 
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
 
@@ -32,6 +39,25 @@ defmodule Trailblazer.Indexer.Restore do
       Enum.reduce(Store.watched_repos(), state, fn %{path: path}, state ->
         restore(path, opts, state)
       end)
+
+    {:noreply, state, {:continue, :prune}}
+  end
+
+  def handle_continue(:prune, state) do
+    if Application.get_env(:trailblazer, :prune_vectors_on_start, false) do
+      keep = Enum.map(Store.watched_repos(), & &1.path) ++ [History.root(), Memory.root()]
+
+      case Vectors.prune(keep) do
+        {:ok, %{dropped: n} = counts} when n > 0 ->
+          Logger.info("trailblazer: pruned Qdrant: #{inspect(counts)}")
+
+        {:ok, _} ->
+          :ok
+
+        {:error, reason} ->
+          Logger.warning("trailblazer: could not prune Qdrant: #{inspect(reason)}")
+      end
+    end
 
     {:noreply, state}
   end

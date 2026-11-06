@@ -24,6 +24,12 @@ if config_env() == :test do
     loop_rerank: false
 end
 
+# Only the production store prunes Qdrant at start (Indexer.Restore): any
+# other store would judge with its own registry and drop production's.
+if config_env() == :prod do
+  config :trailblazer, prune_vectors_on_start: true
+end
+
 # Coding roles (operator, 2026-11-05): Nemotron Bolt codes in text edit mode on
 # the CPU router (the only local model to pass the contact.ts benchmark, 4/4);
 # Spark plans and reviews on its own server (operator: balance the loop; the

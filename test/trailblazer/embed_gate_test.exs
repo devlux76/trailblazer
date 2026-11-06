@@ -198,14 +198,15 @@ defmodule Trailblazer.EmbedGateTest do
         send(parent, :query_over)
       end)
 
-    assert_receive :querying, 1000
+    assert_receive :querying
     doc = spawn(fn -> EmbedGate.clear(gate) && send(parent, :doc_sent) end)
     refute_receive :doc_sent, 30
 
     send(query, :done)
-    assert_receive :query_over, 1000
+    assert_receive :query_over
     assert_receive :doc_sent, 1000
-    refute Process.alive?(doc)
+    ref = Process.monitor(doc)
+    assert_receive {:DOWN, ^ref, :process, _, _}
   end
 
   test "a query whose process dies no longer holds documents back" do
@@ -223,7 +224,7 @@ defmodule Trailblazer.EmbedGateTest do
         )
       end)
 
-    assert_receive :querying, 1000
+    assert_receive :querying
     spawn(fn -> EmbedGate.clear(gate) && send(parent, :doc_sent) end)
     refute_receive :doc_sent, 30
     Process.exit(query, :kill)
@@ -247,7 +248,7 @@ defmodule Trailblazer.EmbedGateTest do
         receive do: (:never -> :ok)
       end)
 
-    assert_receive :indexing, 1000
+    assert_receive :indexing
 
     backfill =
       spawn(fn ->
@@ -258,12 +259,13 @@ defmodule Trailblazer.EmbedGateTest do
       end)
 
     send(indexer, :finish)
-    assert_receive :more_work, 1000
+    assert_receive :more_work
     # the indexer still reports work: the backfill keeps waiting
     refute_receive :backfilling, 30
     send(indexer, :no_work)
     assert_receive :backfilling, 1000
-    refute Process.alive?(backfill)
+    ref = Process.monitor(backfill)
+    assert_receive {:DOWN, ^ref, :process, _, _}
   end
 
   test "a gate whose state predates queries (kept by a hot load) still serves them" do
@@ -282,7 +284,7 @@ defmodule Trailblazer.EmbedGateTest do
         )
       end)
 
-    assert_receive :querying, 1000
+    assert_receive :querying
     spawn(fn -> EmbedGate.clear(gate) && send(parent, :doc_sent) end)
     refute_receive :doc_sent, 30
     send(query, :done)

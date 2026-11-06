@@ -181,4 +181,27 @@ defmodule Trailblazer.VectorsTest do
       Vectors.drop(repo)
     end
   end
+
+  test "prune drops only our collections that belong to nothing kept" do
+    keep = Vectors.collection(@repo)
+    stale = Vectors.collection("/tmp/gone-worktree")
+    parent = self()
+
+    Req.Test.stub(:prune, fn conn ->
+      case {conn.method, conn.request_path} do
+        {"GET", "/collections"} ->
+          names = [keep, stale, "ranger_0123456789ab", "other"]
+
+          Req.Test.json(conn, %{"result" => %{"collections" => Enum.map(names, &%{"name" => &1})}})
+
+        {"DELETE", "/collections/" <> name} ->
+          send(parent, {:deleted, name})
+          Req.Test.json(conn, %{"result" => true})
+      end
+    end)
+
+    assert {:ok, %{kept: 1, dropped: 1}} = Vectors.prune([@repo], opts(:prune))
+    assert_received {:deleted, ^stale}
+    refute_received {:deleted, _}
+  end
 end
