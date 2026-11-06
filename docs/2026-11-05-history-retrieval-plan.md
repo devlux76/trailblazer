@@ -21,9 +21,10 @@ failed ones included.
 
 The operator's call, and the shape of this plan: embed all of it at fine
 grain. EmbeddingGemma is built for "find every mention of X in a huge personal
-corpus". LFM3 already reranks Trailblazer trails. With a dense corpus, a query
-does not get a hundred weak matches spread over 0..1. It gets a couple of
-dozen strong ones in roughly 0.90..1, the reranker picks the best few, and
+corpus". LFM3 already reranks Trailblazer trails. The point is density: the
+more samples there are to choose from, the more likely a query finds genuinely
+relevant ones near the top. (The operator's "0.90" was an illustration of that,
+not a threshold; clarified 2026-11-05.) The reranker picks the best few, and
 those go into the prompt as worked examples in the exact edit format the model
 must write. It will take time to build and a long while to embed. That cost is
 accepted.
@@ -162,14 +163,12 @@ copy of history and must not become a way around that redaction.
 
 ## Part 3: recall into the prompt
 
-1. Query: design + plan + paths → Qdrant top 200 → keep cosine ≥ a threshold.
-   **The 0.90 floor is a hypothesis to be tested, not a setting.**
-   `Trail.Rerank`'s moduledoc records EmbeddingGemma putting related and
-   unrelated *code* in a 0.6-0.8 band, which is why the reranker exists.
-   Request+patch entries matched against similar requests may score higher.
-   The density probe (step 0) decides: if true siblings reach about 0.90, keep
-   a floor; if their top-1 is well under about 0.75, drop the floor and use
-   top-k + rerank.
+1. Query: design + plan + paths → Qdrant top-k (start at 200) → LFM3 rerank.
+   No fixed cosine floor. `Trail.Rerank`'s moduledoc records EmbeddingGemma
+   putting related and unrelated *code* in a 0.6-0.8 band, so absolute scores
+   say little; rank among many candidates is what matters. A floor is added
+   only if the density probe (step 0) shows a clean gap that cuts junk
+   without losing true siblings.
 2. Exclusions: never return the case's own bug id, commits at or after the
    case base, or anything from the case's own branch. This is mandatory or the
    replay eval cheats.
@@ -208,15 +207,14 @@ used so outcomes can be traced back to examples.
   - Never calibrate on the eval set: use an older era or skip calibration.
 - **Live**: frontier fallback rate per card, before and after, from case
   records and notes.
-- Calibrate the threshold and example count on the replay set. Report
-  similarity histograms, so we can see whether matches really cluster at
-  0.90..1.
+- Calibrate k and example count on the replay set. Report similarity
+  histograms and the density curve (sibling recall@k vs corpus size).
 
 ## Order and gates
 
 | # | step | gate |
 |---|---|---|
-| 0 | **Density probe** (one script, no infra): embed the baseline entries to JSONL, brute-force cosine for each replay query, plot histograms against true siblings, count the replay cards that still have a plausible example after exclusions | histogram reported to the operator; decides floor vs top-k; if fewer than about 10 of 20 cards have a sibling, widen the corpus first |
+| 0 | **Density probe** (one script, no infra): embed the baseline entries to JSONL, brute-force cosine for each replay query; report sibling rank (recall@k) and how it moves as the corpus grows (subsample 25/50/100%), plus histograms against true siblings; count the replay cards that still have a plausible example after exclusions | curve + histogram reported to the operator; picks k (and a floor only if a clean gap shows); if fewer than about 10 of 20 cards have a sibling, widen the corpus first |
 | 1 | Part 1: JSON range blocks in text mode + diff/patch | suites green, one live card |
 | 2 | corpus schema + ingest for the baseline only (operator, 2026-11-05): owned repos trailblazer, vortex, ranger, planner, scout, mirai-agent, sojourney (not resonant, sojourney2, frontier); real branches/tags only, no squash snapshots, no `refs/bugs`. About 276 unique patches / about 918 code entries (about 259 bug-citing commits), nearly all trailblazer + vortex, plus case attempts. Expand (e.g. opencode upstream as a tagged set) only if the probe/eval says density is the limit | entries + labels spot-checked by Claude |
 | 3 | throughput sample, projected backfill time | reported to the operator |
@@ -231,8 +229,10 @@ it can be (planner → Trailblazer), with the frontier fallback as usual.
 ## Peer review record
 
 - 2026-11-05, GLM (OpenCode, read-only, verified against code;
-  `~/.local/share/claude-handoff/glm-reply.md`). Folded in: the 0.90 floor is a
-  hypothesis, tested first by the density probe (step 0); JSON range blocks in
+  `~/.local/share/claude-handoff/glm-reply.md`). Folded in: a density probe first
+  (step 0; operator later clarified 0.90 was an illustration of density, not a
+  threshold, so the probe measures recall vs corpus size and retrieval is
+  top-k + rerank); JSON range blocks in
   text mode (no new syntax); mandatory anchor quotes; optional digest in text
   mode; a file-creation path; looping detected on empty diffs; sha-based point
   ids; a new rerank prompt; a paired, per-repo eval on first-apply success.
