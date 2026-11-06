@@ -265,6 +265,35 @@ defmodule Trailblazer.LoopTest do
     assert git(repo, ["show", "#{report.commit}:lib/greeting.ex"]) =~ "Hello, "
   end
 
+  test "with code_think_prefill, a tool round carries the prefilled thinking in history and prefills empty after",
+       %{repo: repo, opts: opts} do
+    Application.put_env(:trailblazer, :code_think_prefill, true)
+    on_exit(fn -> Application.delete_env(:trailblazer, :code_think_prefill) end)
+
+    script([
+      fn messages, _ ->
+        assert %{role: "assistant", content: "<think>" <> _} = List.last(messages)
+        # streamed: no echo
+        reply("", %{
+          tool_calls: [%{id: "r1", name: "read", arguments: ~s({"path":"lib/greeting.ex"})}]
+        })
+      end,
+      fn messages, _ ->
+        assert List.last(messages) == %{role: "assistant", content: "<think></think>"}
+
+        earlier =
+          Enum.find(messages, &(&1[:role] == "assistant" and &1[:tool_calls] not in [nil, []]))
+
+        assert earlier.content =~ ~r/\A<think>.*## Trail.*<\/think>\z/s
+        assert Enum.count(messages, &(&1[:role] == "assistant")) == 2
+        reply(@fix_tags)
+      end,
+      reply("PASS")
+    ])
+
+    assert Loop.run(task(repo, %{read_rounds: 1, edit_mode: :text}), opts).status == :fixed
+  end
+
   test "a complete fenced JSON edit array uses the same check review and commit path", %{
     repo: repo,
     opts: opts

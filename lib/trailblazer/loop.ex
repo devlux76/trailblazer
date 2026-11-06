@@ -949,7 +949,9 @@ defmodule Trailblazer.Loop do
     # empty after, so it answers at once instead of deliberating for the
     # whole window. The echo is stripped from the reply's content and kept
     # in the history the next call sends.
-    prefill = think_prefill(st, messages, role)
+    # Never with a forced tool choice: llama.cpp's forced grammar after a
+    # prefill is the sampler setup that refused a schema (HTTP 400).
+    prefill = unless submit_only, do: think_prefill(st, messages, role)
 
     messages =
       if prefill, do: messages ++ [%{role: "assistant", content: prefill}], else: messages
