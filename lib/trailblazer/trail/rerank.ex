@@ -48,8 +48,9 @@ defmodule Trailblazer.Trail.Rerank do
   One reranker call with any selection prompt (`Trailblazer.Loop.Examples`
   picks past changes with its own): `system` asks for candidate numbers, best
   first; `numbered` is `[{candidate, n}]`, each candidate with an `:id`. With
-  `allow_none: true` an answer of `0` alone is `{:ok, []}` (nothing fits);
-  otherwise naming nothing is `{:error, :nothing_named}`, as for `select/3`.
+  `allow_none: true` an answer that names no candidate ("0", "None") is
+  `{:ok, []}` (nothing fits); otherwise it is `{:error, :nothing_named}`, as
+  for `select/3`.
   """
   @spec ask(String.t(), String.t(), [{map(), pos_integer()}], keyword()) ::
           {:ok, [term()]} | {:error, term()}
@@ -98,7 +99,9 @@ defmodule Trailblazer.Trail.Rerank do
 
     cond do
       ids != [] -> {:ok, ids}
-      allow_none? and line |> String.trim() |> String.trim(".") == "0" -> {:ok, []}
+      # "0", "None.", "0 - none fit": an answer that names no candidate is a
+      # rejection where the caller allows one, never a fallback to all
+      allow_none? -> {:ok, []}
       true -> {:error, :nothing_named}
     end
   end

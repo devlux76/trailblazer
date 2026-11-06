@@ -9,21 +9,24 @@ defmodule Trailblazer.Loop.Examples do
   - Query: the request, design and named files, at most an entry's 2,400
     characters; top 200 by vector, no cosine floor (EmbeddingGemma puts related
     and unrelated code in one band, so rank is what carries meaning).
-  - Exclusions (mandatory, or the replay eval cheats): any entry of a bug the
-    request cites (`bug:<id>`, either id a prefix of the other), and anything
-    committed at or after the case's base commit (`before:`, unix seconds).
-    A case branch is cut at that base, so its own commits fall under the time
-    cut too.
+  - Exclusions (mandatory, or the replay eval cheats; missing data excludes):
+    any entry of a bug the request cites (`bug:<id>`, either id a prefix of
+    the other); in the case's own repository anything not reachable from its
+    base (a rebased or side-branch copy of its own fix included); elsewhere
+    anything committed at or after the base's time.
   - One candidate per card (or per commit without a card): a card's long
     request repeats across all its entries and would otherwise fill the pool.
-  - The reranker sees the best 40 and may answer that none fits. When it
-    fails, the vector ranking stands, as for the trail.
+  - The reranker sees the best 40 and may answer that none fits (any answer
+    naming none counts). When the call fails, the vector ranking stands.
   - Kept: up to 3 examples labelled `succeeded` or `open` (cards stay open
     long after their commits land, so `open` is most of the corpus), and at
     most 1 `fixed_up`/`reverted` one, shown as a caution.
-  - Text mode renders each run of changes as an `<edit>` block against the
-    file as it was (lines from the hunk header), a new file as `<create>`;
-    tool mode shows the diff. Examples over the character budget are left out.
+  - Retrieval matches a chunk; the coder is shown the whole change to that
+    file (operator, 2026-11-06: as much diff as possible, "we did this once,
+    it was similar, and it worked"), stitched from all its chunks. Text mode
+    renders each run of changes as an `<edit>` block against the file as it
+    was, a new file as `<create>`; tool mode shows the diff. A change whose
+    blocks cannot be written exactly, or over the budget, is left out.
 
   `Trailblazer.Memory`'s rule that nothing reaches a coder prompt is about
   drawn lessons; these are real, labelled history, each shown with its label
@@ -42,7 +45,8 @@ defmodule Trailblazer.Loop.Examples do
   @positive ~w(succeeded open)
   @caution ~w(fixed_up reverted)
   @bug_ref ~r/\bbug:([0-9a-f]{7,64})\b/
-  @hunk_head ~r/\A@@ -(\d+)(?:,(\d+))? \+\d+(?:,\d+)? @@/
+  # the last group always matches, so unmatched optional counts come back as ""
+  @hunk_head ~r/\A@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))?( @@)/
 
   @system """
   You choose worked examples for a programmer. You get a change request and numbered past changes from the same codebases, each with its repository, file, outcome, the request it answered and its first changed lines. Pick the past changes that best show how to make this change: the same kind of edit to the same or closely related code (same file, module, function, pattern or API). Leave out changes that only share words or topics with the request.
@@ -60,7 +64,8 @@ defmodule Trailblazer.Loop.Examples do
   | :empty, considered: n, rerank_error: reason | nil}}`, or `{:error, reason}`
   when the corpus cannot be searched.
 
-  Options: `before:` the base commit's unix time; `budget:` characters
+  Options: `before:` the base commit's unix time; `reachable:` the set of
+  commits reachable from the base in the case's repository; `budget:` characters
   (default `:history_examples_chars`); `similar:` a `History.similar/3`
   stand-in; the rest go to `History.similar/3` and `Rerank.ask/4`.
   """
@@ -69,7 +74,7 @@ defmodule Trailblazer.Loop.Examples do
     similar = Keyword.get(opts, :similar, &History.similar/3)
 
     with {:ok, hits} <- similar.(query(task), @recall, opts) do
-      pool = hits |> exclude(task, opts[:before]) |> collapse() |> Enum.take(@pool)
+      pool = hits |> exclude(task, opts) |> collapse() |> Enum.take(@pool)
       {chosen, how, error} = choose(task, pool, opts)
       budget = Keyword.get_lazy(opts, :budget, fn -> Config.get(:history_examples_chars) end)
       {text, used} = render_all(pick(chosen), Map.get(task, :edit_mode, :tool), budget)
@@ -102,13 +107,22 @@ defmodule Trailblazer.Loop.Examples do
   end
 
   @doc false
-  def exclude(hits, task, before) do
+  # The cheat guard, failing closed: an entry of the case's own repository
+  # must be an ancestor of the base (`reachable:`, its commit set; a rebased
+  # or side-branch copy of the case's own fix is not); any other entry must
+  # be committed before the base's time (`before:`). Missing data excludes.
+  def exclude(hits, task, opts) do
     bugs = @bug_ref |> Regex.scan(task[:request] || "") |> Enum.map(fn [_, id] -> id end)
+    own = task[:repo] && Path.basename(task[:repo])
+    reachable = opts[:reachable]
+    before = opts[:before]
 
     Enum.reject(hits, fn {_score, e} ->
-      own_bug?(e["bug"], bugs) or
-        (is_integer(before) and is_integer(e["at"]) and e["at"] >= before) or
-        not is_binary(e["patch"])
+      own_bug?(e["bug"], bugs) or not is_binary(e["patch"]) or
+        if(e["repo"] == own and reachable,
+          do: not MapSet.member?(reachable, e["commit"]),
+          else: is_integer(before) and not (is_integer(e["at"]) and e["at"] < before)
+        )
     end)
   end
 
@@ -182,15 +196,23 @@ defmodule Trailblazer.Loop.Examples do
     end
   end
 
-  @doc "One example: a heading with repo, path, outcome and date, the request, and the change."
+  @doc """
+  One example: a heading with repo, path, outcome and date, the request, and
+  the whole change to that file (`"change"`, stitched by `History.similar/3`;
+  an entry without the key is taken as whole).
+  """
   @spec render(map(), :text | :tool) :: {:ok, String.t()} | :error
   def render(e, mode) do
-    body =
-      if mode == :text,
-        do: blocks(e["patch"], e["path"]),
-        else: {:ok, "```diff\n" <> String.trim_trailing(e["patch"]) <> "\n```"}
+    patch = Map.get(e, "change", e["patch"])
 
-    with {:ok, body} <- body, :ok <- no_tag_code(e["patch"]) do
+    body =
+      cond do
+        not is_binary(patch) -> :error
+        mode == :text -> blocks(patch, e["path"])
+        true -> {:ok, "```diff\n" <> String.trim_trailing(patch) <> "\n```"}
+      end
+
+    with {:ok, body} <- body, :ok <- no_tag_code(patch) do
       date = String.slice(e["date"] || "", 0, 10)
 
       {:ok,
@@ -217,34 +239,83 @@ defmodule Trailblazer.Loop.Examples do
     do: (text || "") |> String.split() |> Enum.join(" ") |> String.slice(0, chars)
 
   @doc """
-  A file's unified diff as the coder's text edit blocks against the old file:
-  one `<edit>` per run of changes, a `<create>` for a new file. `:error` when
-  an insertion's neighbouring lines are outside the hunk (no `first`/`last`
-  can be written for it).
+  A file's whole unified diff (git's `-U3`) as the coder's text edit blocks
+  against the old file: one `<edit>` per run of changes, a `<create>` for a
+  new file. History's split pieces (contiguous hunks) are joined back first;
+  each hunk's line counts must match its header. `:error` when a block's
+  `first`/`last` cannot be known: an insertion whose neighbours are outside
+  the diff, or a line the corpus rewrote (`~` for the home directory).
   """
   @spec blocks(String.t(), String.t()) :: {:ok, String.t()} | :error
   def blocks(patch, path) do
-    [header | hunks] = String.split(patch, ~r/^(?=@@ )/m)
+    [header | raw] = String.split(patch, ~r/^(?=@@ )/m)
 
-    cond do
-      not (header =~ ~r{^--- /dev/null$}m) ->
-        edits(hunks, path)
-
-      # a later chunk of a split new file holds only part of it
-      match?([first | _] when is_binary(first), hunks) and
-          Regex.match?(~r/\A@@ -0,0 \+1(?:,\d+)? @@/, hd(hunks)) ->
-        added = for h <- hunks, "+" <> line <- body(h), do: line
-        {:ok, ~s(<create path="#{path}">\n) <> Enum.join(added, "\n") <> "\n</create>"}
-
-      true ->
-        :error
+    with false <- raw == [],
+         {:ok, hunks} <- parse_hunks(raw),
+         hunks = join(hunks),
+         false <- Enum.any?(hunks, fn h -> Enum.any?(h.lines, &String.contains?(&1, "~/")) end) do
+      if header =~ ~r{^--- /dev/null$}m, do: create(hunks, path), else: edits(hunks, path)
+    else
+      _ -> :error
     end
   end
 
-  defp edits(hunks, path) do
+  # %{o: first old line, on: old count, n: first new line, nn: new count,
+  # lines}; a zero-count side's git start names the line before, so starts
+  # are normalised to the first line the side covers (or would).
+  defp parse_hunks(raw) do
+    Enum.reduce_while(raw, {:ok, []}, fn hunk, {:ok, acc} ->
+      with [_, os, on, ns, nn, _] <- Regex.run(@hunk_head, hunk),
+           on = count(on),
+           nn = count(nn),
+           lines = hunk |> String.split("\n") |> tl() |> Enum.reject(&(&1 == "")),
+           true <- Enum.count(lines, &String.starts_with?(&1, [" ", "-"])) == on,
+           true <- Enum.count(lines, &String.starts_with?(&1, [" ", "+"])) == nn do
+        h = %{o: norm(os, on), on: on, n: norm(ns, nn), nn: nn, lines: lines}
+        {:cont, {:ok, [h | acc]}}
+      else
+        _ -> {:halt, :error}
+      end
+    end)
+    |> case do
+      {:ok, hunks} -> {:ok, Enum.reverse(hunks)}
+      :error -> :error
+    end
+  end
+
+  defp count(""), do: 1
+  defp count(n), do: String.to_integer(n)
+  defp norm(s, 0), do: String.to_integer(s) + 1
+  defp norm(s, _), do: String.to_integer(s)
+
+  # git never emits two hunks that touch (it merges them), so a hunk that
+  # starts where the last ended on both sides is a piece History split off.
+  defp join(hunks) do
     hunks
-    |> Enum.reduce_while([], fn hunk, acc ->
-      case hunk_blocks(hunk, path) do
+    |> Enum.reduce([], fn
+      h, [p | rest] when p.o + p.on == h.o and p.n + p.nn == h.n ->
+        [%{p | on: p.on + h.on, nn: p.nn + h.nn, lines: p.lines ++ h.lines} | rest]
+
+      h, acc ->
+        [h | acc]
+    end)
+    |> Enum.reverse()
+  end
+
+  defp create([%{o: 1, on: 0, n: 1, lines: lines}], path) do
+    added = for "+" <> line <- lines, do: line
+    {:ok, ~s(<create path="#{path}">\n) <> Enum.join(added, "\n") <> "\n</create>"}
+  end
+
+  defp create(_hunks, _path), do: :error
+
+  defp edits(hunks, path) do
+    last = length(hunks) - 1
+
+    hunks
+    |> Enum.with_index()
+    |> Enum.reduce_while([], fn {hunk, i}, acc ->
+      case walk(hunk, path, i == last) do
         {:ok, blocks} -> {:cont, acc ++ blocks}
         :error -> {:halt, :error}
       end
@@ -256,27 +327,21 @@ defmodule Trailblazer.Loop.Examples do
     end
   end
 
-  defp body(hunk) do
-    hunk |> String.split("\n") |> tl() |> Enum.reject(&(&1 == ""))
-  end
-
-  defp hunk_blocks(hunk, path) do
-    case Regex.run(@hunk_head, hunk) do
-      [_, os, on] -> walk(hunk, path, String.to_integer(os), on)
-      [_, os] -> walk(hunk, path, String.to_integer(os), "1")
-      _ -> :error
-    end
-  end
-
-  # `o` is the old line number of the next old line; a zero-count side's
-  # start names the line before it. `prev` is the text of line o - 1 (""
-  # before line 1, :unknown when outside the hunk).
-  defp walk(hunk, path, os, on) do
-    o = if on == "0", do: os + 1, else: os
-    st = %{o: o, prev: if(o == 1, do: "", else: :unknown), run: nil, out: [], path: path}
+  # `o` is the old line number of the next old line; `prev` the text of line
+  # o - 1 ("" before line 1, :unknown when outside the hunk). With -U3 a
+  # whole hunk ends without context only at the end of the file, so an
+  # insertion there (in the diff's last hunk) is past the last line: first "".
+  defp walk(hunk, path, last?) do
+    st = %{
+      o: hunk.o,
+      prev: if(hunk.o == 1, do: "", else: :unknown),
+      run: nil,
+      out: [],
+      path: path
+    }
 
     st =
-      Enum.reduce(body(hunk), st, fn
+      Enum.reduce(hunk.lines, st, fn
         "\\" <> _, st ->
           st
 
@@ -294,7 +359,7 @@ defmodule Trailblazer.Loop.Examples do
         _other, st ->
           %{st | out: [:error | st.out]}
       end)
-      |> close(:unknown)
+      |> close(if(last?, do: "", else: :unknown))
 
     if :error in st.out, do: :error, else: {:ok, Enum.reverse(st.out)}
   end

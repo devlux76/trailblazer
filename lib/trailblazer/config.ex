@@ -186,8 +186,9 @@ defmodule Trailblazer.Config do
   # "Similar past changes" in the coder prompt (Loop.Examples): off until the
   # replay eval (history plan step 6) measures it; a task's `examples` overrides.
   defp default(:history_examples), do: false
-  # Three entries' worth (History's 2,400 characters each) plus their headings.
-  defp default(:history_examples_chars), do: 8_000
+  # Whole file changes are shown, not the matched chunk (operator, 2026-11-06:
+  # as much diff as possible); about 3,000 tokens for up to four examples.
+  defp default(:history_examples_chars), do: 12_000
   # Optional %{temperature, top_p, top_k, thinking} per role; nil keeps the
   # Model defaults (1.0 / 0.95 / 0, thinking on).
   defp default(:code_model_sampling), do: nil

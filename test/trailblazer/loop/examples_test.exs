@@ -97,6 +97,58 @@ defmodule Trailblazer.Loop.ExamplesTest do
       assert {:ok, _} =
                Examples.blocks("--- /dev/null\n+++ b/lib/n.ex\n@@ -0,0 +1 @@\n+one\n", "lib/n.ex")
     end
+
+    test "an insertion at the end of the file (the diff's last hunk ends in +) is past the last line" do
+      old = file(6)
+      {_text, [b]} = round_trip(old, old <> "appended\n")
+      assert {b.start, b.end, b.first, b.last} == {7, 6, "", "line 6"}
+    end
+
+    test "split pieces (contiguous hunks) are joined back into one change" do
+      # one hunk replacing a-b with x-y, cut between the removals and the additions
+      patch =
+        "--- a/lib/x.ex\n+++ b/lib/x.ex\n" <>
+          "@@ -1,3 +1,1 @@\n line 1\n-line 2\n-line 3\n" <>
+          "@@ -4,1 +2,3 @@\n+x\n+y\n line 4\n"
+
+      {:ok, text} = Examples.blocks(patch, "lib/x.ex")
+      {:ok, [b]} = Tools.text_edit_blocks(text, mode: :text)
+      assert {b.start, b.end, b.replace} == {2, 3, "x\ny\n"}
+
+      # a split new file joins back into one whole create
+      new_file =
+        "--- /dev/null\n+++ b/lib/n.ex\n@@ -0,0 +1,2 @@\n+one\n+two\n@@ -0,0 +3,1 @@\n+three\n"
+
+      assert {:ok, [%{replace: "one\ntwo\nthree\n"}]} =
+               Tools.text_edit_blocks(elem(Examples.blocks(new_file, "lib/n.ex"), 1), mode: :text)
+    end
+
+    test "counts that disagree with the header, or a line rewritten to ~, refuse the example" do
+      short = "--- a/lib/x.ex\n+++ b/lib/x.ex\n@@ -3,3 +3,3 @@\n line 3\n-line 4\n+four\n"
+      assert Examples.blocks(short, "lib/x.ex") == :error
+
+      tilde =
+        "--- a/bin/r\n+++ b/bin/r\n@@ -1,2 +1,2 @@\n-exec ~/bin/x\n+exec ~/bin/y\n line 2\n"
+
+      assert Examples.blocks(tilde, "bin/r") == :error
+    end
+  end
+
+  describe "History.change/1: the whole file diff from its chunks" do
+    test "chunks 0..n-1 stitch under chunk 0's header; a missing chunk gives nil" do
+      head = "--- a/lib/x.ex\n+++ b/lib/x.ex\n"
+      c0 = %{"chunk" => 0, "chunks" => 2, "patch" => head <> "@@ -1 +1 @@\n-a\n+b\n"}
+      c1 = %{"chunk" => 1, "chunks" => 2, "patch" => head <> "@@ -9 +9 @@\n-c\n+d\n"}
+
+      assert Trailblazer.History.change([c1, c0]) ==
+               head <> "@@ -1 +1 @@\n-a\n+b\n@@ -9 +9 @@\n-c\n+d\n"
+
+      assert Trailblazer.History.change([c0]) == nil
+      assert Trailblazer.History.change([c1]) == nil
+      assert Trailblazer.History.change([]) == nil
+      # entries from before `chunks` was recorded: an unbroken run from 0
+      assert Trailblazer.History.change([Map.delete(c0, "chunks")]) =~ "-a"
+    end
   end
 
   defp entry(id, attrs) do
@@ -131,8 +183,34 @@ defmodule Trailblazer.Loop.ExamplesTest do
             ],
             do: {0.7, e}
 
-      kept = Examples.exclude(hits, %{request: "Fix it bug:abc1234ff"}, 2_000)
+      kept = Examples.exclude(hits, %{request: "Fix it bug:abc1234ff"}, before: 2_000)
       assert Enum.map(kept, &elem(&1, 1)["id"]) == ["c", "e"]
+    end
+
+    test "in the case's own repo only ancestors of the base stay, whatever their time" do
+      hits =
+        for e <- [
+              # the case's own fix on a side branch, committed before the base's time
+              entry("side", %{"commit" => "s1", "at" => 10}),
+              entry("anc", %{"commit" => "a1", "at" => 10}),
+              # another repo: the time cut applies
+              entry("other", %{"repo" => "vortex", "commit" => "v1", "at" => 10}),
+              entry("late", %{"repo" => "vortex", "commit" => "v2", "at" => 5_000})
+            ],
+            do: {0.7, e}
+
+      kept =
+        Examples.exclude(hits, %{request: "x", repo: "/home/u/projects/trailblazer"},
+          before: 2_000,
+          reachable: MapSet.new(["a1"])
+        )
+
+      assert Enum.map(kept, &elem(&1, 1)["id"]) == ["anc", "other"]
+    end
+
+    test "fails closed: an entry without a commit time is excluded when a cut applies" do
+      hits = [{0.7, entry("x", %{"at" => nil})}, {0.7, entry("y", %{})}]
+      assert [{_, %{"id" => "y"}}] = Examples.exclude(hits, %{request: "x"}, before: 2_000)
     end
   end
 
@@ -185,14 +263,16 @@ defmodule Trailblazer.Loop.ExamplesTest do
       assert r.text =~ ~s(<edit path="lib/x.ex" start="4" end="4">)
     end
 
-    test "the reranker may say none fits: no section" do
-      chat = fn _m, _o -> {:ok, %{content: "0"}} end
+    test "the reranker may say none fits, in any words: no section, no vector fallback" do
+      for answer <- ["0", "None of them.", "0 - none fit", "7"] do
+        chat = fn _m, _o -> {:ok, %{content: answer}} end
 
-      assert {:ok, %{text: nil, ids: [], how: :rerank}} =
-               Examples.recall(%{request: "x"},
-                 similar: similar([entry("1", %{})]),
-                 rerank_chat: chat
-               )
+        assert {:ok, %{text: nil, ids: [], how: :rerank}} =
+                 Examples.recall(%{request: "x"},
+                   similar: similar([entry("1", %{})]),
+                   rerank_chat: chat
+                 )
+      end
     end
 
     test "a failed rerank leaves the vector order and says why" do

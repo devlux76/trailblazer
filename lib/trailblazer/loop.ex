@@ -188,20 +188,20 @@ defmodule Trailblazer.Loop do
   end
 
   # Similar past changes (Loop.Examples), recalled in a job beside the trail;
-  # only entries committed before the case's base are eligible.
+  # eligible: the case repository's commits reachable from the base, other
+  # repositories' commits from before the base's time. Without both, none.
   defp examples(st) do
-    before =
-      case System.cmd("git", ["show", "-s", "--format=%ct", st.ws.base],
-             cd: st.ws.path,
-             stderr_to_stdout: true
-           ) do
-        {out, 0} -> out |> String.trim() |> String.to_integer()
-        _ -> nil
-      end
+    git = fn args -> System.cmd("git", args, cd: st.ws.path, stderr_to_stdout: true) end
 
-    if before,
-      do: mod(st, :examples, Trailblazer.Loop.Examples).recall(st.task, before: before),
-      else: {:error, :base_time}
+    with {time, 0} <- git.(["show", "-s", "--format=%ct", st.ws.base]),
+         {shas, 0} <- git.(["rev-list", st.ws.base]) do
+      mod(st, :examples, Trailblazer.Loop.Examples).recall(st.task,
+        before: time |> String.trim() |> String.to_integer(),
+        reachable: MapSet.new(String.split(shas))
+      )
+    else
+      _ -> {:error, :base_history}
+    end
   rescue
     e -> {:error, Exception.message(e)}
   end
@@ -225,6 +225,11 @@ defmodule Trailblazer.Loop do
   end
 
   defp recorded_examples(_st, nil), do: nil
+
+  defp recorded_examples(st, other) do
+    record(st, :attempt, %{stage: :examples, error: "unexpected: " <> inspect(other)})
+    nil
+  end
 
   defp stop_job({token, pid, mon}) do
     Process.demonitor(mon, [:flush])

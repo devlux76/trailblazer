@@ -160,7 +160,11 @@ defmodule Trailblazer.LoopTest do
   # Recall runs in a job of its own, so the test's pid is found globally.
   defmodule ExamplesAt do
     def recall(task, opts) do
-      send(:persistent_term.get(:examples_test_pid), {:recall, task.request, opts[:before]})
+      send(
+        :persistent_term.get(:examples_test_pid),
+        {:recall, task.request, opts[:before], opts[:reachable]}
+      )
+
       {:ok, %{text: "PAST CHANGE", ids: ["e1"], how: :rerank, considered: 4, rerank_error: nil}}
     end
   end
@@ -189,7 +193,9 @@ defmodule Trailblazer.LoopTest do
       )
 
     assert report.status == :fixed
-    assert_received {:recall, "Greet with a comma", ^base_time}
+    assert_received {:recall, "Greet with a comma", ^base_time, reachable}
+    # the case repository's commits reachable from the base: here, its one commit
+    assert reachable == MapSet.new([String.trim(git(repo, ["rev-parse", "HEAD"]))])
 
     assert %{"ids" => ["e1"], "how" => "rerank", "considered" => 4} =
              Enum.find_value(CaseRecord.get(report.case).events, fn e ->
@@ -216,7 +222,7 @@ defmodule Trailblazer.LoopTest do
            ).status ==
              :fixed
 
-    refute_received {:recall, _, _}
+    refute_received {:recall, _, _, _}
   end
 
   test "a complete fenced JSON edit array uses the same check review and commit path", %{

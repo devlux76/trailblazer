@@ -304,8 +304,11 @@ defmodule Trailblazer.History do
       end,
       fn acc -> {:cont, header <> acc, ""} end
     )
-    |> Enum.with_index()
-    |> Enum.map(fn {chunk, i} ->
+    |> then(fn pieces ->
+      total = length(pieces)
+      pieces |> Enum.with_index() |> Enum.map(fn {chunk, i} -> {chunk, i, total} end)
+    end)
+    |> Enum.map(fn {chunk, i, total} ->
       name = Path.basename(repo)
 
       id =
@@ -327,6 +330,9 @@ defmodule Trailblazer.History do
         card_status: card && card.status,
         path: path,
         chunk: i,
+        # how many chunks the file's diff has: recall stitches the whole diff
+        # back for display (not part of the embedded text: no re-embed)
+        chunks: total,
         request: request,
         patch: chunk,
         old_ranges: old_ranges,
@@ -623,15 +629,41 @@ defmodule Trailblazer.History do
 
   ## Recall
 
-  @doc "The `limit` stored entries nearest to `text`, as `{score, entry}`."
+  @doc """
+  The `limit` stored entries nearest to `text`, as `{score, entry}`. Each
+  entry carries `"change"`: the file's whole diff in that commit, stitched
+  from all its chunks (the embedded unit is a chunk; what a coder is shown is
+  the change), or nil when its chunks are not all held.
+  """
   @spec similar(String.t(), pos_integer(), keyword()) ::
           {:ok, [{float(), map()}]} | {:error, term()}
   def similar(text, limit \\ 10, opts \\ []) do
-    by_point = Map.new(load(), fn {_, e} -> {e["point"], e} end)
+    stored = load()
+    by_point = Map.new(stored, fn {_, e} -> {e["point"], e} end)
 
     with {:ok, vector} <- embed(opts).query(text, opts),
          {:ok, hits} <- vectors(opts).nearest(root(), vector, limit, opts) do
-      {:ok, for({point, score} <- hits, e = by_point[point], do: {score, e})}
+      files = Enum.group_by(Map.values(stored), &{&1["repo"], &1["commit"], &1["path"]})
+
+      {:ok,
+       for {point, score} <- hits, e = by_point[point] do
+         {score, Map.put(e, "change", change(files[{e["repo"], e["commit"], e["path"]}]))}
+       end}
+    end
+  end
+
+  @doc false
+  # Chunk 0's file header, then every chunk's hunks in order; nil unless
+  # chunks 0..n-1 are all held (an entry from before `chunks` was recorded
+  # needs only an unbroken run from 0).
+  def change(siblings) do
+    sorted = Enum.sort_by(siblings || [], & &1["chunk"])
+    total = sorted |> List.first(%{}) |> Map.get("chunks")
+
+    if sorted != [] and Enum.map(sorted, & &1["chunk"]) == Enum.to_list(0..(length(sorted) - 1)) and
+         total in [nil, length(sorted)] do
+      [first | _] = parts = Enum.map(sorted, &String.split(&1["patch"], ~r/^(?=@@ )/m, parts: 2))
+      hd(first) <> Enum.map_join(parts, &Enum.at(&1, 1, ""))
     end
   end
 
