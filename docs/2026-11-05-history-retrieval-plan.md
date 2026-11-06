@@ -226,6 +226,19 @@ used so outcomes can be traced back to examples.
 Each step is a card, and each card is coded through the pipeline itself where
 it can be (planner → Trailblazer), with the frontier fallback as usual.
 
+## Step 0 result (2026-11-05)
+
+`scripts/replay_probe.py`; report in `~/.local/share/claude-handoff/replay-probe/report.md`.
+790 entries (69 dropped by the privacy screen), 90 queries, 61 with a same-file sibling
+before them (gate: passed). Sibling recall@1/3/10/50 = 70/84/92/100% (same file),
+45/66/81/97% (same region). Density: growing the pool 25% → 100% raises the share of
+queries that have any sibling from 77% to 100%, while recall@3/10 among them holds
+(79→84, 91→92). More samples help, as the operator said. Scores: relevant and
+irrelevant overlap across 0.56-0.96; no floor separates them. Decision: top-k (50
+covers ~all siblings; keep 200 for headroom) + LFM3 rerank, no floor. Caveat: queries
+carry the target paths, so same-file recall is partly a path match; region-tier
+recall and the replay eval (step 6) are the real test.
+
 ## Peer review record
 
 - 2026-11-05, GLM (OpenCode, read-only, verified against code;

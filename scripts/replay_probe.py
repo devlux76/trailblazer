@@ -49,7 +49,9 @@ LOCK_PATS = ("*.lock", "package-lock.json", "mix.lock", "bun.lock*")
 SQUASH_PREFIX = "Squashed snapshot"
 K_LIST = (1, 3, 10, 50, 200)
 FRACTIONS = (0.25, 0.50, 1.00)
+DENSITY_K = (3, 10)
 SEEDS = 5
+DENSITY_K = (3, 10)
 WIDEN = 20
 
 
@@ -486,7 +488,9 @@ def examples_block(queries: list, pats: list, entries: list, L: list) -> None:
 
 def build_report(entries, queries, per_repo, drop_counts, full, dens, pats, t0, n_emb, model) -> str:
     L = []
-    w = L.append
+
+    def w(line=""):
+        L.append(line)
     w("# Replay probe report (plan step 0, density)")
     w()
     w(f"Run {datetime.now(timezone.utc).isoformat(timespec='seconds')} — {len(entries)} entries, "
@@ -552,7 +556,7 @@ def build_report(entries, queries, per_repo, drop_counts, full, dens, pats, t0, 
         rels_all += [s for s, idx in sc if idx in relp]
         irr_all += [s for s, idx in sc if idx not in relp]
         top_rel.append(max(s for s, idx in sc if idx in relp))
-        top_irr.append(max(s for s, idx in sc if idx not in relp))
+        top_irr.append(max((s for s, idx in sc if idx not in relp), default=float('nan')))
     top_rel, top_irr = np.array(top_rel), np.array(top_irr)
     rels_all, irr_all = np.array(rels_all), np.array(irr_all)
     for h, ttl in ((hist(top_rel), "top-1 relevant score per sibling query"),
@@ -579,7 +583,9 @@ def build_report(entries, queries, per_repo, drop_counts, full, dens, pats, t0, 
         w()
         w(f"Separation check: min top-1 relevant {top_rel.min():.3f}, max all-scores irrelevant "
           f"{irr_all.max():.3f}; {int(np.sum(top_rel < irr_all.max()))} of {top_rel.size} top-1 relevant "
-          "scores overlap that max. No perfect floor exists; rank, not absolute score, must decide.")
+          "scores overlap that max. "
+          + ("No clean floor exists; rank, not absolute score, must decide." if np.sum(top_rel < irr_all.max())
+             else "A clean floor exists above the max irrelevant score."))
     w()
 
     # 5. examples
