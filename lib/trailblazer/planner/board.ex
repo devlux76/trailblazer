@@ -46,6 +46,33 @@ defmodule Trailblazer.Planner.Board do
   def cut(x, n):
       return x[:n] if isinstance(x, str) else x
 
+  # The routing markers (Route) are lines anywhere in the body, and a plan
+  # usually starts past the excerpt: a marker line not whole in the excerpt
+  # follows it, bounded. A cut-off last line is dropped, so a half marker
+  # line is never read first.
+  MARKERS = ("Files:", "Acceptance:", "Implementation plan:")
+
+  def body(b):
+      if not isinstance(b, str):
+          return b
+      lines = b.replace("\r\n", "\n").split("\n")
+      head = b[:400]
+      if len(b) > 400:
+          if "\n" in head:
+              head = head[:head.rfind("\n")]
+          elif head.startswith(MARKERS):
+              head = ""
+      whole = set(head.replace("\r\n", "\n").split("\n"))
+      for m in MARKERS:
+          line = next((l for l in lines if l.startswith(m)), None)
+          if line is None or line in whole:
+              continue
+          if len(line) > 200:
+              cut_at = max(line.rfind(",", 0, 200), line.rfind(" ", 0, 200)) if m == "Files:" else 200
+              line = line[:cut_at] if cut_at > len(m) else line[:200]
+          head += "\n" + line
+      return head
+
   if isinstance(d.get("cards"), list):
       rows = []
       for c in d["cards"]:
@@ -56,7 +83,7 @@ defmodule Trailblazer.Planner.Board do
       if "title" in d:
           d["title"] = cut(d["title"], 200)
       if "body" in d:
-          d["body"] = cut(d["body"], 400)
+          d["body"] = body(d["body"])
       if isinstance(d.get("recent"), list):
           d["recent"] = [cut(c, 150) for c in d["recent"][:3]]
       if isinstance(d.get("claim"), dict) and isinstance(d["claim"].get("notes"), list):

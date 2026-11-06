@@ -117,7 +117,14 @@ defmodule Trailblazer.Planner.BoardTest do
     assert research.context["route"] == "research"
     assert research.context["files"] == []
 
-    body_ref = card(ctx, "half specified", @ready, "Files: lib/only.ex\nImplementation plan: Extract helper and test its behavior.")
+    body_ref =
+      card(
+        ctx,
+        "half specified",
+        @ready,
+        "Files: lib/only.ex\nImplementation plan: Extract helper and test its behavior."
+      )
+
     assert {:ok, %{cards: cards}} = read(config)
     tie = Enum.find(cards, &(&1.ref == body_ref))
     assert tie.context["route"] == "tie"
@@ -264,6 +271,33 @@ defmodule Trailblazer.Planner.BoardTest do
     assert Enum.all?(c.context["recent"], &is_binary/1)
   end
 
+  test "routing markers past the 400-character excerpt still reach the route, whole and bounded",
+       ctx do
+    # a frontier plan is long: its markers start well after the excerpt, and
+    # the Acceptance line straddles the cut
+    filler = String.duplicate("Context sentence about the defect. ", 10)
+
+    body =
+      filler <>
+        "\nAcceptance: " <>
+        String.duplicate("a", 100) <>
+        " passes\nFiles: lib/parser.ex, test/parser_test.exs\nImplementation plan: 1. " <>
+        String.duplicate("step ", 100)
+
+    ref = card(ctx, "long planned card", @ready, body)
+    config = config(ctx, %{ctx.repo => ["make check"]})
+
+    assert {:ok, %{cards: [c]}} = read(config)
+    assert c.ref == ref
+    assert c.context["route"] == "trailblazer"
+    assert c.context["files"] == ["lib/parser.ex", "test/parser_test.exs"]
+    lines = String.split(c.context["body"], "\n")
+    assert Enum.count(lines, &String.starts_with?(&1, "Acceptance:")) == 1
+    assert ("Acceptance: " <> String.duplicate("a", 100) <> " passes") in lines
+    assert Enum.any?(lines, &String.starts_with?(&1, "Implementation plan: 1. step"))
+    assert byte_size(c.context["body"]) <= 400 + 3 * 201
+  end
+
   test "a garbage or failing planner reply is an error, not a card", ctx do
     config = config(ctx, %{ctx.repo => ["make check"]})
 
@@ -358,9 +392,9 @@ defmodule Trailblazer.Planner.BoardTest do
              }
 
       config =
-        config(ctx, %{ctx.repo => ["c"]},
-          %{"research" => %{"peer" => "12D3KooTestPeer", "actor" => "probe", "session" => "work"}}
-        )
+        config(ctx, %{ctx.repo => ["c"]}, %{
+          "research" => %{"peer" => "12D3KooTestPeer", "actor" => "probe", "session" => "work"}
+        })
 
       assert config.research == %{peer: "12D3KooTestPeer", actor: "probe", session: "work"}
       assert config(ctx, %{ctx.repo => ["c"]}).research == nil
@@ -376,7 +410,12 @@ defmodule Trailblazer.Planner.BoardTest do
             %{"peer" => "p", "extra" => true}
           ] do
         path = Path.join(ctx.dir, "bad.json")
-        File.write!(path, Jason.encode!(%{"repos" => %{ctx.repo => ["c"]}, "research" => research}))
+
+        File.write!(
+          path,
+          Jason.encode!(%{"repos" => %{ctx.repo => ["c"]}, "research" => research})
+        )
+
         assert_raise ArgumentError, ~r/research/, fn -> Board.load_config!(path) end
       end
     end
