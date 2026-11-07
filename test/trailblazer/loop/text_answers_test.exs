@@ -125,6 +125,33 @@ defmodule Trailblazer.Loop.TextAnswersTest do
     assert {:error, msg} = TextAnswers.answer_blocks(both, current)
     assert msg =~ "one form per file"
     assert TextAnswers.answer_blocks("nothing here", current) == :none
+    # edit-only: :none, so the loop takes the plain range-block path
+    edit_only = String.replace(reply, ~r/lib\/pairs.py\n```python\n.*?```\n/s, "")
+    assert TextAnswers.answer_blocks(edit_only, current) == :none
+  end
+
+  test "edit tags inside a fenced whole file are its content, not edits", %{dir: dir} do
+    write(dir, "lib/p.md", "old\n")
+    current = TextAnswers.current_files(dir, ["lib/p.md", "lib/x.py"])
+
+    reply = """
+    lib/p.md
+    ```markdown
+    Example:
+    <edit path="lib/x.py" start="1" end="1">
+    <first>a</first>
+    <last>a</last>
+    <replace>
+    b
+    </replace>
+    </edit>
+    and an unfinished <edit
+    <edit path="y">
+    ```
+    """
+
+    assert {:ok, [w]} = TextAnswers.answer_blocks(reply, current)
+    assert w.path == "lib/p.md" and w.replace =~ "<edit path=\"lib/x.py\""
   end
 
   test "changed_files: complete text of each file a diff touches", %{dir: dir} do

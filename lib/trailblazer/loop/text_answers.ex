@@ -95,26 +95,69 @@ defmodule Trailblazer.Loop.TextAnswers do
     end
   end
 
+  @edit_span ~r/^[ \t]*<edit\b.*?^[ \t]*<\/edit>[ \t]*$/ms
+  @fence_span ~r/(?:^|\n)(`{3,})[^\n`]*\n.*?\n\1[ \t]*(?=\n|\z)/s
+
   @doc """
   A whole-file-mode reply: files written whole (`whole_file_blocks/2`) plus
   `<edit>` range blocks for long files (shown numbered, too long to retype
   inside the generation window: live, vortex:d51a661 2026-11-06, ~490 lines at
   ~3.7 tok/s). Either form alone, or both for different files; one file in
-  both forms is refused. `:none` when the reply holds neither.
+  both forms is refused. `:none` when the reply holds no whole file: an
+  edit-only reply then goes the plain range-block way (Loop.tag_blocks).
+
+  Each form is read only outside the other: `<edit>` tags inside a fenced
+  whole file (a prompt or doc that shows the format) are file content, and a
+  fence inside an `<edit>` replace is edit content.
   """
   def answer_blocks(text, current) when is_binary(text) and is_map(current) do
-    tags =
-      if text =~ ~r/^\s*<edit\b/m,
-        do: Trailblazer.Loop.Tools.text_edit_blocks(text, mode: :text),
-        else: :none
+    spans = spans(text, 0, [])
 
-    case {whole_file_blocks(text, current), tags} do
-      {whole, :none} -> whole
-      {:none, {:ok, edits}} -> {:ok, edits}
-      {{:error, _} = error, _} -> error
-      {_, {:error, _} = error} -> error
-      {{:ok, whole}, {:ok, edits}} -> merge_forms(whole, edits)
+    case whole_file_blocks(without(text, spans, :edit), current) do
+      {:ok, whole} ->
+        outside = without(text, spans, :fence)
+
+        case if(outside =~ ~r/^\s*<edit\b/m,
+               do: Trailblazer.Loop.Tools.text_edit_blocks(outside, mode: :text),
+               else: :none
+             ) do
+          :none -> {:ok, whole}
+          {:ok, edits} -> merge_forms(whole, edits)
+          {:error, _} = error -> error
+        end
+
+      other ->
+        other
     end
+  end
+
+  # Fenced and <edit> spans, left to right: whichever starts first owns its
+  # text, so a fence inside an edit and an edit inside a fence stay content.
+  defp spans(text, from, acc) do
+    found =
+      for {kind, re} <- [fence: @fence_span, edit: @edit_span],
+          # the whole match is the first index pair (the fence has a capture)
+          [{start, len} | _] <- [Regex.run(re, text, return: :index, offset: from)],
+          do: {start, len, kind}
+
+    case Enum.min_by(found, &elem(&1, 0), fn -> nil end) do
+      nil -> Enum.reverse(acc)
+      {start, len, kind} -> spans(text, start + len, [{start, len, kind} | acc])
+    end
+  end
+
+  # `text` with the spans of `kind` cut out (byte offsets from Regex :index).
+  defp without(text, spans, kind) do
+    {parts, last} =
+      Enum.reduce(spans, {[], 0}, fn
+        {start, len, ^kind}, {parts, at} ->
+          {[binary_part(text, at, start - at) | parts], start + len}
+
+        _, acc ->
+          acc
+      end)
+
+    IO.iodata_to_binary(Enum.reverse([binary_part(text, last, byte_size(text) - last) | parts]))
   end
 
   defp merge_forms(whole, edits) do
