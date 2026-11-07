@@ -25,5 +25,8 @@ defmodule Trailblazer.Loop.SilentCheckTest do
     assert SilentCheck.annotate(pass, dir, "test 1 = 2") == pass
     silent = %{status: :fail, output_tail: "", exit: 1, ms: 1}
     assert SilentCheck.annotate(silent, dir, "false").output_tail =~ "printed nothing"
+    # a step that reads stdin does not hang; a cd makes it generic
+    assert SilentCheck.annotate(silent, dir, ~S|test -n "$(cat)"|).output_tail =~ "This step failed"
+    refute SilentCheck.annotate(silent, dir, "cd sub && test -f x").output_tail =~ "This step"
   end
 end

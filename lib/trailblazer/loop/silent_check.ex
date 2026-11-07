@@ -20,26 +20,39 @@ defmodule Trailblazer.Loop.SilentCheck do
 
   def annotate(result, _path, _command), do: result
 
+  @generic "(the check printed nothing; exit status non-zero)"
+  @trace_max 2_000
+
   defp explain(path, command) do
+    steps = String.split(command, ~r/\s*&&\s*/)
+
+    # a step after a `cd` would run elsewhere than in the real check
     failed =
-      command
-      |> String.split(~r/\s*&&\s*/)
-      |> Enum.filter(&Regex.match?(@step, &1))
-      |> Enum.find_value(fn step ->
-        case System.cmd("sh", ["-xc", step], cd: path, stderr_to_stdout: true) do
-          {_, 0} -> nil
-          {trace, _} -> {step, String.trim(trace)}
-        end
-      end)
+      if Enum.any?(steps, &Regex.match?(~r/(^|\s)(cd|pushd)\s/, &1)),
+        do: nil,
+        else: steps |> Enum.filter(&Regex.match?(@step, &1)) |> Enum.find_value(&probe(path, &1))
 
     case failed do
       nil ->
-        "(the check printed nothing; exit status non-zero)"
+        @generic
 
       {step, trace} ->
-        "(the check printed nothing) This step failed: `#{step}`, evaluated as:\n#{trace}"
+        "(the check printed nothing) This step failed: `#{step}`, evaluated as:\n" <>
+          String.slice(trace, -@trace_max, @trace_max)
     end
   rescue
-    _ -> "(the check printed nothing; exit status non-zero)"
+    _ -> @generic
+  end
+
+  # bounded (5 s) and with no stdin, so a step that reads or sleeps cannot
+  # hold the caller
+  defp probe(path, step) do
+    case System.cmd("sh", ["-c", "timeout 5 sh -xc \"$1\" </dev/null", "probe", step],
+           cd: path,
+           stderr_to_stdout: true
+         ) do
+      {_, 0} -> nil
+      {trace, _} -> {step, String.trim(trace)}
+    end
   end
 end
