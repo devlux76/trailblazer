@@ -30,22 +30,26 @@ if config_env() == :prod do
   config :trailblazer, prune_vectors_on_start: true
 end
 
-# Coding roles (operator, 2026-11-05): Nemotron Bolt codes in text edit mode on
-# the CPU router (the only local model to pass the contact.ts benchmark, 4/4);
-# Spark plans and reviews on its own server (operator: balance the loop; the
-# planner decision call is temperature 0, thinking off, JSON-schema bounded),
-# never reviewing its own work. Bolt's iGPU service emits EOS after one token.
+# Coding roles (2026-11-06, live and measured): lucet-coder-4b-omega codes on
+# the XHToken router (:8096; operator's pick, a Spark-X2.6 code fine-tune served
+# with the base Spark template) and answers whole files (the host diffs them);
+# LFM2.5-24B-A2B QAD Q4_0 plans and reviews on its own CPU router (:8099), so
+# the coder never reviews its own work. Think-prefill is off: lucet echoed the
+# prefilled trail until its window expired.
 if config_env() == :prod do
   config :trailblazer,
     code_attempts: 2,
     frontier_ping: [Path.expand("~/.local/bin/ping-claude")],
-    code_model: "nemotron-3.5-bolt-e4b:q4",
-    code_model_url: "http://127.0.0.1:8094/v1",
+    code_model: "lucet-coder-4b-omega",
+    code_model_url: "http://127.0.0.1:8096/v1",
     code_edit_mode: :text,
-    code_model_sampling: %{temperature: 0.6, top_p: 0.95, top_k: 20, thinking: false},
-    review_model: "spark-x2.6-4b-q8-dspark",
-    review_model_url: "http://127.0.0.1:8096/v1",
-    review_model_sampling: %{thinking: false},
-    planner_model: "spark-x2.6-4b-q8-dspark",
-    planner_model_url: "http://127.0.0.1:8096/v1"
+    code_whole_file: true,
+    code_think_prefill: false,
+    code_model_sampling: %{temperature: 0.6, top_p: 0.95, top_k: 20, thinking: true},
+    review_model: "lfm2.5-24b-a2b:qad-review",
+    review_model_url: "http://127.0.0.1:8099/v1",
+    review_model_sampling: %{temperature: 0.1, top_p: 1.0, top_k: 50, thinking: true},
+    planner_model: "lfm2.5-24b-a2b:qad",
+    planner_model_url: "http://127.0.0.1:8099/v1",
+    planner_prefill: "</think>"
 end
