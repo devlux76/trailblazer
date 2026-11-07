@@ -7,7 +7,9 @@ defmodule Trailblazer.Model.Runaway do
   and the repeated run cut off, so what came before it is used.
   """
 
-  @run 20
+  # high enough that data (zero-filled tables, repeated rows) rarely reaches
+  # it; the live runaway was 347 repeats (review of c44a2bf)
+  @run 40
   # only the tail is examined, so the per-delta check stays cheap
   @tail_bytes 4_096
 
@@ -37,9 +39,7 @@ defmodule Trailblazer.Model.Runaway do
   defp drop_partial_last([]), do: []
   defp drop_partial_last(lines), do: Enum.drop(lines, -1)
 
-  # the content up to (not including) the run of `line`, plus its first copy
-  # when it closes something real (a lone `</fenced>` after `</edit>` is junk,
-  # but keeping one copy is harmless: parsers ignore unknown trailing tags)
+  # the content up to (not including) the run of `line`
   defp cut(content, line) do
     lines = String.split(content, "\n")
     {before, _} = Enum.split(lines, length(lines) - 1 - count_trailing(Enum.drop(lines, -1), line))
