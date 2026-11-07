@@ -709,8 +709,7 @@ defmodule Trailblazer.Loop do
       end
 
     case chat(st, messages, tools, role, submit_only) do
-      # Text mode's final call offers no tools, yet the server still lifts
-      # the model's native edit(...) call out of the text (LFM2.5, live).
+      # No tools offered, yet the server lifts a native edit(...) call (LFM2.5, live)
       {:ok, %{tool_calls: [_ | _] = calls} = reply}
       when tools == nil and st.task.edit_mode == :text ->
         lifted_edits(st, reply, calls)
@@ -1534,7 +1533,8 @@ defmodule Trailblazer.Loop do
               )
         end
 
-      messages = Prompts.reviewer(st.task, diff <> artifact_note, st.head.evidence)
+      files = TextAnswers.changed_files(st.ws.path, diff)
+      messages = Prompts.reviewer(st.task, diff <> artifact_note, st.head.evidence, files)
       review_passes(st, messages, 1)
     end
   end

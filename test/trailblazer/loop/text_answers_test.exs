@@ -90,4 +90,10 @@ defmodule Trailblazer.Loop.TextAnswersTest do
     assert TextAnswers.whole_file_blocks(String.replace(reply, "contact.test", "other"), current) ==
              :none
   end
+
+  test "changed_files: complete text of each file a diff touches", %{dir: dir} do
+    write(dir, "lib/c.ts", "x\n")
+    diff = "--- a/lib/c.ts\n+++ b/lib/c.ts\n@@\n+x\n--- a/gone.ts\n+++ b/gone.ts\n"
+    assert TextAnswers.changed_files(dir, diff) == [{"lib/c.ts", "x\n"}]
+  end
 end

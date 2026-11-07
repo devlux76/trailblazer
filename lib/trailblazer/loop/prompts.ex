@@ -88,17 +88,26 @@ defmodule Trailblazer.Loop.Prompts do
   end
 
   @doc "Messages for a review of `diff`, in a context of its own."
-  @spec reviewer(map(), String.t(), [{String.t(), String.t()}]) :: [map()]
-  def reviewer(task, diff, evidence \\ []) do
+  @spec reviewer(map(), String.t(), [{String.t(), String.t()}], [{String.t(), String.t()}]) ::
+          [map()]
+  def reviewer(task, diff, evidence \\ [], files \\ []) do
     user =
       [
-        section("Request", field(task, :request)),
+        section("Request", request_text(task, true)),
         section(
           "Design",
-          design(task) || "(none given: judge by the request and the code around the change)"
+          design_text(task, true) ||
+            if(design(task),
+              do: nil,
+              else: "(none given: judge by the request and the code around the change)"
+            )
         ),
         section("Installed dependency evidence", evidence(evidence)),
-        section("Diff", fenced(diff, "diff"))
+        section("Diff", fenced(diff, "diff")),
+        # the whole changed files: what unchanged lines define is visible (live,
+        # 2026-11-06: a diff-only reviewer failed a correct change for "missing"
+        # helpers defined above the hunk)
+        section("Changed files after the change (complete)", sources(files, true))
       ]
       |> Enum.reject(&is_nil/1)
       |> Enum.join("\n\n")

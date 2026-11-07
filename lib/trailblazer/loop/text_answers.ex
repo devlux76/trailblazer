@@ -25,6 +25,29 @@ defmodule Trailblazer.Loop.TextAnswers do
   end
 
   @doc """
+  The files a unified diff changes, complete as they are now in `root`, for
+  the reviewer; only text files within the 500-line rule (larger stay
+  diff-only), deleted files skipped.
+  """
+  def changed_files(root, diff) do
+    ~r/^\+\+\+ b\/(.+)$/m
+    |> Regex.scan(diff, capture: :all_but_first)
+    |> List.flatten()
+    |> Enum.uniq()
+    |> Enum.flat_map(fn path ->
+      case Files.read(root, path) do
+        {:ok, text} ->
+          if String.valid?(text) and length(String.split(text, "\n")) <= 501,
+            do: [{path, text}],
+            else: []
+
+        _ ->
+          []
+      end
+    end)
+  end
+
+  @doc """
   For each `@scope/name` package the request names, one real import line
   from the repository, so the coder copies how the code base already imports
   it (live: lucet imported multiaddr from the wrong module with only prose).

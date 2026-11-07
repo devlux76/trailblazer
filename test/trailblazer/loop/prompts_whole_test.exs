@@ -47,4 +47,22 @@ defmodule Trailblazer.Loop.PromptsWholeTest do
     assert user.content =~ "## Design"
     assert user.content =~ "1| one"
   end
+
+  test "reviewer: complete changed files, lean request, the plan wins and the check passed" do
+    task = %{
+      request: "old body: change contact.ts and tests\nCompiler gate: x\nElixir owns execution.",
+      design: "Implementation plan: source already in; add two tests only."
+    }
+
+    [system, user] =
+      Prompts.reviewer(task, "+++ b/a.test.ts\n+test()", [], [
+        {"a.test.ts", "const peer = 1\ntest()\n"}
+      ])
+
+    assert system.content =~ "already run and passed"
+    assert user.content =~ "Changed files after the change (complete)"
+    assert user.content =~ "const peer = 1"
+    refute user.content =~ "Compiler gate"
+    assert user.content =~ "add two tests only"
+  end
 end
