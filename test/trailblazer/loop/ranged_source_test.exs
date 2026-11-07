@@ -45,6 +45,21 @@ defmodule Trailblazer.Loop.RangedSourceTest do
     assert shown == RangedSource.max_lines()
   end
 
+  test "the cap keeps the top-ranked trail range even when it is late in the file" do
+    lines = long_file()
+    trail = "src/store.ts:380-390\nx\n\nsrc/store.ts:10-370\nx"
+    {:ranged, _title, body, _} = RangedSource.cut("src/store.ts", lines, trail)
+    assert body =~ "385|"
+    assert body =~ "396|"
+  end
+
+  test "a whole write of a file too long to have been shown whole is refused" do
+    current = %{"src/store.ts" => Enum.join(long_file(), "\n") <> "\n"}
+    reply = "src/store.ts\n```ts\nimport { a } from './a'\n```\n"
+    assert {:error, msg} = Trailblazer.Loop.TextAnswers.whole_file_blocks(reply, current)
+    assert msg =~ "<edit> blocks by line range"
+  end
+
   test "the whole-file coder prompt shows the ranged file in a fence with its outline" do
     text = Enum.join(long_file(), "\n") <> "\n"
 

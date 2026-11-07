@@ -10,6 +10,7 @@ defmodule Trailblazer.Loop.TextAnswers do
   """
 
   alias Trailblazer.{Config, Files}
+  alias Trailblazer.Loop.RangedSource
 
   @doc "Whole-file answers are on for a text-mode task when `code_whole_file` is true."
   def whole_file?(task), do: task.edit_mode == :text and Config.get(:code_whole_file) == true
@@ -263,6 +264,12 @@ defmodule Trailblazer.Loop.TextAnswers do
 
       old == [] ->
         {:ok, %{path: path, search: "", replace: body}}
+
+      # a file this long reached the coder ranged (Loop.RangedSource): a whole
+      # write would delete every line it was not shown
+      length(old) > RangedSource.max_lines() ->
+        {:error,
+         "#{path}: #{length(old)} lines is too long to write whole; change it with <edit> blocks by line range"}
 
       true ->
         {:ok,

@@ -35,7 +35,9 @@ defmodule Trailblazer.Loop.RangedSource do
     if count <= @max_lines or wanted == [] do
       {:whole, lines}
     else
-      shown = merge([{1, header_end(lines)} | wanted]) |> fit(@max_lines)
+      # cap in trail order first (the top-ranked change site must survive),
+      # then sort and merge (fit merges what it kept)
+      shown = fit([{1, header_end(lines)} | wanted], @max_lines)
       {title, body} = render(path, lines, shown)
       {:ranged, title, body, outline(lines, shown)}
     end
@@ -72,19 +74,28 @@ defmodule Trailblazer.Loop.RangedSource do
 
   # Ranges in the order given (header, then trail rank) while they fit `cap`
   # lines in total, then sorted and merged.
+  # Lines already kept are not counted twice (ranges overlap the header and
+  # each other).
   defp fit(ranges, cap) do
     {kept, _} =
-      Enum.reduce(ranges, {[], 0}, fn {a, b} = r, {kept, used} ->
-        size = b - a + 1
+      Enum.reduce(ranges, {[], MapSet.new()}, fn {a, b}, {kept, seen} ->
+        new = Enum.reject(a..b, &MapSet.member?(seen, &1))
+        room = cap - MapSet.size(seen)
 
         cond do
-          used + size <= cap -> {[r | kept], used + size}
-          used < cap -> {[{a, a + cap - used - 1} | kept], cap}
-          true -> {kept, used}
+          room <= 0 or new == [] -> {kept, seen}
+          length(new) <= room -> {[{a, b} | kept], MapSet.union(seen, MapSet.new(new))}
+          true -> take_partial(new, room, kept, seen)
         end
       end)
 
-    kept |> Enum.reverse() |> merge()
+    merge(kept)
+  end
+
+  # The first `room` unseen lines of a range that does not fit whole.
+  defp take_partial(new, room, kept, seen) do
+    part = Enum.take(new, room)
+    {[{hd(part), List.last(part)} | kept], MapSet.union(seen, MapSet.new(part))}
   end
 
   defp merge(ranges) do
