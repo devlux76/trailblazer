@@ -29,6 +29,8 @@ defmodule Trailblazer.Loop do
 
   alias Trailblazer.{Anomaly, Backstop, Config, EmbedGate, Files, Model, Trail}
 
+  alias Trailblazer.Loop.TextAnswers
+
   alias Trailblazer.Loop.{
     Artifacts,
     CaseRecord,
@@ -628,6 +630,12 @@ defmodule Trailblazer.Loop do
   defp coder_reply(st, trail, files, feedback) do
     head = Map.get(st, :head, %{})
     head = if st.task.edit_mode == :text, do: Map.put(head, :sources, sources(st)), else: head
+
+    head =
+      if TextAnswers.whole_file?(st.task),
+        do: Map.merge(head, %{whole: true, usages: TextAnswers.usages(st.ws.path, st.task)}),
+        else: head
+
     think? = Config.get(:code_think_prefill) == true
     messages = Prompts.coder(st.task, trail, files, feedback, Map.put(head, :think, think?))
 
@@ -671,7 +679,12 @@ defmodule Trailblazer.Loop do
           %{
             role: "user",
             content:
-              "Reading is complete. Reply now with the complete change as <edit>/<create> blocks only; call no tool."
+              if(TextAnswers.whole_file?(st.task),
+                do:
+                  "Reading is complete. Reply now with each changed file written out complete (its path on a line, then one fenced block); call no tool.",
+                else:
+                  "Reading is complete. Reply now with the complete change as <edit>/<create> blocks only; call no tool."
+              )
           }
         ]
 
@@ -1167,20 +1180,28 @@ defmodule Trailblazer.Loop do
   # Text mode answers in the range-block dialect only (Tools.edit_blocks/2):
   # SEARCH/REPLACE text is no longer accepted from it.
   defp blocks(%{task: %{edit_mode: :text}} = st, reply) do
-    case Tools.text_edit_blocks(reply.content, mode: :text) do
-      {:ok, edits} ->
+    whole =
+      if TextAnswers.whole_file?(st.task),
+        do:
+          TextAnswers.whole_file_blocks(
+            reply.content || "",
+            TextAnswers.current_files(st.ws.path, st.task.files)
+          ),
+        else: :none
+
+    case whole do
+      {:ok, [_ | _] = edits} ->
+        record(st, :edit, %{status: :whole_files, paths: Enum.map(edits, & &1.path)})
         {:ok, edits}
 
       {:error, message} ->
         record(st, :edit, %{status: :unparsed, error: message})
 
         {:retry, :unparsed,
-         "Your edits could not be read: #{message}. Submit them #{submit_how(st)}." <>
-           named_lines(st, reply.content)}
+         "Your files could not be used: #{message}. Submit them #{submit_how(st)}."}
 
-      :none ->
-        record(st, :edit, %{status: :no_blocks})
-        {:retry, :no_blocks, "Your reply had no edits. Submit them #{submit_how(st)}."}
+      _ ->
+        tag_blocks(st, reply)
     end
   end
 
@@ -1198,59 +1219,21 @@ defmodule Trailblazer.Loop do
     end
   end
 
-  # For an unreadable text-mode reply: the lines each of its <edit> tags
-  # names, as they are now, and that block filled in with them. A 4B model
-  # copies a concrete shape far better than it follows a rule (live, Bolt,
-  # 2026-11-05: two attempts of bare code inside <edit>).
-  @named_edit ~r/^[ \t]*<edit\b[^>\n]*\bpath="([^"]+)"[^>\n]*>/m
-  @named_cap 40
+  defp tag_blocks(st, reply) do
+    case Tools.text_edit_blocks(reply.content, mode: :text) do
+      {:ok, edits} ->
+        {:ok, edits}
 
-  defp named_lines(st, content) do
-    @named_edit
-    |> Regex.scan(content)
-    |> Enum.map(fn [tag, path] ->
-      {path, tag_number(tag, "start"), tag_number(tag, "end")}
-    end)
-    |> Enum.uniq()
-    |> Enum.take(3)
-    |> Enum.map_join("", fn
-      {path, s, e} when is_integer(s) and is_integer(e) and s >= 1 and e >= s ->
-        case Files.read(st.ws.path, path) do
-          {:ok, text} ->
-            lines = text |> String.split(~r/\r?\n/) |> Enum.with_index(1)
+      {:error, message} ->
+        record(st, :edit, %{status: :unparsed, error: message})
 
-            shown =
-              Enum.filter(lines, fn {_, n} -> n >= s and n <= min(e, s + @named_cap - 1) end)
+        {:retry, :unparsed,
+         "Your edits could not be read: #{message}. Submit them #{submit_how(st)}." <>
+           TextAnswers.named_lines(st.ws.path, reply.content)}
 
-            line = fn n -> lines |> Enum.find({"", n}, &(elem(&1, 1) == n)) |> elem(0) end
-
-            if shown == [],
-              do: "",
-              else:
-                "\n\n#{path} lines #{s}-#{e} are now:\n" <>
-                  Enum.map_join(shown, "\n", fn {l, n} -> "#{n}| #{l}" end) <>
-                  "\nWritten as a block (keep start/end only if these are the lines to replace):\n" <>
-                  "<edit path=\"#{path}\" start=\"#{s}\" end=\"#{e}\">\n" <>
-                  "<first>" <>
-                  line.(s) <>
-                  "</first>\n<last>" <>
-                  line.(e) <>
-                  "</last>\n<replace>\n" <>
-                  "the new lines\n</replace>\n</edit>"
-
-          _ ->
-            ""
-        end
-
-      _ ->
-        ""
-    end)
-  end
-
-  defp tag_number(tag, key) do
-    case Regex.run(~r/\b#{key}="(\d+)"/, tag, capture: :all_but_first) do
-      [n] -> String.to_integer(n)
-      _ -> nil
+      :none ->
+        record(st, :edit, %{status: :no_blocks})
+        {:retry, :no_blocks, "Your reply had no edits. Submit them #{submit_how(st)}."}
     end
   end
 
@@ -2121,6 +2104,14 @@ defmodule Trailblazer.Loop do
       other ->
         other
     end
+  end
+
+  defp submit_how(%{task: %{edit_mode: :text}} = st) when is_map_key(st, :id) do
+    if TextAnswers.whole_file?(st.task),
+      do:
+        "as each changed file written out complete: its path on a line, then one fenced block with every line",
+      else:
+        ~s[as plain-text <edit path start end> blocks with <first>, <last> and <replace> (<create path> for a new file)]
   end
 
   defp submit_how(%{task: %{edit_mode: :text}}),

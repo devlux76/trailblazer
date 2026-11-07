@@ -15,6 +15,7 @@ defmodule Trailblazer.Loop.Prompts do
 
   @coder File.read!(Path.join(@dir, "coder.md"))
   @coder_text File.read!(Path.join(@dir, "coder_text.md"))
+  @coder_whole File.read!(Path.join(@dir, "coder_whole.md"))
   @reviewer File.read!(Path.join(@dir, "reviewer.md"))
   @dossier File.read!(Path.join(@dir, "dossier.md"))
 
@@ -49,19 +50,21 @@ defmodule Trailblazer.Loop.Prompts do
         ) ::
           [map()]
   def coder(task, trail, files, feedback \\ nil, head \\ %{}) do
-    system = coder_system(Map.get(task, :edit_mode, :tool))
+    whole? = Map.get(head, :whole, false)
+    system = if whole?, do: @coder_whole, else: coder_system(Map.get(task, :edit_mode, :tool))
     # with a think prefill the trail and history go in the coder's own
     # thinking (coder_think/2), not in the user message
     think? = Map.get(head, :think, false)
 
     user =
       [
-        section("Request", field(task, :request)),
-        section("Design", design(task)),
+        section("Request", request_text(task, whole?)),
+        section("Design", design_text(task, whole?)),
+        section("How the repository uses it", head[:usages]),
         unless(think?, do: section("Similar past changes", head[:examples])),
         unless(think?, do: section("Trail", trail)),
         section("Files", named(files)),
-        section("Current source", sources(head[:sources] || [])),
+        section("Current source", sources(head[:sources] || [], whole?)),
         section("Check", head[:check] && "Your change must pass: `#{head[:check]}`"),
         section("A test to follow", head[:pattern] && file(head[:pattern])),
         section("Installed dependency evidence", evidence(head[:evidence] || [])),
@@ -187,8 +190,45 @@ defmodule Trailblazer.Loop.Prompts do
   # Text mode only: edits name line ranges and quote their first/last lines,
   # so small named files go whole and numbered as `read` numbers them (the
   # loop bounds them); others stay names, read on demand.
-  defp sources([]), do: nil
-  defp sources(files), do: Enum.map_join(files, "\n\n", &numbered_file/1)
+  defp sources([], _whole?), do: nil
+  # whole-file mode: plain source (numbers would be copied into the answer)
+  defp sources(files, true), do: Enum.map_join(files, "\n\n", &file/1)
+  defp sources(files, _), do: Enum.map_join(files, "\n\n", &numbered_file/1)
+
+  # Whole-file mode reads like a brief to a colleague: the request once (a
+  # design already inside it is not repeated) and without the lines that
+  # address the host, not the coder (gates, budgets, planner bookkeeping).
+  @process ~r/^\s*(?:Compiler gate:|Hard\s*\d+\s*min|Current planner card|Elixir owns|Current checkpoints:|planner (?:note|block|release|start|done) \(|Check:|Independent review|No push|Never merge)/i
+
+  defp request_text(task, false), do: field(task, :request)
+  defp request_text(task, true), do: task |> field(:request) |> strip_process()
+
+  defp design_text(task, false), do: design(task)
+
+  defp design_text(task, true) do
+    design = task |> design() |> strip_process()
+    request = request_text(task, true) || ""
+
+    cond do
+      design in [nil, ""] -> nil
+      String.contains?(squash(request), squash(design)) -> nil
+      true -> design
+    end
+  end
+
+  @doc false
+  def strip_process(nil), do: nil
+
+  def strip_process(text) do
+    text
+    |> String.split("\n")
+    |> Enum.reject(&Regex.match?(@process, &1))
+    |> Enum.join("\n")
+    |> String.replace(~r/\n{3,}/, "\n\n")
+    |> String.trim()
+  end
+
+  defp squash(text), do: text |> String.replace(~r/\s+/, " ") |> String.trim()
 
   defp numbered_file({path, text}) do
     lines = text |> String.split(~r/\r?\n/) |> drop_trailing_empty()

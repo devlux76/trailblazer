@@ -185,6 +185,8 @@ defmodule Trailblazer.Config do
   # Prefill the coder's reply with a closed think block holding the trail and
   # history (Loop): for a model whose template always thinks (LFM2.5).
   defp default(:code_think_prefill), do: false
+  # whole-file coder answers: each changed file written complete, the host diffs it
+  defp default(:code_whole_file), do: false
   defp default(:frontier_ping), do: nil
   # The trail reranker: ranger's LFM3 on the shared router (Trail.Rerank).
   defp default(:rerank_model), do: "lfm3-1.7b:q8"
