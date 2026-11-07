@@ -1219,7 +1219,7 @@ defmodule Trailblazer.Loop do
   end
 
   defp tag_blocks(st, reply) do
-    case Tools.text_edit_blocks(reply.content, mode: :text) do
+    case TextAnswers.edit_blocks(reply.content, {st.ws.path, st.task.files}) do
       {:ok, edits} ->
         {:ok, edits}
 

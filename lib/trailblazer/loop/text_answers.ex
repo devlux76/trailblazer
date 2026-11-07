@@ -15,6 +15,32 @@ defmodule Trailblazer.Loop.TextAnswers do
   @doc "Whole-file answers are on for a text-mode task when `code_whole_file` is true."
   def whole_file?(task), do: task.edit_mode == :text and Config.get(:code_whole_file) == true
 
+  @doc """
+  `<edit>` range blocks of a text-mode reply (Tools.text_edit_blocks/2). A
+  block from line 1 of a file that is not there yet (`missing?.(path)`) is
+  that file written whole: lucet created a new file as
+  `<edit path="v6/hub/store-schema.ts" start="1" end="1">` (live,
+  vortex:c8047e0), which as a range found no file and ended the case.
+  `{root, named}` checks the disk, for the task's named files only (a
+  misspelt path stays a failed edit, not a stray new file).
+  """
+  def edit_blocks(text, {root, named}),
+    do: edit_blocks(text, &(&1 in named and not File.exists?(Path.join(root, &1))))
+
+  def edit_blocks(text, missing?) do
+    case Trailblazer.Loop.Tools.text_edit_blocks(text, mode: :text) do
+      {:ok, blocks} -> {:ok, Enum.map(blocks, &create_missing(&1, missing?))}
+      other -> other
+    end
+  end
+
+  defp create_missing(%{type: :range, start: s, path: path, replace: body} = block, missing?)
+       when s <= 1 do
+    if missing?.(path), do: %{path: path, search: "", replace: body}, else: block
+  end
+
+  defp create_missing(block, _missing?), do: block
+
   @doc "The named files as they are now (nil: not there yet); only these may be written whole."
   def current_files(root, paths) do
     Map.new(paths, fn path ->
@@ -119,7 +145,7 @@ defmodule Trailblazer.Loop.TextAnswers do
         outside = without(text, spans, :fence)
 
         case if(outside =~ ~r/^\s*<edit\b/m,
-               do: Trailblazer.Loop.Tools.text_edit_blocks(outside, mode: :text),
+               do: edit_blocks(outside, &(Map.has_key?(current, &1) and current[&1] == nil)),
                else: :none
              ) do
           :none -> {:ok, whole}

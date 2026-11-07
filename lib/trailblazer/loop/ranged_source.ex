@@ -16,6 +16,8 @@ defmodule Trailblazer.Loop.RangedSource do
   @context 6
   @header_scan 60
   @outline_max 80
+  # a top-level declaration (outline entries, request-named spans)
+  @decl ~r/^(export\s|async\s|function\s|class\s|interface\s|type\s|enum\s|const\s|let\s|var\s|def\s|pub\s|fn\s|struct\s|impl\s|  defp?\s|  defmacro\s)/
 
   @doc "Line cap above which a file is ranged (planner window_fit mirrors it)."
   def max_lines, do: @max_lines
@@ -26,21 +28,49 @@ defmodule Trailblazer.Loop.RangedSource do
   with gap markers (to fence), and an outline of the rest ("" when none).
   `lines` are the file's lines (no trailing empty line).
   """
-  @spec cut(String.t(), [String.t()], String.t() | nil) ::
+  @spec cut(String.t(), [String.t()], String.t() | nil, String.t() | nil) ::
           {:whole, [String.t()]} | {:ranged, String.t(), String.t(), String.t()}
-  def cut(path, lines, trail) do
+  def cut(path, lines, trail, request \\ nil) do
     count = length(lines)
-    wanted = trail_ranges(trail, path, count)
+    wanted = named_spans(lines, request) ++ trail_ranges(trail, path, count)
 
     if count <= @max_lines or wanted == [] do
       {:whole, lines}
     else
-      # cap in trail order first (the top-ranked change site must survive),
-      # then sort and merge (fit merges what it kept)
+      # cap in order: header, declarations the request names (live,
+      # vortex:c8047e0: "move SCHEMA, the record interfaces ..." while the
+      # trail ranked the class body, so the coder invented SCHEMA), then the
+      # trail's ranges by rank; sort and merge after (fit merges what it kept)
       shown = fit([{1, header_end(lines)} | wanted], @max_lines)
       {title, body} = render(path, lines, shown)
       {:ranged, title, body, outline(lines, shown)}
     end
+  end
+
+  # Top-level declarations whose name the request says, each from its line to
+  # the line before the next declaration, in file order. One longer than half
+  # the cap (a whole class the request names as the thing that stays) is left
+  # to the trail and the outline.
+  @named ~r/^(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function\*?|class|interface|type|enum|const|let|var|def|defp|defmodule)\s+([A-Za-z_$][\w$.]*)/
+  defp named_spans(_lines, nil), do: []
+
+  defp named_spans(lines, request) do
+    decls =
+      for {l, n} <- Enum.with_index(lines, 1), Regex.match?(@decl, l), do: n
+
+    ends = Enum.map(Enum.drop(decls, 1), &(&1 - 1)) ++ [length(lines)]
+
+    Enum.zip(decls, ends)
+    |> Enum.filter(fn {a, b} ->
+      case Regex.run(@named, Enum.at(lines, a - 1), capture: :all_but_first) do
+        [name] ->
+          b - a + 1 <= div(@max_lines, 2) and
+            Regex.match?(~r/(?<![\w$])#{Regex.escape(name)}(?![\w$])/, request)
+
+        _ ->
+          false
+      end
+    end)
   end
 
   # Trail entries open with "path:start-end" (Prompts.lean_trail splits on it).
@@ -128,7 +158,6 @@ defmodule Trailblazer.Loop.RangedSource do
 
   # Top-level declarations outside the shown ranges: where the rest of the
   # file is, so the coder can place or move code without seeing all of it.
-  @decl ~r/^(export\s|async\s|function\s|class\s|interface\s|type\s|enum\s|const\s|let\s|var\s|def\s|class\s|pub\s|fn\s|struct\s|impl\s|  defp?\s|  defmacro\s)/
   defp path_hint(lines), do: "the #{length(lines)}-line file,"
 
   defp outline(lines, shown) do

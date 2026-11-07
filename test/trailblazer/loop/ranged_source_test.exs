@@ -53,6 +53,35 @@ defmodule Trailblazer.Loop.RangedSourceTest do
     assert body =~ "396|"
   end
 
+  test "declarations the request names are shown before the trail's ranges" do
+    lines =
+      ["import { a } from './a'", "export const SCHEMA = `"] ++
+        Enum.map(3..40, &"t#{&1}") ++
+        ["`", "export class Big {"] ++ Enum.map(43..398, &"  m#{&1}()") ++ ["}", "export function tail () {}"]
+
+    request = "Move SCHEMA and tail out; the Big class stays."
+    trail = "src/s.ts:100-390\nx"
+    {:ranged, title, body, _} = RangedSource.cut("src/s.ts", lines, trail, request)
+    assert title =~ "showing 1-41"
+    assert body =~ "40| t40"
+    assert body =~ "400| export function tail () {}"
+    # the 357-line class is not shown whole for being named
+    refute body =~ "43|   m43()"
+  end
+
+  test "an <edit> from line 1 of a file not there yet writes it whole", %{} do
+    dir = Path.join(System.tmp_dir!(), "rs-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+    File.write!(Path.join(dir, "old.ts"), "a\n")
+    reply = ~s(<edit path="new.ts" start="1" end="1">\n<replace>\nexport const x = 1\n</replace>\n</edit>\n<edit path="old.ts" start="1" end="1">\n<replace>\nb\n</replace>\n</edit>\n)
+    alias Trailblazer.Loop.TextAnswers
+    assert {:ok, [n, o]} = TextAnswers.edit_blocks(reply, {dir, ["new.ts", "old.ts"]})
+    assert n.search == "" and n.replace =~ "export const x = 1"
+    assert o.type == :range
+    # a path the task did not name is not created
+    assert {:ok, [%{type: :range}, _]} = TextAnswers.edit_blocks(reply, {dir, ["old.ts"]})
+  end
+
   test "a whole write of a file too long to have been shown whole is refused" do
     current = %{"src/store.ts" => Enum.join(long_file(), "\n") <> "\n"}
     reply = "src/store.ts\n```ts\nimport { a } from './a'\n```\n"

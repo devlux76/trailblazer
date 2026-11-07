@@ -71,7 +71,7 @@ defmodule Trailblazer.Loop.Prompts do
           do: section("Trail", if(whole?, do: lean_trail(trail, head), else: trail))
         ),
         section("Files", named(files)),
-        section("Current source", coder_sources(head[:sources] || [], whole?, trail)),
+        section("Current source", coder_sources(head[:sources] || [], whole?, {trail, request_text(task, whole?)})),
         section("Check", head[:check] && "Your change must pass: `#{head[:check]}`"),
         section("A test to follow", head[:pattern] && file(head[:pattern])),
         section("Installed dependency evidence", evidence(head[:evidence] || [])),
@@ -227,11 +227,11 @@ defmodule Trailblazer.Loop.Prompts do
   defp coder_sources([], _whole?, _trail), do: nil
   defp coder_sources(files, false, _trail), do: sources(files, false)
 
-  defp coder_sources(files, true, trail) do
+  defp coder_sources(files, true, {trail, request}) do
     Enum.map_join(files, "\n\n", fn {path, text} = file ->
       lines = text |> String.split(~r/\r?\n/) |> drop_trailing_empty()
 
-      case RangedSource.cut(path, lines, trail) do
+      case RangedSource.cut(path, lines, trail, request) do
         {:whole, _} -> whole_source(file)
         {:ranged, title, body, ""} -> title <> "\n" <> fenced(body, lang(path))
         {:ranged, title, body, outline} -> title <> "\n" <> fenced(body, lang(path)) <> "\n" <> outline
