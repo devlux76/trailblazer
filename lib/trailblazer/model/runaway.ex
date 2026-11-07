@@ -28,10 +28,37 @@ defmodule Trailblazer.Model.Runaway do
       [line | _] = last when length(last) == @run ->
         if String.trim(line) != "" and Enum.all?(last, &(&1 == line)),
           do: {:runaway, cut(content, line)},
-          else: :ok
+          else: numbered_copy(content, lines)
 
       _ ->
-        :ok
+        numbered_copy(content, lines)
+    end
+  end
+
+  # The numbered source view copied back, prefixes and all: `145| return`,
+  # `146| }` … on consecutive numbers (live, vortex:31f3d17: lucet retyped
+  # the 190-line vx.ts from its numbered view at ~3 tok/s, twice, until the
+  # 15-minute window closed). An answer never holds those prefixes; the
+  # reply is stopped where the copy began, keeping what came before it.
+  @numbered_run 8
+  defp numbered_copy(content, lines) do
+    last = Enum.take(lines, -@numbered_run)
+    nums = Enum.map(last, &line_number/1)
+
+    if length(last) == @numbered_run and Enum.all?(nums, &is_integer/1) and
+         nums == Enum.to_list(hd(nums)..(hd(nums) + @numbered_run - 1)//1) do
+      all = content |> String.split("\n") |> Enum.drop(-1)
+      copied = all |> Enum.reverse() |> Enum.take_while(&is_integer(line_number(&1))) |> length()
+      {:runaway, Enum.join(Enum.drop(all, -copied), "\n") <> "\n"}
+    else
+      :ok
+    end
+  end
+
+  defp line_number(line) do
+    case Regex.run(~r/^\s*(\d+)\| /, line) do
+      [_, n] -> String.to_integer(n)
+      _ -> nil
     end
   end
 

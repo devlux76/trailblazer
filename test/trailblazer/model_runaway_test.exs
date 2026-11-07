@@ -21,4 +21,14 @@ defmodule Trailblazer.ModelRunawayTest do
     assert {:runaway, kept} = Runaway.trim(content)
     assert String.ends_with?(kept, @answer)
   end
+
+  test "the numbered view copied back (8 consecutive N| lines) stops the reply before the copy" do
+    copy = Enum.map_join(140..148, "", &"#{&1}|   line #{&1}\n")
+    content = @answer <> "v6/cli/vx.ts\n```typescript\n" <> copy
+    assert {:runaway, kept} = Runaway.trim(content)
+    assert kept == @answer <> "v6/cli/vx.ts\n```typescript\n"
+    # 7 numbered lines, or numbers that do not run consecutively, are left alone
+    assert Runaway.trim(@answer <> Enum.map_join(1..7, "", &"#{&1}| x\n")) == :ok
+    assert Runaway.trim(@answer <> Enum.map_join(1..8, "", &"#{&1 * 2}| x\n")) == :ok
+  end
 end
