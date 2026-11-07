@@ -62,7 +62,9 @@ defmodule Trailblazer.Loop.Prompts do
         section("Design", design_text(task, whole?)),
         section("How the repository uses it", head[:usages]),
         unless(think?, do: section("Similar past changes", head[:examples])),
-        unless(think?, do: section("Trail", trail)),
+        unless(think?,
+          do: section("Trail", if(whole?, do: lean_trail(trail, head), else: trail))
+        ),
         section("Files", named(files)),
         section("Current source", sources(head[:sources] || [], whole?)),
         section("Check", head[:check] && "Your change must pass: `#{head[:check]}`"),
@@ -222,6 +224,37 @@ defmodule Trailblazer.Loop.Prompts do
       design in [nil, ""] -> nil
       String.contains?(squash(request), squash(design)) -> nil
       true -> design
+    end
+  end
+
+  # Whole-file mode: the trail keeps every entry from a file being changed
+  # (its source is shown whole anyway, so those are its outline) and other
+  # entries, in the trail's own order, only while they fit @trail_budget
+  # chars (live, 2026-11-06: ~70 entries, 18 KB, for a two-test change).
+  @trail_budget 3_000
+
+  @doc false
+  def lean_trail(nil, _head), do: nil
+
+  def lean_trail(trail, head) do
+    named = MapSet.new(head[:sources] || [], &elem(&1, 0))
+
+    {kept, _} =
+      trail
+      |> String.split(~r/\n{2,}(?=\S+:\d+-\d+\n)/)
+      |> Enum.reduce({[], 0}, fn entry, {kept, used} ->
+        path = entry |> String.split(":", parts: 2) |> hd()
+
+        cond do
+          MapSet.member?(named, path) -> {[entry | kept], used}
+          used + byte_size(entry) <= @trail_budget -> {[entry | kept], used + byte_size(entry)}
+          true -> {kept, used}
+        end
+      end)
+
+    case Enum.reverse(kept) do
+      [] -> nil
+      entries -> Enum.join(entries, "\n\n")
     end
   end
 

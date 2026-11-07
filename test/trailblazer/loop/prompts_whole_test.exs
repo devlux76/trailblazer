@@ -65,4 +65,28 @@ defmodule Trailblazer.Loop.PromptsWholeTest do
     refute user.content =~ "Compiler gate"
     assert user.content =~ "add two tests only"
   end
+
+  test "whole-file trail: named files kept, others only within the budget, order kept" do
+    big = String.duplicate("x", 2_500)
+
+    trail =
+      Enum.join(
+        [
+          "src/a.ts:1-3\nfunction a",
+          "src/other.ts:1-9\n" <> big,
+          "src/a.test.ts:5-5\nconst addr",
+          "src/third.ts:1-2\n" <> big
+        ],
+        "\n\n"
+      )
+
+    lean = Prompts.lean_trail(trail, %{sources: [{"src/a.ts", ""}, {"src/a.test.ts", ""}]})
+    assert lean =~ "function a"
+    assert lean =~ "const addr"
+    assert lean =~ "src/other.ts"
+    refute lean =~ "src/third.ts"
+
+    assert String.split(lean, "\n\n") |> Enum.map(&hd(String.split(&1, ":"))) ==
+             ["src/a.ts", "src/other.ts", "src/a.test.ts"]
+  end
 end
