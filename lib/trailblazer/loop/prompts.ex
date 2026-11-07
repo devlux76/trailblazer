@@ -124,6 +124,15 @@ defmodule Trailblazer.Loop.Prompts do
   """
   @spec review_verdict(String.t()) :: :pass | {:fail, String.t()} | {:unclear, String.t()}
   def review_verdict(text) do
+    # A thinking model may reason in the visible answer and close it with
+    # </think> (live, LFM2.5-24B on vortex:9d3e16f: "FAIL: ... wait, it is
+    # present ... PASS</think>\nPASS"); only what follows the last close counts.
+    text =
+      case String.split(text, "</think>") do
+        [_only] -> text
+        parts -> List.last(parts)
+      end
+
     {first, rest} =
       text
       |> String.replace("\r\n", "\n")

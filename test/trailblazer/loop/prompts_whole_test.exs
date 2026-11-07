@@ -89,4 +89,14 @@ defmodule Trailblazer.Loop.PromptsWholeTest do
     assert String.split(lean, "\n\n") |> Enum.map(&hd(String.split(&1, ":"))) ==
              ["src/a.ts", "src/other.ts", "src/a.test.ts"]
   end
+
+  test "review verdict: only what follows the last </think> counts" do
+    leaked = "FAIL: the diff is missing a test - wait, it is present.\nSo PASS.</think>\nPASS"
+    assert Prompts.review_verdict(leaked) == :pass
+
+    assert {:fail, "x is wrong"} =
+             Prompts.review_verdict("<think>PASS?</think>\nFAIL: x is wrong")
+
+    assert Prompts.review_verdict("PASS") == :pass
+  end
 end
