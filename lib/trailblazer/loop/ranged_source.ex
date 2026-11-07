@@ -71,6 +71,14 @@ defmodule Trailblazer.Loop.RangedSource do
           false
       end
     end)
+    # 60% of the cap in all, so the trail's top-ranked range still fits
+    |> Enum.reduce({[], 0}, fn {a, b}, {kept, used} ->
+      if used + b - a + 1 <= div(@max_lines * 3, 5),
+        do: {[{a, b} | kept], used + b - a + 1},
+        else: {kept, used}
+    end)
+    |> elem(0)
+    |> Enum.reverse()
   end
 
   # Trail entries open with "path:start-end" (Prompts.lean_trail splits on it).
