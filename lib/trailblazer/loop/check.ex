@@ -78,7 +78,7 @@ defmodule Trailblazer.Loop.Check do
     receive do
       {:check_result, ^token, result} ->
         Process.demonitor(ref, [:flush])
-        result
+        Trailblazer.Loop.SilentCheck.annotate(result, path, command)
 
       {:DOWN, ^ref, :process, ^pid, reason} ->
         %{
