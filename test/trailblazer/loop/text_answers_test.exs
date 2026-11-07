@@ -89,6 +89,11 @@ defmodule Trailblazer.Loop.TextAnswersTest do
     # a path it was not given is ignored
     assert TextAnswers.whole_file_blocks(String.replace(reply, "contact.test", "other"), current) ==
              :none
+
+    # live, vortex:db9b82d: the same call named `file`, for a new file
+    file = String.replace(reply, "<tool_call>write", "<tool_call>file")
+    assert {:ok, [n]} = TextAnswers.whole_file_blocks(file, %{"src/core/contact.test.ts" => nil})
+    assert {n.path, n.search, n.replace} == {"src/core/contact.test.ts", "", "a\nb\nc\n"}
   end
 
   test "one reply: a new file whole and a long file by <edit> range; applied together", %{

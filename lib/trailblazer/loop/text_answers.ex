@@ -253,7 +253,8 @@ defmodule Trailblazer.Loop.TextAnswers do
   defp native_writes(text, current) do
     for [inner] <-
           Regex.scan(
-            ~r/<tool_call>\s*(?:write|create|write_file|create_file)\b(.*?)<\/tool_call>/s,
+            # `file` live, vortex:db9b82d attempt 3 (path + content, whole file)
+            ~r/<tool_call>\s*(?:write|create|write_file|create_file|file|save|save_file|write_to_file)\b(.*?)<\/tool_call>/s,
             text,
             capture: :all_but_first
           ),
