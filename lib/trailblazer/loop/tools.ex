@@ -490,7 +490,7 @@ defmodule Trailblazer.Loop.Tools do
   defp tag_block("create", _attrs, _body), do: {:error, ~s(<create> needs path="...")}
 
   defp tag_block("edit", %{"path" => path} = attrs, body) when path != "" do
-    with :ok <- not_bare_code(body, path, attrs),
+    with :ok <- Trailblazer.Loop.EditForm.check(body, path, attrs) || not_bare_code(body, path, attrs),
          {:ok, start} <- tag_int(attrs, "start", 1),
          {:ok, last} <- tag_int(attrs, "end", 0),
          first_text = optional_inner(body, "first"),
