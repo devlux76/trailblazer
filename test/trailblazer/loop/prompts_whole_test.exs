@@ -29,6 +29,18 @@ defmodule Trailblazer.Loop.PromptsWholeTest do
     assert body =~ "import { multiaddr } from '@multiformats/multiaddr'"
     assert body =~ "one\ntwo"
     refute body =~ "1| one"
+
+    # a long file is numbered (changed by <edit> range, not retyped)
+    long = Enum.map_join(1..151, "", &"l#{&1}\n")
+
+    [system, user] =
+      Prompts.coder(task, "trail", [{"src/b.py", 151}], nil, %{
+        whole: true,
+        sources: [{"src/b.py", long}]
+      })
+
+    assert system.content =~ "numbered lines is long"
+    assert user.content =~ "151| l151"
   end
 
   test "tag mode prompt is unchanged by the whole-file helpers" do

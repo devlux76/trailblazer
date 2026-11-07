@@ -91,6 +91,42 @@ defmodule Trailblazer.Loop.TextAnswersTest do
              :none
   end
 
+  test "one reply: a new file whole and a long file by <edit> range; applied together", %{
+    dir: dir
+  } do
+    long = Enum.map_join(1..200, "", &"line #{&1}\n")
+    write(dir, "lib/long.py", long)
+    current = TextAnswers.current_files(dir, ["lib/long.py", "lib/pairs.py"])
+
+    reply = """
+    lib/pairs.py
+    ```python
+    def f(): pass
+    ```
+
+    <edit path="lib/long.py" start="10" end="12">
+    <first>line 10</first>
+    <last>line 12</last>
+    <replace>
+    </replace>
+    </edit>
+    """
+
+    assert {:ok, [w, e]} = TextAnswers.answer_blocks(reply, current)
+    assert w.path == "lib/pairs.py" and e.path == "lib/long.py"
+    assert {:ok, _} = Edits.apply(dir, [w, e])
+    assert read(dir, "lib/pairs.py") == "def f(): pass\n"
+    refute read(dir, "lib/long.py") =~ "line 11\n"
+    assert read(dir, "lib/long.py") =~ "line 9\nline 13\n"
+
+    # whole alone is unchanged behaviour; the same file in both forms is refused
+    assert {:ok, [_]} = TextAnswers.answer_blocks("lib/pairs.py\n```py\nx\n```\n", current)
+    both = reply <> "\nlib/long.py\n```py\nx\n```\n"
+    assert {:error, msg} = TextAnswers.answer_blocks(both, current)
+    assert msg =~ "one form per file"
+    assert TextAnswers.answer_blocks("nothing here", current) == :none
+  end
+
   test "changed_files: complete text of each file a diff touches", %{dir: dir} do
     write(dir, "lib/c.ts", "x\n")
     diff = "--- a/lib/c.ts\n+++ b/lib/c.ts\n@@\n+x\n--- a/gone.ts\n+++ b/gone.ts\n"

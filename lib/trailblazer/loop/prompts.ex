@@ -211,8 +211,10 @@ defmodule Trailblazer.Loop.Prompts do
   # so small named files go whole and numbered as `read` numbers them (the
   # loop bounds them); others stay names, read on demand.
   defp sources([], _whole?), do: nil
-  # whole-file mode: plain source (numbers would be copied into the answer)
-  defp sources(files, true), do: Enum.map_join(files, "\n\n", &file/1)
+  # whole-file mode: plain source (numbers would be copied into the answer);
+  # a long file is numbered: it is changed with <edit> ranges, not retyped
+  @whole_max_lines 150
+  defp sources(files, true), do: Enum.map_join(files, "\n\n", &whole_source/1)
   defp sources(files, _), do: Enum.map_join(files, "\n\n", &numbered_file/1)
 
   # Whole-file mode reads like a brief to a colleague: the request once (a
@@ -302,6 +304,11 @@ defmodule Trailblazer.Loop.Prompts do
   end
 
   defp file({path, text}), do: "#{path}\n" <> fenced(text, lang(path))
+
+  defp whole_source({_path, text} = file) do
+    lines = text |> String.split(~r/\r?\n/) |> drop_trailing_empty()
+    if length(lines) > @whole_max_lines, do: numbered_file(file), else: file(file)
+  end
 
   # A fence longer than any run of backticks in the text, so a file that holds
   # a fence (a README, a prompt) cannot end its own block early.

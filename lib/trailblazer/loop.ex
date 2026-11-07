@@ -1182,7 +1182,7 @@ defmodule Trailblazer.Loop do
     whole =
       if TextAnswers.whole_file?(st.task),
         do:
-          TextAnswers.whole_file_blocks(
+          TextAnswers.answer_blocks(
             reply.content || "",
             TextAnswers.current_files(st.ws.path, st.task.files)
           ),

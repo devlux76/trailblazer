@@ -95,6 +95,38 @@ defmodule Trailblazer.Loop.TextAnswers do
     end
   end
 
+  @doc """
+  A whole-file-mode reply: files written whole (`whole_file_blocks/2`) plus
+  `<edit>` range blocks for long files (shown numbered, too long to retype
+  inside the generation window: live, vortex:d51a661 2026-11-06, ~490 lines at
+  ~3.7 tok/s). Either form alone, or both for different files; one file in
+  both forms is refused. `:none` when the reply holds neither.
+  """
+  def answer_blocks(text, current) when is_binary(text) and is_map(current) do
+    tags =
+      if text =~ ~r/^\s*<edit\b/m,
+        do: Trailblazer.Loop.Tools.text_edit_blocks(text, mode: :text),
+        else: :none
+
+    case {whole_file_blocks(text, current), tags} do
+      {whole, :none} -> whole
+      {:none, {:ok, edits}} -> {:ok, edits}
+      {{:error, _} = error, _} -> error
+      {_, {:error, _} = error} -> error
+      {{:ok, whole}, {:ok, edits}} -> merge_forms(whole, edits)
+    end
+  end
+
+  defp merge_forms(whole, edits) do
+    both = MapSet.intersection(MapSet.new(whole, & &1.path), MapSet.new(edits, & &1.path))
+
+    if MapSet.size(both) == 0,
+      do: {:ok, whole ++ edits},
+      else:
+        {:error,
+         "#{Enum.join(both, ", ")}: written whole and with <edit> blocks; use one form per file"}
+  end
+
   # The coder's own write tool (live, lucet 2026-11-06: the correct whole
   # file as `<tool_call>write<arg_key>path</arg_key><arg_value>...` with a
   # `content` argument): the most natural whole-file answer of all.
