@@ -156,11 +156,11 @@ defmodule Trailblazer.Config do
     do: if(get(:vortex), do: :vortex_bridge, else: :unavailable)
 
   defp default(:code_model), do: "spark-x2.6-4b:q8-dspark"
-  defp default(:code_model_url), do: "http://127.0.0.1:8096/v1"
+  defp default(:code_model_url), do: "http://127.0.0.1:8094/v1"
   # The planner brain's model (Bolt + DFlash, small strict-JSON choices) on its
   # own server on the iGPU (Vulkan), so it never takes CPU from the coding model.
   defp default(:planner_model), do: "nemotron-3.5-bolt-e4b:q4"
-  defp default(:planner_model_url), do: "http://127.0.0.1:8098/v1"
+  defp default(:planner_model_url), do: "http://127.0.0.1:8094/v1"
   # Appended to the server-rendered planner prompt (Decision): "</think>" for a
   # model whose template always opens a think block (LFM2.5); nil keeps the
   # chat request with thinking switched off by template kwargs.
@@ -173,7 +173,7 @@ defmodule Trailblazer.Config do
   # Served by the planner brain's iGPU server when it is up; when it is down the review escalates to the frontier, it does not
   # fail the checked case.
   defp default(:review_model), do: "nemotron-3.5-bolt-e4b:q4"
-  defp default(:review_model_url), do: "http://127.0.0.1:8098/v1"
+  defp default(:review_model_url), do: "http://127.0.0.1:8094/v1"
   # A review call is additionally clamped to the card's shared verification allowance.
   defp default(:review_backstop_ms), do: 900_000
   defp default(:code_model_max_tokens), do: 16_384
@@ -189,9 +189,11 @@ defmodule Trailblazer.Config do
   defp default(:code_whole_file), do: false
   defp default(:frontier_ping), do: nil
   # The trail reranker (Trail.Rerank): :d1 = d1-2B yes/no per candidate on its
-  # own port (systemd mirai-llama-d1), :lfm = LFM3 listwise on the shared router.
+  # shared router (mirai-llama-router), :lfm = LFM3 listwise on the shared router.
   defp default(:rerank_engine), do: :d1
-  defp default(:rerank_decide_url), do: "http://127.0.0.1:8110/v1/systemone"
+  # d1-2B by model ID on the shared router, which proxies /v1/systemone by name
+  defp default(:rerank_decide_url), do: "http://127.0.0.1:8094/v1/systemone"
+  defp default(:rerank_decide_model), do: "d1-2b"
   # Probe 2026-11-06 (F41 contact change, 20 candidates): needed 0.40-0.68,
   # unrelated 0.02-0.31 (one generated contact protobuf 0.56).
   defp default(:rerank_threshold), do: 0.35

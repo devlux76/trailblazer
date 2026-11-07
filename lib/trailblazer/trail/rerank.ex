@@ -3,7 +3,7 @@ defmodule Trailblazer.Trail.Rerank do
   The trail's reranker: which of the ranked candidates a change really needs.
 
   By default (`:rerank_engine` `:d1`) LiquidAI d1-2B, a native decision model
-  served on its own port (`/v1/systemone`), answers one yes/no question per
+  served by model ID on the shared router (`/v1/systemone`), answers one yes/no question per
   candidate with a probability; the candidates at or over
   `:rerank_threshold` stay, most likely first. `:lfm` asks ranger's LFM3 for
   candidate numbers instead (listwise; live 2026-11-06 it often answered in
@@ -69,7 +69,13 @@ defmodule Trailblazer.Trail.Rerank do
          }}
       end)
 
-    body = %{state: "Change request:\n#{request}", questions: questions}
+    body = %{
+      model:
+        Keyword.get_lazy(opts, :rerank_decide_model, fn -> Config.get(:rerank_decide_model) end),
+      state: "Change request:\n#{request}",
+      questions: questions
+    }
+
     post = Keyword.get(opts, :rerank_decide, &post_decide/1)
     threshold = Keyword.get_lazy(opts, :rerank_threshold, fn -> Config.get(:rerank_threshold) end)
 

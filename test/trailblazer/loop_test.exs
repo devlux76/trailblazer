@@ -915,7 +915,7 @@ defmodule Trailblazer.LoopTest do
     assert_received {:asked, _, reviewer_opts}
     refute Keyword.has_key?(coder_opts, :model)
     assert reviewer_opts[:model] == "nemotron-3.5-bolt-e4b:q4"
-    assert reviewer_opts[:model_url] == "http://127.0.0.1:8098/v1"
+    assert reviewer_opts[:model_url] == "http://127.0.0.1:8094/v1"
     assert reviewer_opts[:backstop_ms] in 1..900_000
     assert reviewer_opts[:role] == :reviewer
   end

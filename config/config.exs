@@ -30,24 +30,27 @@ if config_env() == :prod do
   config :trailblazer, prune_vectors_on_start: true
 end
 
-# Coding roles (2026-11-06, live and measured): lucet-coder-4b-omega codes on
-# the XHToken router (:8096; operator's pick, a Spark-X2.6 code fine-tune served
-# with the base Spark template) and answers whole files (the host diffs them);
-# LFM2.5-24B-A2B QAD Q4_0 plans and reviews on its own CPU router (:8099), so
-# the coder never reviews its own work. Think-prefill is off: lucet echoed the
-# prefilled trail until its window expired.
+# Coding roles (2026-11-06, live and measured). Every model is named by ID on
+# the one optimized router (mirai-llama-router :8094, oneAPI build), which
+# assigns ports and loads/unloads models; no standalone llama servers
+# (operator rule: only that router and the Vulkan embedder run).
+# lucet-coder-4b-omega codes (a Spark-X2.6 code fine-tune, base Spark template)
+# and answers whole files, long files by <edit> range; LFM2.5-24B-A2B QAD
+# reviews, so the coder never reviews its own work; hive-conductor-1.7b plans.
+# Think-prefill is off: lucet echoed the prefilled trail until its window expired.
 if config_env() == :prod do
   config :trailblazer,
     code_attempts: 2,
     frontier_ping: [Path.expand("~/.local/bin/ping-claude")],
     code_model: "lucet-coder-4b-omega",
-    code_model_url: "http://127.0.0.1:8096/v1",
+    # every model by ID on the one optimized router (mirai-llama-router)
+    code_model_url: "http://127.0.0.1:8094/v1",
     code_edit_mode: :text,
     code_whole_file: true,
     code_think_prefill: false,
     code_model_sampling: %{temperature: 0.6, top_p: 0.95, top_k: 20, thinking: true},
     review_model: "lfm2.5-24b-a2b:qad-review",
-    review_model_url: "http://127.0.0.1:8099/v1",
+    review_model_url: "http://127.0.0.1:8094/v1",
     review_model_sampling: %{temperature: 0.1, top_p: 1.0, top_k: 50, thinking: true},
     # Hive conductor (LFM3-1.7B role fine-tune, served --reasoning off on the
     # shared router): 5/6 on the planner probe vs 0/6 for the 24B (2026-11-06),

@@ -12,17 +12,18 @@ defmodule Trailblazer.ConfigTest do
   test "the planner leases the CPU model only when it shares the coding model's server" do
     on_exit(fn -> Application.delete_env(:trailblazer, :planner_model_url) end)
 
-    # Bolt on its own iGPU server by default: no CPU lease
-    refute Config.get(:planner_model_url) == Config.get(:code_model_url)
-    refute Config.get(:planner_lease)
-
-    Application.put_env(:trailblazer, :planner_model_url, Config.get(:code_model_url))
+    # every model on the one router by default: the planner shares it, leases
+    assert Config.get(:planner_model_url) == Config.get(:code_model_url)
     assert Config.get(:planner_lease)
+
+    Application.put_env(:trailblazer, :planner_model_url, "http://127.0.0.1:9999/v1")
+    refute Config.get(:planner_lease)
   end
 
   test "the reviewer is a different model than the coder with a 15-minute backstop" do
     assert Config.get(:review_model) == "nemotron-3.5-bolt-e4b:q4"
-    assert Config.get(:review_model_url) == "http://127.0.0.1:8098/v1"
+    # by model ID on the one router (it assigns ports), never the coder's model
+    assert Config.get(:review_model_url) == "http://127.0.0.1:8094/v1"
     assert Config.get(:review_backstop_ms) == 900_000
     refute Config.get(:review_model) == Config.get(:code_model)
   end
