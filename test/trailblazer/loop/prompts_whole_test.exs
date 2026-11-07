@@ -100,6 +100,12 @@ defmodule Trailblazer.Loop.PromptsWholeTest do
 
     assert String.split(lean, "\n\n") |> Enum.map(&hd(String.split(&1, ":"))) ==
              ["src/a.ts", "src/other.ts", "src/a.test.ts"]
+
+    # a file shown whole keeps only an outline line per entry, not its body
+    long =
+      Prompts.lean_trail("src/a.ts:1-40\nfunction a() {\n" <> big, %{sources: [{"src/a.ts", ""}]})
+
+    assert long == "src/a.ts:1-40\nfunction a() {"
   end
 
   test "review verdict: only what follows the last </think> counts" do

@@ -257,9 +257,18 @@ defmodule Trailblazer.Loop.Prompts do
         path = entry |> String.split(":", parts: 2) |> hd()
 
         cond do
-          MapSet.member?(named, path) -> {[entry | kept], used}
-          used + byte_size(entry) <= @trail_budget -> {[entry | kept], used + byte_size(entry)}
-          true -> {kept, used}
+          # its whole source is in the prompt: the entry becomes an outline
+          # line (place + first line), not a repeat (live, vortex:6fb77eb:
+          # 9 KB of repeated excerpts in a 16k-token prompt at ~22 tok/s prefill)
+          MapSet.member?(named, path) ->
+            {[entry |> String.split("\n", parts: 3) |> Enum.take(2) |> Enum.join("\n") | kept],
+             used}
+
+          used + byte_size(entry) <= @trail_budget ->
+            {[entry | kept], used + byte_size(entry)}
+
+          true ->
+            {kept, used}
         end
       end)
 
