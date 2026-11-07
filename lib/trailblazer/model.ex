@@ -25,7 +25,30 @@ defmodule Trailblazer.Model do
   def valid_reasoning_budget?(budget, total \\ Config.get(:code_model_max_tokens)),
     do: is_integer(budget) and budget >= 0 and budget < total
 
+  # A reply that is only a pseudo tool call about thinking, to a request that
+  # offered no tools, is no answer at all (live, lucet: `<tool_call>think_effort
+  # <arg_key>high...` on every retry of four cases, vortex:c8047e0/85be62a,
+  # each costing a whole attempt). Asked again once; the prefix is cached.
+  @junk ~r/\A\s*<tool_call>\s*think[^<]*(?:<[^>]*>[^<]*)*<\/tool_call>\s*\z/
+
+  @doc false
+  def junk_reply?(content) when is_binary(content), do: Regex.match?(@junk, content)
+  def junk_reply?(_), do: false
+
   def chat(messages, opts \\ []) do
+    case chat_once(messages, opts) do
+      {:ok, %{content: content}} = reply ->
+        if opts[:tools] in [nil, []] and not Keyword.get(opts, :junk_reasked, false) and
+             junk_reply?(content),
+           do: chat(messages, Keyword.put(opts, :junk_reasked, true)),
+           else: reply
+
+      other ->
+        other
+    end
+  end
+
+  defp chat_once(messages, opts) do
     budget = opts[:reasoning_budget_tokens]
     total = Keyword.get(opts, :max_tokens, Config.get(:code_model_max_tokens))
     model = Keyword.get(opts, :model, Config.get(:code_model))
