@@ -27,6 +27,36 @@ defmodule Trailblazer.Loop.TextAnswers do
   def edit_blocks(text, {root, named}),
     do: edit_blocks(text, &(&1 in named and not File.exists?(Path.join(root, &1))))
 
+  # Whole-file mode shows a short named file plain, without line numbers, so
+  # an <edit> range on it that quotes neither line is a guess (live,
+  # vortex:85be62a: start=29 end=38 for code at 47-52, unquoted; the host
+  # filled the anchors and broke codex/server.ts). Refused: write it whole.
+  def edit_blocks(text, {root, named, true}) do
+    with {:ok, blocks} <- edit_blocks(text, {root, named}) do
+      case Enum.find(blocks, &unnumbered_guess?(&1, root)) do
+        nil ->
+          {:ok, blocks}
+
+        b ->
+          {:error,
+           "#{b.path} was shown whole without line numbers, so start=#{b.start} end=#{b.end} is a guess; " <>
+             "write #{b.path} out complete instead (its path on a line, then one fenced block)"}
+      end
+    end
+  end
+
+  def edit_blocks(text, {root, named, _whole?}), do: edit_blocks(text, {root, named})
+
+  @plain_max 150
+  defp unnumbered_guess?(%{type: :range, first: nil, last: nil, path: path}, root) do
+    case Files.read(root, path) do
+      {:ok, text} -> length(String.split(String.trim_trailing(text, "\n"), "\n")) <= @plain_max
+      _ -> false
+    end
+  end
+
+  defp unnumbered_guess?(_block, _root), do: false
+
   def edit_blocks(text, missing?) do
     case Trailblazer.Loop.Tools.text_edit_blocks(text, mode: :text) do
       {:ok, blocks} -> {:ok, Enum.map(blocks, &create_missing(&1, missing?))}
