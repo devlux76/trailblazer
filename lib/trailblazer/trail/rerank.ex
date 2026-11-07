@@ -1,7 +1,14 @@
 defmodule Trailblazer.Trail.Rerank do
   @moduledoc """
-  The trail's reranker: ranger's LFM3 reranker (same model, same role) asked
-  once, without tools, which of the ranked candidates a change really needs.
+  The trail's reranker: which of the ranked candidates a change really needs.
+
+  By default (`:rerank_engine` `:d1`) LiquidAI d1-2B, a native decision model
+  served on its own port (`/v1/systemone`), answers one yes/no question per
+  candidate with a probability; the candidates at or over
+  `:rerank_threshold` stay, most likely first. `:lfm` asks ranger's LFM3 for
+  candidate numbers instead (listwise; live 2026-11-06 it often answered in
+  prose with no numbers, ~35 s, and the trail fell back to the plain ranking).
+  `ask/4` (Loop.Examples) stays on LFM3 until the history replay eval.
 
   The embedder squeezes code into a narrow, high cosine band (0.6-0.8 for
   related and unrelated code alike), so a similarity floor cannot tell them
@@ -31,6 +38,71 @@ defmodule Trailblazer.Trail.Rerank do
   def select(_request, [], _opts), do: {:error, :no_candidates}
 
   def select(request, candidates, opts) do
+    case Keyword.get_lazy(opts, :rerank_engine, fn -> Config.get(:rerank_engine) end) do
+      :d1 -> decide(request, candidates, opts)
+      :lfm -> select_lfm(request, candidates, opts)
+    end
+  end
+
+  @question "Does a programmer making this change need to read this code?"
+
+  @doc """
+  `select/3` with d1-2B: one `noul` question per candidate against the change
+  request; the ids whose probability is at least `:rerank_threshold`, most
+  likely first. Nothing over the threshold is `{:error, :nothing_named}` (the
+  trail keeps its ranking), as for the listwise engine.
+  """
+  @spec decide(String.t(), [map()], keyword()) :: {:ok, [term()]} | {:error, term()}
+  def decide(request, candidates, opts \\ []) do
+    numbered = Enum.with_index(candidates, 1)
+
+    questions =
+      Map.new(numbered, fn {c, n} ->
+        {"c#{n}",
+         %{
+           type: "noul",
+           instructions:
+             "#{@question} #{c.path}:#{c.start_line}-#{c.end_line} #{c.qualified}\n" <>
+               String.slice(c.signature || "", 0, 200)
+         }}
+      end)
+
+    body = %{state: "Change request:\n#{request}", questions: questions}
+    post = Keyword.get(opts, :rerank_decide, &post_decide/1)
+    threshold = Keyword.get_lazy(opts, :rerank_threshold, fn -> Config.get(:rerank_threshold) end)
+
+    with {:ok, %{"answers" => answers}} when is_map(answers) <- post.(body) do
+      kept =
+        for {c, n} <- numbered,
+            p = get_in(answers, ["c#{n}", "noul"]),
+            is_number(p) and p >= threshold,
+            do: {c.id, p}
+
+      case kept do
+        [] -> {:error, :nothing_named}
+        _ -> {:ok, kept |> Enum.sort_by(&elem(&1, 1), :desc) |> Enum.map(&elem(&1, 0))}
+      end
+    else
+      {:ok, _} -> {:error, :no_answer}
+      {:error, reason} -> {:error, reason}
+    end
+  rescue
+    e -> {:error, Exception.message(e)}
+  end
+
+  defp post_decide(body) do
+    case Req.post(Config.get(:rerank_decide_url),
+           json: body,
+           retry: false,
+           receive_timeout: Config.get(:rerank_backstop_ms)
+         ) do
+      {:ok, %{status: 200, body: answer}} -> {:ok, answer}
+      {:ok, %{status: status}} -> {:error, {:http, status}}
+      {:error, e} -> {:error, Exception.message(e)}
+    end
+  end
+
+  defp select_lfm(request, candidates, opts) do
     numbered = Enum.with_index(candidates, 1)
 
     listing =

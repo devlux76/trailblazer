@@ -188,7 +188,14 @@ defmodule Trailblazer.Config do
   # whole-file coder answers: each changed file written complete, the host diffs it
   defp default(:code_whole_file), do: false
   defp default(:frontier_ping), do: nil
-  # The trail reranker: ranger's LFM3 on the shared router (Trail.Rerank).
+  # The trail reranker (Trail.Rerank): :d1 = d1-2B yes/no per candidate on its
+  # own port (systemd mirai-llama-d1), :lfm = LFM3 listwise on the shared router.
+  defp default(:rerank_engine), do: :d1
+  defp default(:rerank_decide_url), do: "http://127.0.0.1:8110/v1/systemone"
+  # Probe 2026-11-06 (F41 contact change, 20 candidates): needed 0.40-0.68,
+  # unrelated 0.02-0.31 (one generated contact protobuf 0.56).
+  defp default(:rerank_threshold), do: 0.35
+  # LFM3 (listwise), also Loop.Examples' past-change picker (Rerank.ask):
   defp default(:rerank_model), do: "lfm3-1.7b:q8"
   defp default(:rerank_model_url), do: "http://127.0.0.1:8094/v1"
   defp default(:rerank_backstop_ms), do: 180_000
