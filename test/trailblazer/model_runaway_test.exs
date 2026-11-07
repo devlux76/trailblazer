@@ -1,0 +1,24 @@
+defmodule Trailblazer.ModelRunawayTest do
+  use ExUnit.Case, async: true
+  alias Trailblazer.Model.Runaway
+
+  @answer "<edit path=\"a.ts\" start=\"1\" end=\"1\">\n<replace>\nx\n</replace>\n</edit>\n"
+
+  test "a line repeated 20 times ends the reply; the answer before it is kept" do
+    content = @answer <> String.duplicate("</fenced>\n", 25)
+    assert {:runaway, kept} = Runaway.trim(content)
+    assert kept == @answer
+  end
+
+  test "short repeats, blank runs and normal code are left alone" do
+    assert Runaway.trim(@answer <> String.duplicate("</fenced>\n", 10)) == :ok
+    assert Runaway.trim(@answer <> String.duplicate("\n", 50)) == :ok
+    assert Runaway.trim(Enum.map_join(1..100, "\n", &"line #{&1}")) == :ok
+  end
+
+  test "a long reply is checked by its tail only" do
+    content = String.duplicate("y\n", 10_000) <> @answer <> String.duplicate("}\n", 21)
+    assert {:runaway, kept} = Runaway.trim(content)
+    assert String.ends_with?(kept, @answer)
+  end
+end

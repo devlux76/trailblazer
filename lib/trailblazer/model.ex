@@ -293,11 +293,18 @@ defmodule Trailblazer.Model do
   # opts[:stop_when] sees the content so far; true ends the reply as if the
   # model had finished (finish_reason "host_stop"), and closing the stream
   # stops the server generating.
-  defp host_stop(%{stop_when: stop, done: false, content: content} = s)
-       when is_function(stop, 1) and content != "" do
-    if stop.(content),
-      do: %{s | done: true, choice: true, finish: true, finish_reason: "host_stop"},
-      else: s
+  defp host_stop(%{done: false, content: content} = s) when content != "" do
+    stop = s[:stop_when]
+
+    case Trailblazer.Model.Runaway.trim(content) do
+      {:runaway, kept} ->
+        %{s | content: kept, done: true, choice: true, finish: true, finish_reason: "host_stop"}
+
+      :ok ->
+        if is_function(stop, 1) and stop.(content),
+          do: %{s | done: true, choice: true, finish: true, finish_reason: "host_stop"},
+          else: s
+    end
   end
 
   defp host_stop(s), do: s
