@@ -48,7 +48,11 @@ if config_env() == :prod do
     code_edit_mode: :text,
     code_whole_file: true,
     code_think_prefill: false,
-    code_model_sampling: %{temperature: 0.6, top_p: 0.95, top_k: 20, thinking: true},
+    # thinking off: the borrowed Spark template then tells lucet "the system is
+    # invoked with `thinking_effort=high`", and lucet answered with a
+    # `<tool_call>thinking_effort…` instead of code (vortex:31f3d17: 4 of 4
+    # replies; replayed prompt with thinking off answered with the file)
+    code_model_sampling: %{temperature: 0.6, top_p: 0.95, top_k: 20, thinking: false},
     review_model: "lfm2.5-24b-a2b:qad-review",
     review_model_url: "http://127.0.0.1:8094/v1",
     review_model_sampling: %{temperature: 0.1, top_p: 1.0, top_k: 50, thinking: true},
