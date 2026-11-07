@@ -47,6 +47,13 @@ defmodule Trailblazer.Loop.TextAnswers do
 
   def edit_blocks(text, {root, named, _whole?}), do: edit_blocks(text, {root, named})
 
+  def edit_blocks(text, missing?) do
+    case Trailblazer.Loop.Tools.text_edit_blocks(text, mode: :text) do
+      {:ok, blocks} -> {:ok, Enum.map(blocks, &create_missing(&1, missing?))}
+      other -> other
+    end
+  end
+
   @plain_max 150
   defp unnumbered_guess?(%{type: :range, first: nil, last: nil, path: path}, root) do
     case Files.read(root, path) do
@@ -55,18 +62,13 @@ defmodule Trailblazer.Loop.TextAnswers do
         lines = String.split(text, ~r/\r?\n/)
         lines = if List.last(lines) == "", do: Enum.drop(lines, -1), else: lines
         length(lines) <= @plain_max
-      _ -> false
+
+      _ ->
+        false
     end
   end
 
   defp unnumbered_guess?(_block, _root), do: false
-
-  def edit_blocks(text, missing?) do
-    case Trailblazer.Loop.Tools.text_edit_blocks(text, mode: :text) do
-      {:ok, blocks} -> {:ok, Enum.map(blocks, &create_missing(&1, missing?))}
-      other -> other
-    end
-  end
 
   defp create_missing(%{type: :range, start: s, path: path, replace: body} = block, missing?)
        when s <= 1 do
