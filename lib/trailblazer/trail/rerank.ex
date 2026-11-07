@@ -41,6 +41,8 @@ defmodule Trailblazer.Trail.Rerank do
     case Keyword.get_lazy(opts, :rerank_engine, fn -> Config.get(:rerank_engine) end) do
       :d1 -> decide(request, candidates, opts)
       :lfm -> select_lfm(request, candidates, opts)
+      # a misconfigured engine must not crash the trail: it keeps its ranking
+      other -> {:error, {:unknown_rerank_engine, other}}
     end
   end
 
