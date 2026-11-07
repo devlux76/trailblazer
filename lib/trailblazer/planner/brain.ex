@@ -65,8 +65,8 @@ defmodule Trailblazer.Planner.Brain do
       choose_fun: opts[:choose] || (&Decision.choose/1),
       assign_fun: opts[:assign] || (&Board.assign/2),
       research_fun: opts[:research] || (&Trailblazer.Planner.Research.dispatch(opts[:config], &1)),
-      acquire_fun: opts[:acquire] || (&acquire/1),
-      release_fun: opts[:release] || (&release/1),
+      acquire_fun: opts[:acquire] || (&__MODULE__.acquire/1),
+      release_fun: opts[:release] || (&__MODULE__.release/1),
       status_fun: opts[:bridge_status] || (&Trailblazer.Vortex.Bridge.status/0),
       start_watcher: opts[:start_watcher],
       start_sse: opts[:start_sse],
@@ -728,7 +728,7 @@ defmodule Trailblazer.Planner.Brain do
 
   # The real resource boundary: the lease is the caller's own id. A planner on
   # its own server shares no CPU, so it holds nothing and releases at once.
-  defp acquire(id) do
+  def acquire(id) do
     if Config.get(:planner_lease), do: lease(id), else: {:ok, id}
   end
 
@@ -744,7 +744,7 @@ defmodule Trailblazer.Planner.Brain do
     end
   end
 
-  defp release(lease) do
+  def release(lease) do
     if Config.get(:planner_lease), do: unlease(lease), else: :ok
   end
 

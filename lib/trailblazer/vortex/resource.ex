@@ -29,8 +29,10 @@ defmodule Trailblazer.Vortex.Resource do
     {:ok,
      %{
        lock: opts[:lock] || Path.expand("~/.local/state/local-ai/heavy.lock"),
-       offline: opts[:offline] || (&offline?/0),
-       router: opts[:router] || (&router/2),
+       offline: opts[:offline] || (&__MODULE__.offline?/0),
+       # remote captures: a hot load must reach state-held funs (a local
+       # capture kept running the old router after a deploy, 2026-11-06)
+       router: opts[:router] || (&__MODULE__.router/2),
        held: nil
      }}
   end
@@ -152,7 +154,7 @@ defmodule Trailblazer.Vortex.Resource do
     ArgumentError -> :ok
   end
 
-  defp offline? do
+  def offline? do
     guarded(fn ->
       case System.cmd(
              "/usr/bin/systemctl",
@@ -178,7 +180,7 @@ defmodule Trailblazer.Vortex.Resource do
     end
   end
 
-  defp router(op, model) do
+  def router(op, model) do
     do_router(op, model)
   rescue
     _ -> :error

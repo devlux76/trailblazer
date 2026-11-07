@@ -52,7 +52,7 @@ defmodule Trailblazer.EmbedHealth do
        state: :up,
        reason: nil,
        waiting: %{},
-       probe: Keyword.get(opts, :probe, &probe/0),
+       probe: Keyword.get(opts, :probe, &__MODULE__.probe/0),
        probing: nil,
        timer: nil,
        gap: @first_gap,
@@ -226,7 +226,7 @@ defmodule Trailblazer.EmbedHealth do
   end
 
   # The embedder embeds one word and Qdrant says it is healthy.
-  defp probe do
+  def probe do
     case Config.get(:embed_probe) do
       :down ->
         {:error, :probe_disabled}

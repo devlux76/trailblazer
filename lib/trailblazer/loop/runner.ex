@@ -51,7 +51,7 @@ defmodule Trailblazer.Loop.Runner do
        queue: :queue.new(),
        active: nil,
        run: Keyword.get(opts, :run, &Trailblazer.Loop.run/2),
-       prepare: Keyword.get(opts, :prepare, &prepare/1)
+       prepare: Keyword.get(opts, :prepare, &__MODULE__.prepare/1)
      }}
   end
 
@@ -146,7 +146,7 @@ defmodule Trailblazer.Loop.Runner do
 
   # A repository already watched is brought up to date with git before the
   # task's trail is read from its graph (design §13.7).
-  defp prepare(task) do
+  def prepare(task) do
     with {:ok, _} <- Trailblazer.Indexer.watch(task.repo),
          {:ok, _} <- Trailblazer.Indexer.fresh(task.repo) do
       :ok
