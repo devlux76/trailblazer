@@ -76,4 +76,18 @@ defmodule Trailblazer.Loop.TextAnswersTest do
 
     assert TextAnswers.usages(dir, %{request: "no package", design: nil}) == nil
   end
+
+  test "live lucet: the whole file through its own write tool call" do
+    current = %{"src/core/contact.test.ts" => "a\nb\n"}
+
+    reply =
+      "<tool_call>write<arg_key>path</arg_key><arg_value>src/core/contact.test.ts</arg_value>" <>
+        "<arg_key>content</arg_key><arg_value>a\nb\nc\n</arg_value></tool_call>"
+
+    assert {:ok, [b]} = TextAnswers.whole_file_blocks(reply, current)
+    assert {b.path, b.start, b.end, b.replace} == {"src/core/contact.test.ts", 1, 2, "a\nb\nc\n"}
+    # a path it was not given is ignored
+    assert TextAnswers.whole_file_blocks(String.replace(reply, "contact.test", "other"), current) ==
+             :none
+  end
 end

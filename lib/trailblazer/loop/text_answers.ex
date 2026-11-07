@@ -66,6 +66,49 @@ defmodule Trailblazer.Loop.TextAnswers do
   `:none` when the reply holds no such file.
   """
   def whole_file_blocks(text, current) when is_binary(text) and is_map(current) do
+    case native_writes(text, current) do
+      [] -> fenced_files(text, current)
+      files -> to_blocks(files, current)
+    end
+  end
+
+  # The coder's own write tool (live, lucet 2026-11-06: the correct whole
+  # file as `<tool_call>write<arg_key>path</arg_key><arg_value>...` with a
+  # `content` argument): the most natural whole-file answer of all.
+  defp native_writes(text, current) do
+    for [inner] <-
+          Regex.scan(
+            ~r/<tool_call>\s*(?:write|create|write_file|create_file)\b(.*?)<\/tool_call>/s,
+            text,
+            capture: :all_but_first
+          ),
+        args = call_args(inner),
+        path = args["path"] || args["file_path"] || args["filename"],
+        is_binary(path),
+        path = String.trim_leading(String.trim(path), "./"),
+        Map.has_key?(current, path),
+        content = args["content"] || args["text"] || args["contents"],
+        is_binary(content),
+        do: {path, String.trim_trailing(content, "\n")}
+  end
+
+  defp call_args(inner) do
+    pairs =
+      ~r/<arg_key>(.*?)<\/arg_key>\s*<arg_value>(.*?)<\/arg_value>/s
+      |> Regex.scan(inner, capture: :all_but_first)
+      |> Map.new(fn [k, v] -> {String.trim(k), v} end)
+
+    attrs =
+      ~r/(\w+)\s*=\s*"([^"]*)"/
+      |> Regex.scan(inner |> String.split(~r/<arg_(?:key|value)>/, parts: 2) |> hd(),
+        capture: :all_but_first
+      )
+      |> Map.new(fn [k, v] -> {k, v} end)
+
+    Map.merge(attrs, pairs)
+  end
+
+  defp fenced_files(text, current) do
     fences =
       Regex.scan(~r/(?:^|\n)([^\n]*)\n(`{3,})([^\n`]*)\n(.*?)\n\2[ \t]*(?=\n|\z)/s, text)
 
@@ -76,9 +119,13 @@ defmodule Trailblazer.Loop.TextAnswers do
           do: {path, body}
 
     case files do
-      [] ->
-        :none
+      [] -> :none
+      files -> to_blocks(files, current)
+    end
+  end
 
+  defp to_blocks(files, current) do
+    case files do
       files ->
         Enum.reduce_while(files, {:ok, []}, fn {path, body}, {:ok, acc} ->
           case whole_block(path, body <> "\n", current[path]) do
