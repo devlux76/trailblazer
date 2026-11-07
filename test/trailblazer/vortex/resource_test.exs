@@ -4,7 +4,9 @@ defmodule Trailblazer.Vortex.ResourceTest do
 
   setup do
     lock = Path.join(System.tmp_dir!(), "resource-#{System.unique_integer([:positive])}.lock")
-    {:ok, io} = Agent.start_link(fn -> %{offline: true, models: :exclusive, unload: :ok} end)
+
+    {:ok, io} =
+      Agent.start_link(fn -> %{offline: true, models: :exclusive, unload: :ok, others: :busy} end)
 
     opts = [
       name: nil,
@@ -14,9 +16,18 @@ defmodule Trailblazer.Vortex.ResourceTest do
       router: fn op ->
         Agent.get_and_update(io, fn s ->
           case op do
-            :models -> {s.models, s}
-            :idle -> {true, s}
-            :unload -> {s.unload, if(s.unload == :ok, do: %{s | models: :unloaded}, else: s)}
+            :models ->
+              {s.models, s}
+
+            :idle ->
+              {true, s}
+
+            :unload ->
+              {s.unload, if(s.unload == :ok, do: %{s | models: :unloaded}, else: s)}
+
+            # idle others are unloaded; busy ones stay
+            :evict_idle ->
+              {s.others, if(s.others == :idle, do: %{s | models: :unloaded}, else: s)}
           end
         end)
       end
@@ -41,6 +52,17 @@ defmodule Trailblazer.Vortex.ResourceTest do
     assert :blocked = Resource.acquire("a", c.server)
     Agent.update(c.io, &%{&1 | offline: true, models: :other})
     assert :blocked = Resource.acquire("a", c.server)
+  end
+
+  test "an idle model another role left on the shared router is unloaded, then dispatch proceeds",
+       c do
+    Agent.update(c.io, &%{&1 | models: :other, others: :idle})
+    assert {:ok, lease} = Resource.acquire("a", c.server)
+    assert :ok = Resource.release(lease, c.server)
+    # never while Mirai is online
+    Agent.update(c.io, &%{&1 | offline: false, models: :other, others: :idle})
+    assert :blocked = Resource.acquire("b", c.server)
+    assert Agent.get(c.io, & &1.models) == :other
   end
 
   test "failed unload retains lock and stale token cannot release current ownership", c do
@@ -159,6 +181,7 @@ defmodule Trailblazer.Vortex.ResourceTest do
         :models -> if(Agent.get(loaded, & &1), do: :exclusive, else: :unloaded)
         :idle -> true
         :unload -> Agent.update(loaded, fn _ -> false end)
+        :evict_idle -> :busy
       end
     end
 

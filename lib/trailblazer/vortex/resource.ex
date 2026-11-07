@@ -39,6 +39,11 @@ defmodule Trailblazer.Vortex.Resource do
   def handle_call({:acquire, id, model}, _, %{held: nil} = s) do
     case take_lock(s) do
       {:ok, port} ->
+        # One shared router (every model by ID): what another role left
+        # resident and idle is unloaded while Mirai is offline; a busy one
+        # still blocks (live 2026-11-06: an idle d1-2b blocked a case 1 h).
+        if safe?(s) and route(s, :models, model) == :other, do: route(s, :evict_idle, model)
+
         if safe?(s) and route(s, :models, model) in [:exclusive, :unloaded] and
              route(s, :idle, model) == true do
           lease = id
@@ -219,6 +224,31 @@ defmodule Trailblazer.Vortex.Resource do
 
           _ ->
             false
+        end
+
+      :evict_idle ->
+        with {:ok, %{"data" => models}} when is_list(models) <- http(:get, base <> "/models") do
+          others =
+            for m <- models,
+                get_in(m, ["status", "value"]) != "unloaded",
+                not own?(m, model),
+                do: m["id"]
+
+          idle? = fn id ->
+            case http(:get, base <> "/slots?model=" <> URI.encode_www_form(id)) do
+              {:ok, [_ | _] = slots} -> Enum.all?(slots, &(Map.get(&1, "is_processing") == false))
+              _ -> false
+            end
+          end
+
+          if others != [] and Enum.all?(others, idle?) do
+            Enum.each(others, &http(:post, base <> "/models/unload", %{model: &1}))
+            :ok
+          else
+            :busy
+          end
+        else
+          _ -> :error
         end
 
       :unload ->
