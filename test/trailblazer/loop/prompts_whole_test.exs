@@ -41,6 +41,14 @@ defmodule Trailblazer.Loop.PromptsWholeTest do
 
     assert system.content =~ "numbered lines is long"
     assert user.content =~ "151| l151"
+    assert system.content =~ "Tools: where"
+
+    # no read rounds: no tools are named
+    [system, _] =
+      Prompts.coder(Map.put(task, :read_rounds, 0), "trail", [], nil, %{whole: true, sources: []})
+
+    refute system.content =~ "Tools:"
+    assert system.content =~ "There are no tools"
   end
 
   test "tag mode prompt is unchanged by the whole-file helpers" do

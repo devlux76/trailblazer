@@ -51,7 +51,10 @@ defmodule Trailblazer.Loop.Prompts do
           [map()]
   def coder(task, trail, files, feedback \\ nil, head \\ %{}) do
     whole? = Map.get(head, :whole, false)
-    system = if whole?, do: @coder_whole, else: coder_system(Map.get(task, :edit_mode, :tool))
+
+    system =
+      if whole?, do: whole_system(task), else: coder_system(Map.get(task, :edit_mode, :tool))
+
     # with a think prefill the trail and history go in the coder's own
     # thinking (coder_think/2), not in the user message
     think? = Map.get(head, :think, false)
@@ -245,6 +248,19 @@ defmodule Trailblazer.Loop.Prompts do
   @trail_budget 3_000
 
   @doc false
+  # With no read rounds there are no tools: saying there are made lucet answer
+  # with tool calls twice (live, vortex:59aea97), so the sentence goes.
+  @tools_line ~r/ Tools: where, uses, impact, read, search[^\n]*/
+  defp whole_system(%{read_rounds: 0}),
+    do:
+      String.replace(
+        @coder_whole,
+        @tools_line,
+        " There are no tools: everything you need is below."
+      )
+
+  defp whole_system(_task), do: @coder_whole
+
   def lean_trail(nil, _head), do: nil
 
   def lean_trail(trail, head) do
