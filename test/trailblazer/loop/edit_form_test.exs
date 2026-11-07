@@ -25,6 +25,21 @@ defmodule Trailblazer.Loop.EditFormTest do
     assert Trailblazer.Loop.TextAnswers.edit_blocks("nothing here", fn _ -> false end) == :none
   end
 
+  test "identical repeated creates of one new file collapse to one; different ones do not" do
+    alias Trailblazer.Loop.TextAnswers
+    create = ~s(<edit path="n.ts" start="1" end="1">\n<replace>\nexport const a = 1\n</replace>\n</edit>\n)
+    assert {:ok, [b]} = TextAnswers.edit_blocks(create <> create <> create, fn _ -> true end)
+    assert b.search == ""
+
+    other = String.replace(create, "a = 1", "a = 2")
+    assert {:ok, [_, _]} = TextAnswers.edit_blocks(create <> other, fn _ -> true end)
+
+    # the same new file as <edit> creates and written whole: one create
+    whole = "n.ts\n```ts\nexport const a = 1\n```\n"
+    assert {:ok, [w]} = TextAnswers.answer_blocks(create <> create <> whole, %{"n.ts" => nil})
+    assert w.replace =~ "export const a = 1"
+  end
+
   test "a well-formed empty replace still deletes" do
     reply = """
     <edit path="a.ts" start="2" end="3">

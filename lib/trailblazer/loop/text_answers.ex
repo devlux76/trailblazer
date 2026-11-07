@@ -49,7 +49,7 @@ defmodule Trailblazer.Loop.TextAnswers do
 
   def edit_blocks(text, missing?) do
     case Trailblazer.Loop.Tools.text_edit_blocks(text, mode: :text) do
-      {:ok, blocks} -> {:ok, Enum.map(blocks, &create_missing(&1, missing?))}
+      {:ok, blocks} -> {:ok, blocks |> Enum.map(&create_missing(&1, missing?)) |> collapse()}
       :none -> Trailblazer.Loop.EditForm.unread(text) || :none
       other -> other
     end
@@ -224,7 +224,20 @@ defmodule Trailblazer.Loop.TextAnswers do
     IO.iodata_to_binary(Enum.reverse([binary_part(text, last, byte_size(text) - last) | parts]))
   end
 
+  # A looping model repeats itself: the same new file created three times
+  # (live, vortex:db9b82d: three identical <edit start=1 end=1> creates, then
+  # two <edit> creates plus the same file written whole). Identical creates
+  # of one path are one create; differing ones still collide downstream.
+  @doc false
+  def collapse(blocks) do
+    Enum.uniq_by(blocks, fn
+      %{search: "", path: path, replace: body} -> {:create, path, String.trim(body)}
+      block -> block
+    end)
+  end
+
   defp merge_forms(whole, edits) do
+    edits = Enum.reject(edits, fn e -> Enum.any?(whole, &(collapse([&1, e]) == [&1])) end)
     both = MapSet.intersection(MapSet.new(whole, & &1.path), MapSet.new(edits, & &1.path))
 
     if MapSet.size(both) == 0,
