@@ -49,7 +49,9 @@ if config_env() == :prod do
     review_model: "lfm2.5-24b-a2b:qad-review",
     review_model_url: "http://127.0.0.1:8099/v1",
     review_model_sampling: %{temperature: 0.1, top_p: 1.0, top_k: 50, thinking: true},
-    planner_model: "lfm2.5-24b-a2b:qad",
-    planner_model_url: "http://127.0.0.1:8099/v1",
-    planner_prefill: "</think>"
+    # Hive conductor (LFM3-1.7B role fine-tune, served --reasoning off on the
+    # shared router): 5/6 on the planner probe vs 0/6 for the 24B (2026-11-06),
+    # measured without a prefill.
+    planner_model: "hive-conductor-1.7b",
+    planner_model_url: "http://127.0.0.1:8094/v1"
 end
