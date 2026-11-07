@@ -33,7 +33,7 @@ defmodule Trailblazer.Loop.TextAnswers do
   # filled the anchors and broke codex/server.ts). Refused: write it whole.
   def edit_blocks(text, {root, named, true}) do
     with {:ok, blocks} <- edit_blocks(text, {root, named}) do
-      case Enum.find(blocks, &unnumbered_guess?(&1, root)) do
+      case Enum.find(blocks, &(&1.path in named and unnumbered_guess?(&1, root))) do
         nil ->
           {:ok, blocks}
 
@@ -50,7 +50,11 @@ defmodule Trailblazer.Loop.TextAnswers do
   @plain_max 150
   defp unnumbered_guess?(%{type: :range, first: nil, last: nil, path: path}, root) do
     case Files.read(root, path) do
-      {:ok, text} -> length(String.split(String.trim_trailing(text, "\n"), "\n")) <= @plain_max
+      # counted as Prompts.whole_source counts: one trailing empty line dropped
+      {:ok, text} ->
+        lines = String.split(text, ~r/\r?\n/)
+        lines = if List.last(lines) == "", do: Enum.drop(lines, -1), else: lines
+        length(lines) <= @plain_max
       _ -> false
     end
   end

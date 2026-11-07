@@ -26,5 +26,10 @@ defmodule Trailblazer.Loop.UnnumberedEditTest do
     long = String.replace(@guess, "server.ts", "long.ts")
     assert {:ok, [_]} = TextAnswers.edit_blocks(long, {dir, ["long.ts"], true})
     assert {:ok, [_]} = TextAnswers.edit_blocks(@guess, {dir, ["server.ts"], false})
+    # a file the task did not name may have been read numbered
+    assert {:ok, [_]} = TextAnswers.edit_blocks(@guess, {dir, ["other.ts"], true})
+    # 150 lines + a trailing blank line = 151 as the prompt counts: numbered
+    File.write!(Path.join(dir, "server.ts"), Enum.map_join(1..150, "", &"l#{&1}\n") <> "\n")
+    assert {:ok, [_]} = TextAnswers.edit_blocks(@guess, {dir, ["server.ts"], true})
   end
 end
