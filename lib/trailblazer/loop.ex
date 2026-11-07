@@ -306,10 +306,10 @@ defmodule Trailblazer.Loop do
     end)
   end
 
-  # Text mode sends the named files whole, within a bound: a file over
-  # @source_lines lines, or past @source_bytes in total, stays name-only.
-  @source_lines 400
-  @source_bytes 32_000
+  # Text mode sends named files whole (long ones numbered, edited by range) up
+  # to 1000 lines/64 KB; past that name-only (a 619-line file at 400, read rounds 0: unseen).
+  @source_lines 1000
+  @source_bytes 64_000
 
   defp sources(st) do
     st.task.files
