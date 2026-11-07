@@ -50,6 +50,7 @@ defmodule Trailblazer.Loop.TextAnswers do
   def edit_blocks(text, missing?) do
     case Trailblazer.Loop.Tools.text_edit_blocks(text, mode: :text) do
       {:ok, blocks} -> {:ok, Enum.map(blocks, &create_missing(&1, missing?))}
+      :none -> Trailblazer.Loop.EditForm.unread(text) || :none
       other -> other
     end
   end

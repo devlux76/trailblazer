@@ -22,4 +22,23 @@ defmodule Trailblazer.Loop.EditForm do
          "To delete lines #{range}, leave it empty: <replace>\n</replace>"}
     end
   end
+
+  @doc """
+  For a reply in which no edit block was found: nil, or `{:error, message}`
+  naming a known unreadable shape. lucet put the new text in a `replace="..."`
+  attribute (live, vortex:85be62a attempt 2), so the opening tag never closed
+  on its line and the reply read as "no edits" with no hint why.
+  """
+  def unread(text) do
+    case Regex.run(~r/<edit\b[^>\n]*\bpath="([^"]*)"[^>\n]*\breplace="/, text) do
+      [_, path] ->
+        {:error,
+         "#{path}: replace=\"...\" is not read. Put the new lines between <replace> and </replace> " <>
+           "inside the block, after its <first>...</first> and <last>...</last> lines; " <>
+           "a file shown without line numbers is written out complete instead"}
+
+      _ ->
+        nil
+    end
+  end
 end

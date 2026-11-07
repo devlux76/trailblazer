@@ -18,6 +18,13 @@ defmodule Trailblazer.Loop.EditFormTest do
     assert msg =~ "To delete lines 12-14, leave it empty"
   end
 
+  test "a replace= attribute reply is named, not reported as no edits" do
+    reply = ~s(<edit path="v6/client/x.ts" start="1" end="6" replace="\nexport const a = 1\n</edit>\n)
+    assert {:error, msg} = Trailblazer.Loop.TextAnswers.edit_blocks(reply, fn _ -> false end)
+    assert msg =~ ~s(v6/client/x.ts: replace="..." is not read)
+    assert Trailblazer.Loop.TextAnswers.edit_blocks("nothing here", fn _ -> false end) == :none
+  end
+
   test "a well-formed empty replace still deletes" do
     reply = """
     <edit path="a.ts" start="2" end="3">
