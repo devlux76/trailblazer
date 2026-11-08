@@ -27,15 +27,13 @@ defmodule Trailblazer.Loop.Coder do
            Enum.find(source.events, &(&1.kind == "attempt" and &1.data["stage"] == "workspace")),
          true <- ws.data["base"] == st.ws.base,
          %{} = edit <- Enum.find(Enum.reverse(source.events), &(&1.kind == "edit")),
-         true <- edit.data["status"] in ["no_blocks", "unparsed"],
          %{} = event <-
            Enum.find(
              Enum.reverse(source.events),
              &(&1.kind == "reply" and &1.data["role"] == "coder")
            ),
-         true <- event.data["finish_reason"] == "stop" and event.data["partial"] != true,
-         true <- Map.get(event.data, "tool_calls", []) == [],
-         {:ok, edits} <- replay_blocks(event.data["content"]) do
+         true <- Map.get(event.data, "partial", false) == false and edit.seq > event.seq,
+         {:ok, edits, digest_bytes} <- replay_edits(source, edit, event) do
       reply = %{
         content: event.data["content"],
         reasoning: "",
@@ -46,8 +44,7 @@ defmodule Trailblazer.Loop.Coder do
         ms: 0,
         replayed_from: id,
         source_reply_seq: event.seq,
-        source_reply_sha256:
-          :crypto.hash(:sha256, event.data["content"]) |> Base.encode16(case: :lower)
+        source_reply_sha256: :crypto.hash(:sha256, digest_bytes) |> Base.encode16(case: :lower)
       }
 
       record(st, :reply, Map.put(reply, :role, :coder))
@@ -101,6 +98,41 @@ defmodule Trailblazer.Loop.Coder do
 
     record(st, :attempt, %{stage: :edit_format, format: format})
     Conversation.converse(st, messages, tools, :coder)
+  end
+
+  # Text replies: the recorded unparsed reply is replayed as before. A native
+  # reply is replayed only when it is ONE complete submit_edits call from a
+  # case that failed in artifact preparation (applied, no check or review
+  # after it), whose recorded blocks equal the call's blocks.
+  defp replay_edits(source, edit, event) do
+    data = event.data
+
+    case {edit.data["status"], data["finish_reason"], Map.get(data, "tool_calls", [])} do
+      {status, "stop", []} when status in ["no_blocks", "unparsed"] ->
+        with {:ok, edits} <- replay_blocks(data["content"]),
+             do: {:ok, edits, data["content"]}
+
+      {"applied", "tool_calls",
+       [%{"id" => id, "name" => "submit_edits", "arguments" => args} = call]}
+      when is_binary(id) and id != "" ->
+        with true <- Enum.sort(Map.keys(call)) == ~w(arguments id name),
+             true <- is_binary(data["content"]) and is_map(source.task["artifacts"]),
+             true <-
+               Enum.any?(source.events, fn e ->
+                 e.seq > edit.seq and e.kind == "error" and e.data["stage"] == "artifacts"
+               end),
+             false <-
+               Enum.any?(source.events, &(&1.seq > edit.seq and &1.kind in ["check", "review"])),
+             {:ok, edits} <- Tools.edit_blocks(args),
+             true <- Jason.decode!(Jason.encode!(edits)) == edit.data["blocks"] do
+          {:ok, edits, Jason.encode!([data["content"], call])}
+        else
+          _ -> {:error, :incompatible_native_source}
+        end
+
+      _ ->
+        {:error, :incompatible_source}
+    end
   end
 
   # A recorded unparsed reply: <edit>/<create> tags, else JSON text, else
