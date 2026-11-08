@@ -1,4 +1,4 @@
-# Copied from mirai-agent; kept local per docs/design.md §9.
+# Copied from mirai-agent; kept local per docs/design-2.md §9.
 defmodule Trailblazer.Model.SSEParser do
   @moduledoc """
   Pure incremental SSE framing parser (docs/13-llm-runtime.md §13.3(2)).

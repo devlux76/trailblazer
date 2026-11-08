@@ -1,4 +1,4 @@
-# Copied from mirai-agent; kept local per docs/design.md §9.
+# Copied from mirai-agent; kept local per docs/design-2.md §9.
 defmodule Trailblazer.Model.NativeToolCalls do
   @moduledoc """
   Robust parser for LFM2.5's *native* tool-call envelope (docs/13-llm-runtime.md §13.3).

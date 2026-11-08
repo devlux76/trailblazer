@@ -3,7 +3,8 @@
 //! imported target. Scopes are recorded in source order for binary lookup.
 use std::collections::HashMap;
 use tree_sitter::Node;
-use super::{Import, text};
+use crate::helpers::text;
+use crate::imports::Import;
 
 struct Scope {
     start: usize,

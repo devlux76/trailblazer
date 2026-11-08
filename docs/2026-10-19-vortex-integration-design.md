@@ -15,7 +15,7 @@ acceptance, use a bounded Elixir harness repair with a reproducing test and
 verified frontier fallback as the primary model acceptance, before broad
 feature work. BEAM fault isolation does not establish semantic correctness.
 
-This refines design.md §§7.5, 7.8, 11 and 13.5. It preserves the trusted check,
+This refines design-2.md §§7.5, 7.8, 11 and design-3.md §13.5. It preserves the trusted check,
 private worktree, review and no-merge/no-push rules. OpenCode and its connector
 remain stopped after free-tier exhaustion. Claude remains unavailable until
 Friday. The operator subsequently clarified that Claude availability imposes no
