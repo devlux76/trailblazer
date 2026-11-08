@@ -5,8 +5,8 @@ defmodule Trailblazer.Trail.Generated do
 
   Two sources, both read once per trail: the `.linelimit-ignore` file at the
   repository root (blank and `#` lines skipped; each other line is a glob
-  relative to the root, where `*` stops at a slash, `**` crosses slashes and
-  `?` is one character), and git's `linguist-generated` attribute (`true` or
+  relative to the root, matched as the pre-commit hook does with bash `[[ == ]]`: `*` crosses
+  slashes and `?` is any one character), and git's `linguist-generated` attribute (`true` or
   `set`). Any failure reading either source marks nothing.
   """
 
@@ -43,10 +43,11 @@ defmodule Trailblazer.Trail.Generated do
     |> then(&Regex.compile!("^" <> &1 <> "$"))
   end
 
-  defp regex_body("**/" <> rest), do: "(?:.*/)?" <> regex_body(rest)
-  defp regex_body("**" <> rest), do: ".*" <> regex_body(rest)
-  defp regex_body("*" <> rest), do: "[^/]*" <> regex_body(rest)
-  defp regex_body("?" <> rest), do: "[^/]" <> regex_body(rest)
+  # The pre-commit hook that owns .linelimit-ignore matches with bash
+  # `[[ $f == $glob ]]`: `*` crosses slashes, `?` is any one character, and
+  # there is no globstar. Match exactly as it does.
+  defp regex_body("*" <> rest), do: ".*" <> regex_body(rest)
+  defp regex_body("?" <> rest), do: "." <> regex_body(rest)
   defp regex_body(<<c::utf8, rest::binary>>), do: Regex.escape(<<c::utf8>>) <> regex_body(rest)
   defp regex_body(""), do: ""
 

@@ -22,22 +22,24 @@ defmodule Trailblazer.TrailGeneratedTest do
   @bundle "export function saveHikes(hikes: string[]): number {\n  return hikes.length;\n}\n"
 
   describe "glob matcher" do
-    test "a single star stops at a slash; a double star crosses slashes; question marks are one character",
+    test "globs match as the pre-commit hook does: a star crosses slashes, a question mark is one character",
          %{tmp_dir: dir} do
       File.write!(Path.join(dir, ".linelimit-ignore"), "v6/plugins/*/dist/*.js\n")
       matches? = Generated.matcher(dir)
 
       assert matches?.("v6/plugins/codex/dist/vx.js")
       refute matches?.("v6/hub/store.ts")
-      refute matches?.("v6/plugins/codex/src/dist/vx.js")
+      assert matches?.("v6/plugins/codex/src/dist/vx.js")
 
       File.write!(Path.join(dir, ".linelimit-ignore"), "build/**/out.js\nlib/?.ex\n")
       matches? = Generated.matcher(dir)
-      assert matches?.("build/out.js")
+      refute matches?.("build/out.js")
       assert matches?.("build/a/b/out.js")
       assert matches?.("lib/a.ex")
       refute matches?.("lib/ab.ex")
       refute matches?.("lib/x/a.ex")
+      File.write!(Path.join(dir, ".linelimit-ignore"), "dist/*\n")
+      assert Generated.matcher(dir).("dist/a/b/c.js")
     end
 
     test "blank and comment lines are ignored", %{tmp_dir: dir} do
