@@ -20,7 +20,8 @@ defmodule Trailblazer.Planner.Companion do
   use GenServer
   require Logger
   alias Trailblazer.{Backstop, CaseStore, Config, Events}
-  alias Trailblazer.Loop.{Artifacts, CaseRecord, Check, Workspace}
+  alias Trailblazer.Loop.{CaseRecord, Check}
+  alias Trailblazer.Verification
   alias Trailblazer.Vortex.Store
 
   @default_deadline_ms 4 * 60 * 60 * 1000
@@ -272,78 +273,19 @@ defmodule Trailblazer.Planner.Companion do
     deadline =
       field(record.report, :verification_deadline_at) || System.os_time(:millisecond) + limit
 
-    check_opts = [timeout: limit, deadline_at: deadline]
-
     with true <- is_binary(commit) and Regex.match?(~r/\A[0-9a-f]{40}\z/, commit),
          {:ok, ^commit} <- git(repo, ["rev-parse", "refs/heads/" <> branch]) do
       root = Path.join([Config.get(:state_dir), "planner-verification", record.id])
 
-      try do
-        with :ok <- File.mkdir_p(Path.dirname(root)),
-             :ok <- remove_interrupted_worktree(repo, root),
-             {:ok, _} <- git(repo, ["worktree", "add", "--detach", root, commit]),
-             :ok <- Workspace.provision_checkout(root, repo),
-             :ok <- verify_artifacts(root, field(task, :artifacts), check_opts) do
-          result = Check.run(root, command, check_opts)
-
-          tail =
-            result.output_tail
-            |> String.slice(-900, 900)
-            |> String.replace(root, "<verification-worktree>")
-
-          cond do
-            result.status != :pass ->
-              {:error,
-               "Independent verification failed (#{result.status}, exit #{inspect(result.exit)}): #{command}. #{tail}"}
-
-            true ->
-              case git(root, ["status", "--porcelain", "--untracked-files=no"]) do
-                {:ok, ""} ->
-                  {:ok,
-                   "Independent verification passed (exit 0): #{command}. Candidate #{commit} on #{branch}; not merged. #{tail}"}
-
-                {:ok, _} ->
-                  {:error, "Independent verification changed tracked candidate files."}
-
-                {:error, reason} ->
-                  {:error,
-                   "Independent verification status failed: #{String.slice(reason, -300, 300)}"}
-              end
-          end
-        else
-          {:error, reason} ->
-            detail =
-              inspect(reason)
-              |> String.replace(root, "<verification-worktree>")
-              |> String.replace(repo, "<repository>")
-              |> String.slice(-900, 900)
-
-            {:error, "Independent verification setup failed: #{detail}"}
-        end
-      after
-        git(repo, ["worktree", "remove", "--force", root])
-      end
+      Verification.run(repo, commit, command,
+        root: root,
+        label: branch,
+        artifacts: field(task, :artifacts),
+        timeout: limit,
+        deadline_at: deadline
+      )
     else
       _ -> {:error, "The case's reported commit does not match its branch #{branch}."}
-    end
-  end
-
-  defp verify_artifacts(_root, nil, _limit), do: :ok
-
-  defp verify_artifacts(root, policy, opts) do
-    case Artifacts.verify(root, policy, opts) do
-      {:ok, _} -> :ok
-      {:error, evidence} -> {:error, {:artifact_verification, evidence}}
-    end
-  end
-
-  defp remove_interrupted_worktree(repo, root) do
-    existed = File.exists?(root)
-
-    case git(repo, ["worktree", "remove", "--force", root]) do
-      {:ok, _} -> :ok
-      {:error, _} when not existed -> :ok
-      {:error, reason} -> {:error, "Interrupted verification cleanup failed: #{reason}"}
     end
   end
 
