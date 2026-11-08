@@ -23,9 +23,13 @@ defmodule Trailblazer.Trail do
 
   `opts[:omit]` names files the reader already has in full (the loop's task
   files): nothing from them is packed again, though they still seed and rank.
+
+  Generated files (`.linelimit-ignore` globs, git's `linguist-generated`) are
+  dropped from the ranking, except definitions the request names by file or
+  place; the notes say how many files were skipped.
   """
 
-  alias Trailblazer.Trail.{Pack, Rerank}
+  alias Trailblazer.Trail.{Generated, Pack, Rerank}
   alias Trailblazer.{Config, Embed, Files, Store, Vectors}
 
   defstruct text: "", items: [], tokens: 0, notes: []
@@ -53,7 +57,7 @@ defmodule Trailblazer.Trail do
       {query_vector, embedded?} = query_vector(request, opts)
       {near, near_ok?} = nearest(repo_id, path, query_vector, opts)
       vectors_ok? = embedded? and near_ok?
-      {seeds, pinned} = seeds(repo_id, request, files, near)
+      {seeds, pinned, explicit} = seeds(repo_id, request, files, near)
 
       graph = neighbourhood(repo_id, seeds)
 
@@ -61,6 +65,7 @@ defmodule Trailblazer.Trail do
         similarities(path, query_vector, vectors_ok?, graph, opts)
 
       ranked = rank(graph, seeds, sims, vectors_ok?)
+      {ranked, generated_note} = drop_generated(ranked, explicit, path)
       {ranked, rerank_note} = rerank(ranked, pinned, request, sims, opts)
       budget = Keyword.get(opts, :budget, Config.get(:trail_tokens))
       omit = opts |> Keyword.get(:omit, []) |> MapSet.new()
@@ -70,7 +75,9 @@ defmodule Trailblazer.Trail do
         text: text,
         items: items,
         tokens: tokens(text),
-        notes: if(vectors_ok?, do: [], else: ["no vectors"]) ++ List.wrap(rerank_note)
+        notes:
+          if(vectors_ok?, do: [], else: ["no vectors"]) ++
+            List.wrap(generated_note) ++ List.wrap(rerank_note)
       }
     end
   end
@@ -90,8 +97,43 @@ defmodule Trailblazer.Trail do
       nodes |> Enum.reject(&doc?/1) |> Enum.uniq_by(& &1.id) |> Enum.map(& &1.id)
     end
 
-    {ids.(in_files ++ named ++ placed ++ near), ids.(in_files ++ named ++ placed)}
+    # `explicit` is what the request points at by file or place (not by name).
+    {ids.(in_files ++ named ++ placed ++ near), ids.(in_files ++ named ++ placed),
+     ids.(in_files ++ placed)}
   end
+
+  ## Generated files
+
+  # Bundles and compiled output duplicate the source they were built from; their
+  # definitions would crowd the source out of the budget. Definitions the request
+  # names by file or place stay even when their file is generated; a name match
+  # does not, or a bundle's copy of a named class would pin itself.
+  defp drop_generated(ranked, explicit, repo_path) do
+    generated? = Generated.matcher(repo_path)
+    explicit = MapSet.new(explicit)
+    nodes = Map.new(Store.nodes(ranked), &{&1.id, &1})
+
+    dropped =
+      Enum.filter(ranked, fn id ->
+        not MapSet.member?(explicit, id) and generated_node?(generated?, nodes[id])
+      end)
+
+    case dropped do
+      [] ->
+        {ranked, nil}
+
+      _some ->
+        dropped_set = MapSet.new(dropped)
+        files = dropped |> Enum.map(&nodes[&1].path) |> Enum.uniq() |> length()
+        noun = if files == 1, do: "file", else: "files"
+
+        {Enum.reject(ranked, &MapSet.member?(dropped_set, &1)),
+         "skipped #{files} generated #{noun}"}
+    end
+  end
+
+  defp generated_node?(generated?, %{path: path}), do: generated?.(path)
+  defp generated_node?(_generated?, _node), do: false
 
   ## Rerank
 
