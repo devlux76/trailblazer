@@ -59,7 +59,25 @@ defmodule Trailblazer.Trail.Generated do
 
   # One git pipeline: every tracked path into check-attr. Output is NUL-separated
   # triples (path, attribute, value). A failing git leaves nothing marked.
+  # Only a repository that has a .gitattributes can set the attribute; skip the
+  # git calls (one pass over every tracked file) everywhere else.
   defp attributed(repo_root) do
+    if gitattributes?(repo_root), do: check_attr(repo_root), else: MapSet.new()
+  end
+
+  defp gitattributes?(repo_root) do
+    case System.cmd("git", ["ls-files", "--", ".gitattributes", "**/.gitattributes"],
+           cd: repo_root,
+           stderr_to_stdout: true
+         ) do
+      {out, 0} -> String.trim(out) != ""
+      _ -> false
+    end
+  rescue
+    _ -> false
+  end
+
+  defp check_attr(repo_root) do
     command =
       "git ls-files -z 2>/dev/null | git check-attr -z --stdin linguist-generated 2>/dev/null"
 
