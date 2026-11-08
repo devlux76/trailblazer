@@ -180,7 +180,14 @@ Before any failed attempt is reset, pin its generated tree at
 `refs/trailblazer/attempts/<case>/<attempt>`. Original replies, submitted blocks,
 compiler failures and partial output remain in the case record. The next attempt
 starts from the original source in a fresh conversation with the failure feedback;
-no previous chat history is resumed. After three unsuccessful attempts, return
+no previous chat history is resumed (bug:6ff32b2): partial content, reasoning and
+tool-call fragments are case evidence, never forwarded as a completed or prefilled turn,
+and every attempt is a labelled restart; a longer window needs an operator decision.
+A restart still reuses the KV cache (bug:95b9b73): system prompt, trail and source precede
+the feedback, so the server keeps that prefix (router, 2026-11-07: 2,921 of 2,922 tokens
+cached on repeat). A changed system prompt or toolset invalidates all of it, so a read→final
+switch pays one full prefill; read tools are not re-advertised to avoid that. Each reply
+records the server's `timings` (`prompt_n`, `cache_n`, `prompt_ms`). After three unsuccessful attempts, return
 `failed` with reason `decomposition_required`, a dossier and retained workspace.
 The planner blocks the parent for decomposition; do not automatically readmit the
 same card. Smaller child tasks must have their own checks and acceptance scope.
