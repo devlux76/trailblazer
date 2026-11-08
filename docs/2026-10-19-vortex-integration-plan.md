@@ -2,7 +2,7 @@
 
 Operator authorizes Codex to use best judgment and deliver, with independent
 review. Execute inline. The local model does not change its own harness.
-Spec: docs/2026-10-19-vortex-integration-design.md; design.md §§7.5,7.8,11,13.5.
+Spec: docs/2026-10-19-vortex-integration-design.md; design-2.md §§7.5,7.8,11; design-3.md §13.5.
 
 1. Protocol and transactional inbox/outbox: strict versioned schema, authenticated
    peer/room and repository/check policy, exactly one case per request; receipts

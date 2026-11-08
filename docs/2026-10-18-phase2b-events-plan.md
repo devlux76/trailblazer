@@ -2,7 +2,7 @@
 
 **Goal:** no clock moves Trailblazer's work. Every wait is for a message (a reply, an event, a `:DOWN`, a port's exit), progress is published as events, work goes through queues and bounded pools with demand, and each external interaction has exactly one backstop whose firing is an anomaly: the guarded work ends in a defined way, the anomaly is recorded with the machine's load, and Claude and Codex get one investigation request over VORTEX. The coder's prompt is cut to what the task needs plus a head start. The operator decided this on 2026-10-18 after the first live runs (design §13).
 
-**Spec:** `docs/design.md` §4, §6.5, §6.6, §7.8, §13. Register: class J (time and events) in the phase-1 plan's Task 1, written before any task starts.
+**Spec:** `docs/design.md` §4, §6.5, §6.6, `docs/design-2.md` §7.8, `docs/design-3.md` §13. Register: class J (time and events) in the phase-1 plan's Task 1, written before any task starts.
 
 **Who:** Claude and Codex in parallel, every task reviewed by the one who did not write it; reviews run beside the next task and never block it. Same protocol as phase 2 (own worktree, full suite, rebase, fast-forward main, one VORTEX note with SHA, tests and register ids). Only Claude restarts the deployed service. The deployed service and the model router stay frozen until B11 needs them (the operator paused them); unit tests do not need them.
 

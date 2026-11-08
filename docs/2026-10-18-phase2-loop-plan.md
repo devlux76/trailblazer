@@ -2,7 +2,7 @@
 
 **Goal:** Trailblazer does a coding task itself: `trailblazer run --repo R "request"` gives the task to the local code model with a trail, applies its edits in a worktree of its own, runs the project's check, has the change reviewed against the request and the design, retries up to three attempts, and commits on a `trailblazer/<case>` branch only when check and review pass. It answers with one fixed-shape report and keeps a complete case record. This is what makes Trailblazer more than ranger with more steps (the operator, 2026-10-18).
 
-**Spec:** `docs/design.md` §5 and §7.1–7.4, §7.6, §7.7 and §8. Phase 3 (§7.5 friends over VORTEX, §7.8 doors and queue persistence) is out of scope; until then an exhausted task's dossier comes back in the report.
+**Spec:** `docs/design.md` §5 and `docs/design-2.md` §7.1–7.4, §7.6, §7.7 and §8. Phase 3 (§7.5 friends over VORTEX, §7.8 doors and queue persistence) is out of scope; until then an exhausted task's dossier comes back in the report.
 
 **Who:** Codex and Claude work in parallel from this plan; MiniMax M3.1 Flash (OpenCode Go) takes tasks as its budget allows. **Every task is reviewed by someone who did not write it** (the review column). Reviews run alongside the next task and never block it; the author folds the findings into their next commit. The edge-case register in the phase-1 plan's Task 1 is shared and grows with this phase.
 

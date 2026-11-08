@@ -9,7 +9,7 @@
 **Operator reprioritization:** Tasks 1–2 were implemented at `00337fe`.
 T1–T4 live acceptance is now deferred until the VORTEX-first coordination,
 exclusive model-resource handoff and Mirai incident/three-attempt escalation
-path in `docs/design.md` §11 is built. The T1 rerun was deliberately interrupted
+path in `docs/design-2.md` §11 is built. The T1 rerun was deliberately interrupted
 and its evidence archived; this is deferral, not an acceptance result. The
 OpenCode provider exhausted its daily allowance; its server and VORTEX
 connector remain stopped. Codex owns the next work. Do not resume an old
@@ -21,7 +21,7 @@ OpenCode session or the paused acceptance monitor from this plan.
 
 **Tech stack:** Elixir 1.20 / OTP 29 through `mise`, ExUnit, Bun, installed Babylon packages, OpenCode's existing `opencode-go/minimax-m3.1-flash` session.
 
-**Spec:** `docs/design.md` sections 6.5, 7.4, 7.5 and 13; the T1-T4 acceptance definitions and deployed closeout in `docs/trials.md`.
+**Spec:** `docs/design.md` section 6.5, `docs/design-2.md` sections 7.4 and 7.5, and `docs/design-3.md` section 13; the T1-T4 acceptance definitions and deployed closeout in `docs/trials.md`.
 
 ## Constraints and review focus
 

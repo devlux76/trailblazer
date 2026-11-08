@@ -1,7 +1,7 @@
 # Local planning and dispatch
 
 The optional planner brain defaults to Nemotron-3.5-Bolt-E4B on its separate
-local router (`spark` remains the coding worker; see design.md §7.2). It
+local router (`spark` remains the coding worker; see design-2.md §7.2). It
 prioritizes current work and its only target is Trailblazer. It has no paid
 fallback. Elixir/OTP owns planning tasks, resource cleanup, dispatch and restart
 recovery in the planner one-for-all supervision group.

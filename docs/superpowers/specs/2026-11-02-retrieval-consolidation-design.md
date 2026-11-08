@@ -17,7 +17,7 @@ review; reviewers should check them.
 Everything in this stack rests on one idea: vectors plus a code map make a
 coding model much smarter and more grounded. Today that idea is implemented
 twice — Trailblazer core in Elixir, and ranger's original index in Python that
-Trailblazer was ported from (design.md §9) — and the Python copy is itself
+Trailblazer was ported from (design-2.md §9) — and the Python copy is itself
 duplicated between the scout and ranger repositories.
 
 The Python index survived by omission, not for reliability. Evidence
@@ -189,7 +189,7 @@ Three steps, each one bug, landed and reviewed separately in this order.
    run without VORTEX? Today both are tied to it. "Yes" means the coder
    route needs its own resource gate when Mirai's dedicated mode is not
    reachable; that is a separate bug and design, not part of step 1.
-2. **Review:** mirai-agent code copied into Trailblazer (design.md §9:
+2. **Review:** mirai-agent code copied into Trailblazer (design-2.md §9:
    ModelClient, Tool, Vortex.Client, Embedder) — audit separately for drift?
 
 ## 7. Left to the builder
