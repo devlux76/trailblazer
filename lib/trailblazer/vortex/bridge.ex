@@ -7,10 +7,11 @@ defmodule Trailblazer.Vortex.Bridge do
   a verified resource adapter is installed. Worker death alone is not release.
   """
   use GenServer
-  require Logger
+
   alias Trailblazer.Events
   alias Trailblazer.Loop.{Runner, CaseRecord}
   alias Trailblazer.Vortex.{Protocol, Store, Transport}
+  alias Trailblazer.Vortex.Bridge.{Inbound, Outbox, Resources}
 
   alias Trailblazer.Backstop
 
@@ -82,7 +83,7 @@ defmodule Trailblazer.Vortex.Bridge do
     end
 
     state = reconcile(state)
-    {:noreply, state |> flush() |> dispatch() |> listen()}
+    {:noreply, state |> Outbox.flush() |> dispatch() |> listen()}
   end
 
   @impl true
@@ -90,7 +91,7 @@ defmodule Trailblazer.Vortex.Bridge do
   # handling anything, so the seed holds only messages that already existed
   # (all sent, many times) and never the one this message is about to queue.
   def handle_call(request, from, state) when not is_map_key(state, :transmitted),
-    do: handle_call(request, from, seed_transmitted(state))
+    do: handle_call(request, from, Outbox.seed_transmitted(state))
 
   def handle_call(:status, _from, state) do
     requests =
@@ -116,7 +117,7 @@ defmodule Trailblazer.Vortex.Bridge do
 
   @impl true
   def handle_info(message, state) when not is_map_key(state, :transmitted),
-    do: handle_info(message, seed_transmitted(state))
+    do: handle_info(message, Outbox.seed_transmitted(state))
 
   # Delivery faults stay in the local anomaly ledger. Sending them through
   # the same broken transport would make every timeout create another send.
@@ -125,7 +126,7 @@ defmodule Trailblazer.Vortex.Bridge do
 
   def handle_info({:trailblazer_event, :anomaly, anomaly}, state) do
     Store.investigate(anomaly, frontier(state, %{frontier: nil}))
-    {:noreply, flush(state)}
+    {:noreply, Outbox.flush(state)}
   end
 
   # The backstop of a release that could not be confirmed (the one timer,
@@ -139,14 +140,19 @@ defmodule Trailblazer.Vortex.Bridge do
     state = %{state | release_retry: nil}
 
     cond do
-      state.blocked_release != lease -> {:noreply, state}
-      state.resource_busy -> {:noreply, arm_release_retry(state, id, lease, :resource_busy)}
-      true -> {:noreply, release_resource(state, id, lease)}
+      state.blocked_release != lease ->
+        {:noreply, state}
+
+      state.resource_busy ->
+        {:noreply, Resources.arm_release_retry(state, id, lease, :resource_busy)}
+
+      true ->
+        {:noreply, Resources.release_resource(state, id, lease)}
     end
   end
 
   def handle_info({:trailblazer_event, {:case, _id}, %{closed: true}}, state) do
-    {:noreply, state |> reconcile() |> flush()}
+    {:noreply, state |> reconcile() |> Outbox.flush()}
   end
 
   # A notice on the attach line. One read runs at a time; a notice that
@@ -178,7 +184,7 @@ defmodule Trailblazer.Vortex.Bridge do
         {:DOWN, ref, :process, _pid, _reason},
         %{active: %{ref: ref, lease: lease}} = state
       ) do
-    {:noreply, release_resource(%{state | active: nil}, state.active.id, lease)}
+    {:noreply, Resources.release_resource(%{state | active: nil}, state.active.id, lease)}
   end
 
   def handle_info({:DOWN, ref, :process, _pid, _reason}, state) do
@@ -199,7 +205,8 @@ defmodule Trailblazer.Vortex.Bridge do
     :ok
   end
 
-  defp job(state, kind, fun) do
+  @doc false
+  def job(state, kind, fun) do
     task = Task.async(fun)
     %{state | jobs: Map.put(state.jobs, task.ref, %{task: task, kind: kind})}
   end
@@ -249,10 +256,10 @@ defmodule Trailblazer.Vortex.Bridge do
 
             {:error, _} ->
               :ok = Store.state(id, "waiting_resource")
-              release_resource(state, id, lease)
+              Resources.release_resource(state, id, lease)
           end
         else
-          release_resource(state, id, lease)
+          Resources.release_resource(state, id, lease)
         end
 
       :blocked ->
@@ -271,7 +278,7 @@ defmodule Trailblazer.Vortex.Bridge do
           summary: "Resource grant reply lost; ownership requires verified cleanup."
         })
 
-        release_resource(state, id, reserved_lease)
+        Resources.release_resource(state, id, reserved_lease)
     end
   end
 
@@ -290,14 +297,14 @@ defmodule Trailblazer.Vortex.Bridge do
       state
       |> Map.merge(%{blocked_release: nil, release_failures: 0, release_retry: nil})
       |> reconcile()
-      |> flush()
+      |> Outbox.flush()
       |> dispatch()
     else
       failures = Map.get(state, :release_failures, 0) + 1
 
       state
       |> Map.merge(%{blocked_release: lease, release_failures: failures})
-      |> arm_release_retry(id, lease, result)
+      |> Resources.arm_release_retry(id, lease, result)
     end
   end
 
@@ -310,17 +317,17 @@ defmodule Trailblazer.Vortex.Bridge do
   defp completed(:line, _, state), do: Map.put(state, :line, nil)
 
   defp completed({:read, from}, {:ok, page}, state) do
-    case value(page, "events") do
+    case Inbound.value(page, "events") do
       events when is_list(events) ->
         last =
           Enum.reduce(events, nil, fn event, _ ->
-            cursor = value(event, "cursor")
+            cursor = Inbound.value(event, "cursor")
             if not is_integer(cursor) or cursor < 0, do: raise("invalid VORTEX cursor")
-            process_event(event, state)
+            Inbound.process_event(event, state)
             cursor
           end)
 
-        state = state |> reconcile() |> flush() |> dispatch()
+        state = state |> reconcile() |> Outbox.flush() |> dispatch()
 
         if is_integer(last) do
           job(state, {:ack, from}, fn -> call(state, "ack", %{"cursor" => last}) end)
@@ -364,123 +371,15 @@ defmodule Trailblazer.Vortex.Bridge do
       end
 
     for message <- receipted, do: Store.receipt(peer, message.id)
-    state = Map.put(state, :transmitted, MapSet.union(transmitted(state), MapSet.new(sent)))
+
+    state =
+      Map.put(state, :transmitted, MapSet.union(Outbox.transmitted(state), MapSet.new(sent)))
 
     # Send messages added while this peer's worker was busy, but never spin on
     # the same unreceipted/failed batch. A future ring/recovery call retries it.
     state = %{state | senders: Map.delete(state.senders, peer)}
-    flush(state, attempted, peer)
+    Outbox.flush(state, attempted, peer)
   end
-
-  # Conference messages are the research route's reply channel (trailblazer:4cc63df):
-  # they lift unaltered to the planner, and an authorized peer's message also says
-  # it recovered, which wakes a held card's retry. They are not protocol intake.
-  defp process_event(
-         %{"kind" => "conference_message", "room" => "conference:" <> id} = raw,
-         state
-       ) do
-    peer = value(raw, "peer")
-
-    Events.publish(:planner, {
-      :research_conference,
-      %{
-        "conference" => id,
-        "peer" => peer,
-        "body" => value(raw, "body"),
-        "cursor" => value(raw, "cursor")
-      }
-    })
-
-    if Map.has_key?(state.peers, peer),
-      do: Events.publish(:planner, {:research_recovered, peer})
-  end
-
-  defp process_event(raw, state) do
-    event = %{peer: value(raw, "peer"), room: value(raw, "room")}
-
-    with "message" <- value(raw, "kind"),
-         {:ok, policy} <- Protocol.peer(event, state.peers),
-         {:ok, message} <- Protocol.decode(value(raw, "body")) do
-      result = receive_message(event, policy, message, state)
-
-      case result do
-        :ok ->
-          :ok
-
-        {:error, reason} ->
-          Store.classify(event.peer, value(raw, "cursor"), reason)
-          Logger.warning("trailblazer: VORTEX event refused: #{inspect(reason)}")
-      end
-    else
-      _ -> Store.classify(event.peer, value(raw, "cursor"), :ignored)
-    end
-  end
-
-  defp receive_message(event, policy, %{"type" => "task"} = message, state) do
-    result =
-      with {:ok, task} <- Protocol.task(message, policy, event.peer),
-           {planner, task} = Map.pop(task, :planner),
-           {:ok, id, fresh} <-
-             Store.admit(event.peer, event.room, message["request_id"], task, planner) do
-        Events.subscribe({:case, id})
-        if planner && fresh == :new, do: Events.publish(:planner, {:assigned, id})
-        :ok
-      end
-
-    # Only a decoded task from an already-authorized peer reaches here: tell that
-    # peer it was refused, so its client records a definite refusal instead of an
-    # uncertain timeout (trailblazer:c8813a0). Only the reason name travels. No case
-    # exists, so the reply is not durable: if it is lost the client times out, as
-    # before. Its id derives from the request, so a redelivery repeats the same reply.
-    with {:error, reason} <- result, do: reject(state, policy, message["request_id"], reason)
-    result
-  end
-
-  defp receive_message(
-         event,
-         %{role: role},
-         %{"type" => "cancel", "payload" => %{"case" => id}} = message,
-         _
-       )
-       when role in [:caller, :collaborator] do
-    request_id = message["request_id"]
-
-    case Store.get(id) do
-      %{peer: peer, request_id: request, state: "waiting_resource"}
-      when peer == event.peer and request == request_id ->
-        CaseRecord.close(id, %{
-          case: id,
-          status: :cancelled,
-          summary: "Cancelled by the caller before execution."
-        })
-
-      _ ->
-        {:error, :cannot_cancel}
-    end
-  end
-
-  defp receive_message(event, _, %{"type" => "receipt", "payload" => payload}, _),
-    do: Store.receipt(event.peer, payload["message_id"])
-
-  defp receive_message(event, %{role: role}, %{"type" => type, "payload" => payload} = message, _)
-       when type in ~w(claim returned_fix) and role in [:frontier, :collaborator] do
-    id = payload["case"]
-    request = if is_binary(id), do: Store.get(id)
-
-    with %{request_id: request_id} <- request,
-         true <- request_id == message["request_id"],
-         :ok <-
-           if(type == "claim",
-             do: Store.claim(event.peer, id),
-             else: Store.returned_fix(event.peer, id, payload)
-           ) do
-      Store.acknowledgment(id, event.peer, event.room, request_id, message["id"])
-    else
-      _ -> {:error, :not_assigned}
-    end
-  end
-
-  defp receive_message(_, _, _, _), do: {:error, :unexpected_message}
 
   defp reconcile(state) do
     for anomaly <- Trailblazer.Anomaly.list(open: true),
@@ -502,7 +401,7 @@ defmodule Trailblazer.Vortex.Bridge do
       case Enum.find(Store.holds(), fn [id, _] ->
              CaseRecord.get(id, inline: false).status != "open"
            end) do
-        [id, lease] -> release_resource(state, id, lease)
+        [id, lease] -> Resources.release_resource(state, id, lease)
         nil -> state
       end
     else
@@ -534,7 +433,7 @@ defmodule Trailblazer.Vortex.Bridge do
           &(Store.get(&1).state == "waiting_resource" and authorized?(Store.get(&1), state))
         )
 
-      if id, do: acquire(id, state), else: state
+      if id, do: Resources.acquire(id, state), else: state
     end
   end
 
@@ -555,134 +454,15 @@ defmodule Trailblazer.Vortex.Bridge do
     end
   end
 
-  defp call(%{transport: {:endpoint, endpoint, peer}}, op, args),
+  @doc false
+  def call(%{transport: {:endpoint, endpoint, peer}}, op, args),
     do: Transport.call(endpoint, op, args, peer)
 
-  defp call(%{transport: fun}, op, args), do: fun.(op, args)
+  def call(%{transport: fun}, op, args), do: fun.(op, args)
 
   @doc false
   def no_grant(_lease), do: :blocked
 
   @doc false
   def no_release(_lease), do: {:error, :no_resource_adapter}
-
-  defp acquire(id, state) do
-    {acquire, _} = state.resource
-    # Persist intent before an asynchronous grant can outlive this bridge.
-    lease = id <> ":" <> Base.url_encode64(:crypto.strong_rand_bytes(18), padding: false)
-    :ok = Store.reserve(id, lease)
-    job(%{state | resource_busy: true}, {:acquire_resource, id, lease}, fn -> acquire.(lease) end)
-  end
-
-  # Backoff: release_retry_ms doubling per failure up to release_retry_max_ms,
-  # for as long as it takes.
-  defp arm_release_retry(state, id, lease, result) do
-    failures = max(Map.get(state, :release_failures, 1), 1)
-    base = Map.get(state, :release_retry_ms, @release_retry_ms)
-    cap = Map.get(state, :release_retry_max_ms, @release_retry_max_ms)
-    delay = min(base * Integer.pow(2, min(failures - 1, 20)), cap)
-
-    case Map.get(state, :release_retry) do
-      {old, _, _} -> Backstop.disarm(old)
-      _ -> :ok
-    end
-
-    ref =
-      Backstop.arm(:resource_release_blocked, id, {:ms, delay}, fn ->
-        %{lease: lease, failures: failures, result: inspect(result, limit: 10)}
-      end)
-
-    Map.put(state, :release_retry, {ref, id, lease})
-  end
-
-  defp release_resource(state, id, lease) do
-    {_, release} = state.resource
-    job(%{state | resource_busy: true}, {:release_resource, id, lease}, fn -> release.(lease) end)
-  end
-
-  # A message that awaits an application receipt stays in the durable outbox
-  # until the receipt arrives, but it is transmitted once per run: resending it
-  # on every later flush (each anomaly, each closed case) flooded the frontier
-  # with its whole backlog (2026-10-23). A restart's restore sends it again once.
-  defp transmitted(state), do: Map.get(state, :transmitted, MapSet.new())
-
-  # Everything awaiting a receipt when older code ran was already sent, many
-  # times over (see the handle_call/handle_info guards).
-  defp seed_transmitted(state) do
-    Map.put(
-      state,
-      :transmitted,
-      for(m <- Store.outbox(), m.receipt, into: MapSet.new(), do: m.id)
-    )
-  end
-
-  defp flush(state, excluded \\ [], only_peer \\ nil) do
-    sent = transmitted(state)
-
-    Store.outbox()
-    |> Enum.reject(&(&1.id in excluded or (only_peer != nil and &1.peer != only_peer)))
-    |> Enum.reject(&(&1.receipt and MapSet.member?(sent, &1.id)))
-    |> Enum.group_by(& &1.peer)
-    |> Enum.reduce(state, fn {peer, messages}, state ->
-      case state.peers[peer] do
-        %{room: room} when not is_map_key(state.senders, peer) ->
-          messages = Enum.filter(messages, &(&1.room == room))
-
-          if messages == [] do
-            state
-          else
-            state =
-              job(state, {:send, peer, Enum.uniq(excluded ++ Enum.map(messages, & &1.id))}, fn ->
-                ok =
-                  Enum.filter(messages, fn message ->
-                    match?(
-                      {:ok, _},
-                      call(state, "send", %{"room" => room, "text" => message.body})
-                    )
-                  end)
-
-                %{
-                  receipted: Enum.reject(ok, & &1.receipt),
-                  transmitted: for(m <- ok, m.receipt, do: m.id)
-                }
-              end)
-
-            %{state | senders: Map.put(state.senders, peer, true)}
-          end
-
-        _ ->
-          state
-      end
-    end)
-  end
-
-  # A refused task's reply to its authorized peer (see receive_message/4 for "task").
-  defp reject(state, %{room: room}, request_id, reason) when is_binary(request_id) do
-    id = "rejected:" <> Base.encode16(:crypto.hash(:sha256, request_id), case: :lower)
-    payload = %{"reason" => if(is_atom(reason), do: Atom.to_string(reason), else: "refused")}
-
-    with {:ok, body} <- Protocol.encode(Protocol.envelope("rejected", id, request_id, payload)) do
-      Task.start(fn -> call(state, "send", %{"room" => room, "text" => body}) end)
-    end
-
-    :ok
-  end
-
-  defp reject(_, _, _, _), do: :ok
-
-  defp value(map, key) do
-    fields = %{
-      "peer" => :peer,
-      "room" => :room,
-      "events" => :events,
-      "cursor" => :cursor,
-      "kind" => :kind,
-      "body" => :body
-    }
-
-    case map do
-      %{^key => value} -> value
-      _ -> Map.get(map, fields[key])
-    end
-  end
 end

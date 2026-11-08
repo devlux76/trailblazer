@@ -21,6 +21,8 @@ defmodule Trailblazer.Parse.Elixir do
   what a test case exercises.
   """
 
+  alias Trailblazer.Parse.Elixir.{Env, Heads, Names, Records}
+
   @kinds %{
     def: "function",
     defp: "function",
@@ -51,8 +53,8 @@ defmodule Trailblazer.Parse.Elixir do
   def parse(path, source) do
     case quoted(path, source) do
       {:ok, ast} ->
-        env = env(path, source)
-        {_env, acc} = expr(ast, env, new_acc())
+        env = Env.env(path, source)
+        {_env, acc} = expr(ast, env, Records.new_acc())
         acc = resolve_pending(env, acc, nil)
 
         {:ok,
@@ -104,14 +106,16 @@ defmodule Trailblazer.Parse.Elixir do
   # A module: what it declares, and the environment its body is read in.
 
   defp expr({:defmodule, meta, [name_ast, body]}, env, acc) do
-    name = module_name(name_ast)
-    qualified = qualify(env.module, name)
-    key = node_key(env, "module", qualified)
+    name = Names.module_name(name_ast)
+    qualified = Env.qualify(env.module, name)
+    key = Env.node_key(env, "module", qualified)
 
     acc =
       acc
-      |> add_node(node(env, "module", name, qualified, key, meta, "defmodule #{name}"))
-      |> add_contains(env, qualified, meta)
+      |> Records.add_node(
+        Records.node(env, "module", name, qualified, key, meta, "defmodule #{name}")
+      )
+      |> Records.add_contains(env, qualified, meta)
 
     inner = %{
       env
@@ -130,7 +134,7 @@ defmodule Trailblazer.Parse.Elixir do
     }
 
     {inner, acc} = walk_all(body, inner, acc)
-    acc = add_clauses(inner, acc)
+    acc = Records.add_clauses(inner, acc)
     acc = resolve_pending(inner, acc, qualified)
 
     # `defmodule Child` inside M leaves Child bound to M.Child in the rest of M,
@@ -143,54 +147,56 @@ defmodule Trailblazer.Parse.Elixir do
 
   defp expr({form, meta, args}, env, acc)
        when form in [:def, :defp, :defmacro, :defdelegate, :defguard] and is_list(args) do
-    {head, body} = def_head_and_body(args)
-    name = def_name(head)
-    parameters = def_args(head)
+    {head, body} = Heads.def_head_and_body(args)
+    name = Heads.def_name(head)
+    parameters = Heads.def_args(head)
     kind = Map.fetch!(@kinds, form)
-    qualified = qualify(env.module, "#{name}")
+    qualified = Env.qualify(env.module, "#{name}")
 
     env =
-      Enum.reduce(arities(parameters), env, fn arity, env ->
+      Enum.reduce(Heads.arities(parameters), env, fn arity, env ->
         clause = %{
           kind: kind,
           name: "#{name}",
           qualified: "#{qualified}/#{arity}",
-          key: node_key(env, kind, "#{qualified}/#{arity}"),
-          first: line_of(meta),
-          last: end_line_of(meta),
-          at: {line_of(meta), column_of(meta)},
+          key: Env.node_key(env, kind, "#{qualified}/#{arity}"),
+          first: Env.line_of(meta),
+          last: Env.end_line_of(meta),
+          at: {Env.line_of(meta), Env.column_of(meta)},
           arity: arity,
-          signature: signature(head)
+          signature: Heads.signature(head)
         }
 
         env = %{
           env
           | defs: MapSet.put(env.defs, {name, arity}),
-            clauses: Map.update(env.clauses, clause.key, clause, &span(&1, clause))
+            clauses: Map.update(env.clauses, clause.key, clause, &Records.span(&1, clause))
         }
 
         env
       end)
 
-    key = node_key(env, kind, "#{qualified}/#{List.last(arities(parameters))}")
+    key = Env.node_key(env, kind, "#{qualified}/#{List.last(Heads.arities(parameters))}")
 
     # A directive written inside a function is that function's: the sibling
     # defined after it reads the module's table, not this one's.
     inside = %{env | current: key, aliases: Map.new(env.aliases)}
 
-    {_inside, acc} = walk_all(body ++ defaults(parameters), inside, acc)
+    {_inside, acc} = walk_all(body ++ Heads.defaults(parameters), inside, acc)
     {%{env | current: nil}, acc}
   end
 
   defp expr({:@, meta, [{attr, _, args}]}, env, acc) when attr in @type_attrs do
-    {name, _arity} = type_name(args)
-    qualified = qualify(env.module, name)
-    key = node_key(env, "type", qualified)
+    {name, _arity} = Heads.type_name(args)
+    qualified = Env.qualify(env.module, name)
+    key = Env.node_key(env, "type", qualified)
 
     acc =
       acc
-      |> add_node(node(env, "type", name, qualified, key, meta, "@#{attr} #{name}"))
-      |> add_contains(env, qualified, meta)
+      |> Records.add_node(
+        Records.node(env, "type", name, qualified, key, meta, "@#{attr} #{name}")
+      )
+      |> Records.add_contains(env, qualified, meta)
 
     {env, acc}
   end
@@ -206,13 +212,15 @@ defmodule Trailblazer.Parse.Elixir do
 
   defp expr({:test, meta, [name | body]}, %{ex_unit: true} = env, acc) when is_binary(name) do
     name = (env.describe ++ [name]) |> Enum.join(" ")
-    qualified = qualify(env.module, name)
-    key = node_key(env, "test", qualified)
+    qualified = Env.qualify(env.module, name)
+    key = Env.node_key(env, "test", qualified)
 
     acc =
       acc
-      |> add_node(node(env, "test", name, qualified, key, meta, "test #{inspect(name)}"))
-      |> add_contains(env, qualified, meta)
+      |> Records.add_node(
+        Records.node(env, "test", name, qualified, key, meta, "test #{inspect(name)}")
+      )
+      |> Records.add_contains(env, qualified, meta)
 
     {env, acc} = walk_all(body, %{env | test: key}, acc)
     {%{env | test: nil}, acc}
@@ -222,14 +230,14 @@ defmodule Trailblazer.Parse.Elixir do
   # `import` also makes its functions callable unqualified; `use` and `require`
   # only make macros available, so they are recorded and not resolved against.
   defp expr({:alias, meta, [target | opts]}, env, acc) do
-    acc = add_refs(acc, env, "aliases", names_of(target, opts, env), meta)
-    {put_aliases(env, names_of(target, opts, env)), acc}
+    acc = Records.add_refs(acc, env, "aliases", Names.names_of(target, opts, env), meta)
+    {Names.put_aliases(env, Names.names_of(target, opts, env)), acc}
   end
 
   defp expr({:import, meta, [target | opts]}, env, acc) do
-    names = names_of(target, [], env)
-    acc = add_refs(acc, env, "imports", names, meta)
-    filter = import_filter(opts)
+    names = Names.names_of(target, [], env)
+    acc = Records.add_refs(acc, env, "imports", names, meta)
+    filter = Names.import_filter(opts)
 
     imports =
       Enum.map(names, fn {_name, full} ->
@@ -240,10 +248,10 @@ defmodule Trailblazer.Parse.Elixir do
   end
 
   defp expr({:use, meta, [target | _opts]}, env, acc) do
-    acc = add_refs(acc, env, "uses", names_of(target, [], env), meta)
+    acc = Records.add_refs(acc, env, "uses", Names.names_of(target, [], env), meta)
 
     env =
-      if "ExUnit.Case" in Enum.map(names_of(target, [], env), &elem(&1, 1)),
+      if "ExUnit.Case" in Enum.map(Names.names_of(target, [], env), &elem(&1, 1)),
         do: %{env | ex_unit: true},
         else: env
 
@@ -251,7 +259,7 @@ defmodule Trailblazer.Parse.Elixir do
   end
 
   defp expr({:require, meta, [target | _opts]}, env, acc) do
-    acc = add_refs(acc, env, "uses", names_of(target, [], env), meta)
+    acc = Records.add_refs(acc, env, "uses", Names.names_of(target, [], env), meta)
     {env, acc}
   end
 
@@ -259,8 +267,8 @@ defmodule Trailblazer.Parse.Elixir do
 
   defp expr({{:., _, [module_ast, function]}, meta, args}, env, acc) when is_atom(function) do
     args = args || []
-    target = "#{resolve_module(module_ast, env)}.#{function}"
-    acc = add_ref(acc, env, "calls", target, length(args), meta)
+    target = "#{Names.resolve_module(module_ast, env)}.#{function}"
+    acc = Records.add_ref(acc, env, "calls", target, length(args), meta)
 
     # the arguments hold calls of their own, written in the caller's scope
     walk_all(args, env, acc)
@@ -329,8 +337,8 @@ defmodule Trailblazer.Parse.Elixir do
     case right do
       {{:., _, [module_ast, function]}, _, args} when is_atom(function) ->
         args = args || []
-        target = "#{resolve_module(module_ast, env)}.#{function}"
-        acc = add_ref(acc, env, "calls", target, length(args) + 1, meta)
+        target = "#{Names.resolve_module(module_ast, env)}.#{function}"
+        acc = Records.add_ref(acc, env, "calls", target, length(args) + 1, meta)
         {_, acc} = walk_all(args, env, acc)
         acc
 
@@ -348,11 +356,11 @@ defmodule Trailblazer.Parse.Elixir do
   defp capture(acc, env, meta, target, arity) do
     case target do
       {{:., _, [module_ast, function]}, _, _args} when is_atom(function) ->
-        add_ref(
+        Records.add_ref(
           acc,
           env,
           "references",
-          "#{resolve_module(module_ast, env)}.#{function}",
+          "#{Names.resolve_module(module_ast, env)}.#{function}",
           arity,
           meta
         )
@@ -373,12 +381,12 @@ defmodule Trailblazer.Parse.Elixir do
   defp pending(acc, env, kind, name, arity, meta) do
     ref = %{
       module: env.module,
-      from_key: from_of(env),
-      kind: kind_in(env, kind),
+      from_key: Records.from_of(env),
+      kind: Records.kind_in(env, kind),
       name: name,
       arity: arity,
       imports: env.imports,
-      line: line_of(meta),
+      line: Env.line_of(meta),
       seq: acc.seq
     }
 
@@ -394,7 +402,7 @@ defmodule Trailblazer.Parse.Elixir do
       targets = List.wrap(target)
 
       Enum.reduce(Enum.reverse(targets), acc, fn candidate, acc ->
-        put_ref(
+        Records.put_ref(
           acc,
           ref.seq,
           ref.from_key,
@@ -411,7 +419,7 @@ defmodule Trailblazer.Parse.Elixir do
   defp local_target(env, name, arity, imports) do
     cond do
       name in @kernel -> "Kernel.#{name}"
-      MapSet.member?(env.defs, {name, arity}) -> qualify(env.module, "#{name}")
+      MapSet.member?(env.defs, {name, arity}) -> Env.qualify(env.module, "#{name}")
       true -> imported_target(imports, env, name, arity)
     end
   end
@@ -421,7 +429,7 @@ defmodule Trailblazer.Parse.Elixir do
   # the one that marks the edges uncertain.
   defp imported_target(imports, env, name, arity) do
     case Enum.filter(imports, &admits?(&1, name, arity)) do
-      [] -> qualify(env.module, "#{name}")
+      [] -> Env.qualify(env.module, "#{name}")
       [only_one] -> "#{only_one.module}.#{name}"
       candidates -> Enum.map(candidates, &"#{&1.module}.#{name}")
     end
@@ -441,316 +449,4 @@ defmodule Trailblazer.Parse.Elixir do
       _other -> false
     end)
   end
-
-  ## Aliases and imports
-
-  # The names a directive binds: `alias Foo.Bar` binds Bar, `alias Foo.Bar,
-  # as: B` binds B, `alias Foo.{A, B}` binds both — and `alias Foo.Bar.{A, B}`
-  # binds both under the whole prefix.
-  defp names_of(target, opts, env) do
-    case target do
-      {{:., _, [{:__aliases__, _, prefix}, :{}]}, _, members} ->
-        full = alias_full(prefix, env)
-
-        Enum.map(members, fn member -> {module_name(member), "#{full}.#{module_name(member)}"} end)
-
-      _other ->
-        full = target_full(target, env)
-        [{as_name(opts) || last_segment(target), full}]
-    end
-  end
-
-  # `alias Foo.Bar` binds Bar, which is how a later `Bar` is read.
-  defp last_segment({:__aliases__, _, parts}), do: parts |> List.last() |> module_name()
-  defp last_segment(target), do: module_name(target)
-
-  defp put_aliases(env, names) do
-    Enum.reduce(names, env, fn {name, full}, env ->
-      %{env | aliases: Map.put(env.aliases, name, full)}
-    end)
-  end
-
-  defp as_name(opts) do
-    case List.flatten(opts) do
-      [{:as, {:__aliases__, _, parts}} | _] -> Enum.map_join(parts, ".", &to_string/1)
-      [{:as, name}] when is_atom(name) -> Atom.to_string(name)
-      _other -> nil
-    end
-  end
-
-  # `import Foo, only: [put: 2]` admits put/2 and nothing else; `except` is the
-  # other way round. Without either, the import admits every name. The options
-  # arrive as the one argument after the module, so they are flattened before
-  # they are read as a keyword list.
-  defp import_filter(opts) do
-    opts = List.flatten(opts)
-
-    %{
-      only:
-        case Keyword.get(opts, :only) do
-          entries when is_list(entries) -> entries
-          _other -> nil
-        end,
-      except: import_entries(Keyword.get(opts, :except))
-    }
-  end
-
-  defp import_entries(entries) when is_list(entries), do: entries
-  defp import_entries(_other), do: []
-
-  defp target_full({:__aliases__, _, parts}, env), do: alias_full(parts, env)
-  defp target_full(target, _env), do: module_name(target)
-
-  defp module_name({:__aliases__, _, parts}), do: Enum.map_join(parts, ".", &module_name/1)
-  defp module_name(name) when is_atom(name), do: Atom.to_string(name)
-  defp module_name(name) when is_binary(name), do: name
-  defp module_name(_other), do: "?"
-
-  # Elixir settles a module name on its first segment: the rest is appended.
-  # `__MODULE__` stands for the module being written in, so a name written
-  # under it is nested in that module.
-  defp alias_full(parts, env) do
-    case parts do
-      [{:__MODULE__, _, nil} | rest] ->
-        case Enum.map_join(rest, ".", &module_name/1) do
-          "" -> env.module
-          nested -> qualify(env.module, nested)
-        end
-
-      [first | rest] ->
-        name = module_name(first)
-        [Map.get(env.aliases, name, name) | Enum.map(rest, &module_name/1)] |> Enum.join(".")
-
-      [] ->
-        nil
-    end
-  end
-
-  defp resolve_module({:__aliases__, _, parts}, env), do: alias_full(parts, env)
-  defp resolve_module({:__MODULE__, _, nil}, env), do: env.module
-  defp resolve_module(name, _env) when is_atom(name), do: Atom.to_string(name)
-  defp resolve_module(_other, _env), do: "?"
-
-  ## Definition heads
-
-  defp def_head_and_body(args) do
-    case args do
-      [{:when, _, [head | rest]} | body] -> {head, body ++ rest}
-      [head | body] -> {head, body}
-      [] -> {nil, []}
-    end
-  end
-
-  defp def_name({name, _meta, _args}) when is_atom(name), do: name
-  defp def_name(_other), do: :undefined
-
-  defp def_args({_name, _meta, args}) when is_list(args), do: args
-  defp def_args(_other), do: []
-
-  # `def g(a, b \\ 1)` is both g/1 and g/2.
-  defp arities(parameters) do
-    defaults = Enum.count(parameters, &match?({:\\, _, [_var, _default]}, &1))
-    declared = length(parameters)
-    smallest = declared - defaults
-
-    if smallest >= declared, do: [declared], else: Enum.to_list(smallest..declared)
-  end
-
-  defp defaults(parameters) do
-    for {:\\, _, [_var, default]} <- parameters, do: default
-  end
-
-  defp type_name([{:"::", _, [head | _]} | _]), do: head_name(head)
-  defp type_name([head | _]), do: head_name(head)
-  defp type_name(_other), do: {"unknown", 0}
-
-  defp head_name({name, _meta, args}) when is_atom(name) do
-    {Atom.to_string(name), if(is_list(args), do: length(args), else: 0)}
-  end
-
-  defp head_name(_other), do: {"unknown", 0}
-
-  ## Accumulating
-
-  defp new_acc, do: %{nodes: [], refs: [], pending: [], seq: 0}
-
-  defp add_node(acc, node), do: %{acc | nodes: [node | acc.nodes]}
-
-  defp add_ref(acc, env, kind, target, arity, meta) do
-    put_ref(acc, acc.seq, from_of(env), kind_in(env, kind), target, arity, line_of(meta))
-  end
-
-  # Every reference carries the number the walk gave it, so that the ones
-  # settled at the end of a module keep their place among the ones settled as
-  # they were read.
-  defp put_ref(acc, seq, from_key, kind, target, arity, line, ambiguous \\ false) do
-    ref = %{
-      from_key: from_key,
-      kind: kind,
-      target: target,
-      arity: arity,
-      line: line,
-      seq: seq,
-      ambiguous: ambiguous
-    }
-
-    %{acc | seq: acc.seq + 1, refs: [ref | acc.refs]}
-  end
-
-  # What a test case exercises is recorded as such, so the resolver and the
-  # questions can read it back.
-  defp from_of(env), do: env.test || env.current || env.module_key
-
-  defp kind_in(%{test: nil}, kind), do: kind
-  defp kind_in(_env, "calls"), do: "tests"
-  defp kind_in(_env, kind), do: kind
-
-  defp add_refs(acc, env, kind, names, meta) do
-    Enum.reduce(names, acc, fn {_name, full}, acc ->
-      add_ref(acc, env, kind, full, nil, meta)
-    end)
-  end
-
-  # A module holds what it declares.
-  defp add_contains(acc, %{module_key: nil}, _qualified, _meta), do: acc
-
-  defp add_contains(acc, env, qualified, meta) do
-    add_ref(acc, %{env | test: nil, current: nil}, "contains", qualified, nil, meta)
-  end
-
-  # The clauses of one function are one definition: its range spans them all.
-  defp span(clause, %{first: first, last: last, at: at}) do
-    %{
-      clause
-      | first: min(clause.first, first),
-        last: max(clause.last, last),
-        at: min(clause.at, at)
-    }
-  end
-
-  # Definitions come out in source order: by where they start, line and column,
-  # and the heads that default arguments add before the head the source spells
-  # out. The last definition listed at a place is the one its body belongs to.
-  defp add_clauses(env, acc) do
-    env.clauses
-    |> Enum.sort_by(fn {_key, clause} -> {clause.at, clause.arity} end)
-    |> Enum.reduce(acc, fn {_key, clause}, acc ->
-      add_contains(
-        add_node(acc, node_at(env, clause, clause.first, clause.last, clause.signature)),
-        env,
-        clause.qualified,
-        line: clause.first
-      )
-    end)
-  end
-
-  defp node_at(env, clause, first, last, signature) do
-    %{clause | key: clause.key}
-    |> Map.take([:kind, :name, :qualified, :key, :at])
-    |> Map.merge(%{
-      lang: "elixir",
-      path: env.path,
-      start_line: first,
-      end_line: last,
-      signature: String.slice(signature, 0, 200),
-      # one hash per line range: two clauses of one function share it
-      text_hash: text_hash(env, first, last)
-    })
-  end
-
-  defp node(env, kind, name, qualified, key, meta, signature) do
-    first = line_of(meta)
-    last = end_line_of(meta)
-
-    %{
-      key: key,
-      at: {first, column_of(meta)},
-      lang: "elixir",
-      kind: kind,
-      name: name,
-      qualified: qualified,
-      path: env.path,
-      start_line: first,
-      end_line: last,
-      signature: String.slice(signature, 0, 200),
-      # one hash per line range: two clauses of one function share it
-      text_hash: text_hash(env, first, last)
-    }
-  end
-
-  defp numbered(source) do
-    source
-    |> String.split("\n")
-    |> Enum.with_index(1)
-    |> Enum.map(fn {line, number} -> {number, line} end)
-    |> Map.new()
-  end
-
-  defp text_hash(env, first, last) do
-    lines = for number <- first..max(last, first), do: Map.get(env.lines, number, "")
-
-    lines
-    |> Enum.map_join("\n", & &1)
-    |> then(&:crypto.hash(:sha256, &1))
-    |> Base.encode16(case: :lower)
-  end
-
-  # A signature is one line: the head as the source writes it, with every run
-  # of whitespace collapsed, so it can head a line of its own.
-  defp signature(head) when is_tuple(head) do
-    head
-    |> Macro.to_string()
-    |> String.replace(~r/\s+/, " ")
-    |> String.trim()
-  end
-
-  defp signature(_other), do: ""
-
-  ## Environment
-
-  defp env(path, source) do
-    %{
-      path: path,
-      # numbered, so that reading a definition's own lines is a step and not a
-      # walk of the whole file
-      lines: numbered(source),
-      module: nil,
-      module_key: nil,
-      aliases: %{},
-      imports: [],
-      defs: MapSet.new(),
-      clauses: %{},
-      current: nil,
-      test: nil,
-      describe: [],
-      ex_unit: false
-    }
-  end
-
-  defp line_of(meta) when is_list(meta), do: Keyword.get(meta, :line, 1)
-  defp line_of(_other), do: 1
-
-  defp column_of(meta) when is_list(meta), do: Keyword.get(meta, :column, 0)
-  defp column_of(_other), do: 0
-
-  # Elixir's metadata gives the line an expression ends on only when it ends a
-  # block; a one-line expression is ended by the end of its own line.
-  defp end_line_of(meta) when is_list(meta) do
-    meta
-    |> Keyword.get_lazy(:end, fn ->
-      meta |> Keyword.get(:end_of_expression, []) |> Keyword.get(:line)
-    end)
-    |> case do
-      end_meta when is_list(end_meta) -> Keyword.get(end_meta, :line, Keyword.get(meta, :line, 1))
-      line when is_integer(line) -> line
-      _other -> Keyword.get(meta, :line, 1)
-    end
-  end
-
-  defp end_line_of(_other), do: 1
-
-  defp qualify(nil, name), do: name
-  defp qualify(module, name), do: "#{module}.#{name}"
-
-  defp node_key(env, kind, qualified), do: "elixir:#{kind}:#{env.path}##{qualified}"
 end
