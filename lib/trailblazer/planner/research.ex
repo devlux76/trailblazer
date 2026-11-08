@@ -271,13 +271,10 @@ defmodule Trailblazer.Planner.Research do
   # route's ops; nothing here needs a peer credential. With no vortex at all
   # the announce holds on :no_transport instead of crashing.
   defp endpoint_transport do
-    case Trailblazer.Config.get(:vortex) do
-      %{endpoint: endpoint} when is_binary(endpoint) ->
-        &Trailblazer.Vortex.Transport.call(endpoint, &1, &2)
-
-      _ ->
-        nil
-    end
+    # Settings.load/1 yields a keyword list (tests may inject a map).
+    vortex = Trailblazer.Config.get(:vortex)
+    endpoint = if is_list(vortex) or is_map(vortex), do: vortex[:endpoint]
+    if is_binary(endpoint), do: &Trailblazer.Vortex.Transport.call(endpoint, &1, &2)
   end
 
   ## Reply intake: exactly one waiting row owns a conference, and only the
@@ -607,7 +604,9 @@ defmodule Trailblazer.Planner.Research do
       row.ref,
       row.state,
       "children completed " <> Integer.to_string(done) <> "/" <> Integer.to_string(total),
-      row.conference, children_done: done)
+      row.conference,
+      children_done: done
+    )
 
     if done >= total,
       do:

@@ -60,6 +60,7 @@ defmodule Trailblazer.Planner.SupervisorTest do
 
   test "the research server joins the planner group when the planner is configured", ctx do
     Application.put_env(:trailblazer, :planner, ctx.config)
+
     sup =
       start_supervised!(
         {Supervisor,
@@ -188,5 +189,31 @@ defmodule Trailblazer.Planner.SupervisorTest do
 
     assert %{state: "held", reason: reason} = Research.row("probe:aaaa11")
     assert reason =~ "create failed"
+  end
+
+  test "the endpoint comes from the real Settings.load!/1 keyword-list shape", ctx do
+    path = Path.join(System.tmp_dir!(), "tb-vortex-#{System.unique_integer([:positive])}.json")
+
+    File.write!(
+      path,
+      Jason.encode!(%{
+        "endpoint" => "/tmp/opencode/missing-endpoint-file",
+        "owner_peer" => "owner",
+        "peers" => []
+      })
+    )
+
+    on_exit(fn -> File.rm(path) end)
+    settings = Trailblazer.Vortex.Settings.load!(path)
+    assert is_list(settings)
+    Application.put_env(:trailblazer, :vortex, settings)
+
+    start_supervised!(
+      {Research, config: ctx.config, run: run_fun(ctx.log), peer_busy: fn _ -> :idle end}
+    )
+
+    # A transport was resolved (it fails on the missing endpoint), not :no_transport.
+    assert {:error, {:create, :transport_unavailable}} =
+             Research.dispatch(ctx.config, research_card())
   end
 end
