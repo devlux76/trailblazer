@@ -203,3 +203,20 @@ a cost that follows the size of the change, not of the repository:
    search answers from the vectors present, saying how many are pending.
    The crawl that embeds every project by recency is a work queue; a
    repository nobody asks about costs one watch and nothing else.
+
+## 7.5 (addendum) Verifying a returned fix
+
+When a frontier returns a fix (`{base, case, commit}`), the return is held in
+`waiting_verification` until `Vortex.ReturnVerifier` gives a verdict. Three
+gates run first, in order, and a rejected return never runs the check: the
+return's base equals the base the case was opened on; the commit is not that
+base and descends from it; every path the commit changes (deletions and both
+sides of a rename included) is one of the case's files, when the case names
+files. A return that passes runs the admitted check and artifact policy in a
+detached worktree of the exact commit (`Trailblazer.Verification`). The verdict
+moves the return from `waiting_verification` to `return_verified`,
+`return_rejected` or `return_failed` (only from that state, so it never
+changes), and a `report` naming the verdict, commit and summary goes to the
+primary. A failed fix is reported, not retried, and a second return for the
+case is refused. The bridge starts the verifier for each waiting return during
+reconcile, so a return still waiting after a restart is verified again.

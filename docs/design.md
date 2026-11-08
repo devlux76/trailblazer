@@ -13,9 +13,9 @@ the following gaps must not be read as completed features:
 
 | Requirement | Current implementation and remaining work |
 |---|---|
-| Verify a frontier's returned fix (§7.5) | VORTEX stores the return as `waiting_verification`; ancestry, scope, trusted checks and fresh review are not wired. See bug:a3339f5. |
+| Verify a frontier's returned fix (§7.5) | Wired: base, ancestry and scope gates, then the admitted check in a fresh worktree (`Vortex.ReturnVerifier`); the verdict is recorded and reported to the primary. The fresh review and real-incident end-to-end acceptance are not demonstrated. See bug:a3339f5 and design-3.md §7.5. |
 | Integrate and clean a resource-gated task (§7.7) | `Loop.Coordinator` implements integration/archive/cleanup and the HTTP API accepts an explicit `primary`. The current Planner/VORTEX task protocol does not admit `primary`, so those cases stop at a candidate; live gated acceptance remains open in bug:1beebca. There is no age-based prune. |
-| Repair a real harness incident (§11) | The incident-emitter and returned-fix end-to-end acceptance remain required, not demonstrated by local coding trials (bug:a3339f5). |
+| Repair a real harness incident (§11) | The incident-emitter remains required. Returned-fix verification is wired and tested locally, but its acceptance through a real emitted incident, durable admission and restart is not demonstrated (bug:a3339f5). |
 | Event-only observation (§13) | The local bounded-launch cleanup observer currently reads case status every five seconds. It makes no model calls or retries; this is a known exception to reconcile, not an event-driven implementation. |
 | Operate running services (§12) | Still deferred; the coding worker has no general restart/deployment authority. |
 
