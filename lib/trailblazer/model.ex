@@ -192,6 +192,7 @@ defmodule Trailblazer.Model do
       reasoning: "",
       calls: %{},
       usage: %{prompt_tokens: 0, completion_tokens: 0},
+      timings: nil,
       choice: false,
       finish: false,
       finish_reason: nil,
@@ -318,6 +319,7 @@ defmodule Trailblazer.Model do
       {:ok, %{"choices" => choices} = data} when is_list(choices) ->
         progress(s, data["prompt_progress"])
         s = usage(s, data["usage"])
+        s = timings(s, data["timings"])
         Enum.reduce(choices, s, &choice/2)
 
       {:ok, %{"prompt_progress" => progress}} ->
@@ -335,6 +337,22 @@ defmodule Trailblazer.Model do
   end
 
   defp progress(_, _), do: :ok
+
+  # llama-server's per-request timings (cache_n = prompt tokens reused from the
+  # KV cache). Diagnostic only: anything malformed is ignored, never an error.
+  defp timings(s, %{} = m),
+    do: %{
+      s
+      | timings: %{
+          prompt_n: m["prompt_n"],
+          cache_n: m["cache_n"],
+          prompt_ms: m["prompt_ms"],
+          predicted_n: m["predicted_n"],
+          predicted_ms: m["predicted_ms"]
+        }
+    }
+
+  defp timings(s, _), do: s
 
   defp usage(s, nil), do: s
 
@@ -426,6 +444,7 @@ defmodule Trailblazer.Model do
       reasoning: s.reasoning,
       tool_calls: s.calls |> Enum.sort() |> Enum.map(&elem(&1, 1)),
       usage: s.usage,
+      timings: s.timings,
       ms: ms,
       first_token_ms: s.first_token_ms,
       finish_reason: s.finish_reason

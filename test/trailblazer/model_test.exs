@@ -425,6 +425,43 @@ defmodule Trailblazer.ModelTest do
              )
   end
 
+  test "llama-server timings in the final chunk reach the reply" do
+    timings = %{
+      "prompt_n" => 14,
+      "cache_n" => 2834,
+      "prompt_ms" => 841.2,
+      "predicted_n" => 1,
+      "predicted_ms" => 3.1,
+      "draft_n" => 9
+    }
+
+    Req.Test.stub(:model_timings, fn conn ->
+      stream(conn, [
+        event(%{content: "ok"}, "stop"),
+        %{choices: [], timings: timings}
+      ])
+    end)
+
+    assert {:ok, reply} = Model.chat([%{role: "user", content: "hi"}], options(:model_timings))
+
+    assert reply.timings == %{
+             prompt_n: 14,
+             cache_n: 2834,
+             prompt_ms: 841.2,
+             predicted_n: 1,
+             predicted_ms: 3.1
+           }
+  end
+
+  test "a stream without timings replies with timings nil" do
+    Req.Test.stub(:model_no_timings, fn conn ->
+      stream(conn, [event(%{content: "ok"}, "stop")])
+    end)
+
+    assert {:ok, %{timings: nil}} =
+             Model.chat([%{role: "user", content: "hi"}], options(:model_no_timings))
+  end
+
   @tag :live
   test "one router call" do
     assert {:ok, reply} = Model.chat([%{role: "user", content: "Reply with OK."}], [])
