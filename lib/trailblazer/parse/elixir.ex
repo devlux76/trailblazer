@@ -21,7 +21,7 @@ defmodule Trailblazer.Parse.Elixir do
   what a test case exercises.
   """
 
-  alias Trailblazer.Parse.Elixir.{Env, Heads, Names, Records}
+  alias Trailblazer.Parse.Elixir.{Defaults, Env, Heads, Names, Records}
 
   @kinds %{
     def: "function",
@@ -130,7 +130,8 @@ defmodule Trailblazer.Parse.Elixir do
         ex_unit: false,
         current: nil,
         test: nil,
-        describe: []
+        describe: [],
+        defaults: %{}
     }
 
     {inner, acc} = walk_all(body, inner, acc)
@@ -180,7 +181,12 @@ defmodule Trailblazer.Parse.Elixir do
 
     # A directive written inside a function is that function's: the sibling
     # defined after it reads the module's table, not this one's.
-    inside = %{env | current: key, aliases: Map.new(env.aliases)}
+    inside = %{
+      env
+      | current: key,
+        aliases: Map.new(env.aliases),
+        defaults: Defaults.bindings(body, env, parameters)
+    }
 
     {_inside, acc} = walk_all(body ++ Heads.defaults(parameters), inside, acc)
     {%{env | current: nil}, acc}
@@ -267,8 +273,7 @@ defmodule Trailblazer.Parse.Elixir do
 
   defp expr({{:., _, [module_ast, function]}, meta, args}, env, acc) when is_atom(function) do
     args = args || []
-    target = "#{Names.resolve_module(module_ast, env)}.#{function}"
-    acc = Records.add_ref(acc, env, "calls", target, length(args), meta)
+    acc = remote_call(acc, env, module_ast, function, args, meta)
 
     # the arguments hold calls of their own, written in the caller's scope
     walk_all(args, env, acc)
@@ -332,6 +337,33 @@ defmodule Trailblazer.Parse.Elixir do
   end
 
   ## Calls
+
+  # A call through a variable the function bound to a default module is a call to
+  # that module, guessed at and marked so: `workspace.close(x)` after
+  # `workspace = mod(st, :workspace, Workspace)` reads as Workspace.close.
+  defp remote_call(acc, env, module_ast, function, args, meta) do
+    case default_module(module_ast, env) do
+      {:ok, module} ->
+        Records.add_guessed_ref(
+          acc,
+          env,
+          "calls",
+          "#{module}.#{function}",
+          length(args),
+          meta,
+          "default_module"
+        )
+
+      :error ->
+        target = "#{Names.resolve_module(module_ast, env)}.#{function}"
+        Records.add_ref(acc, env, "calls", target, length(args), meta)
+    end
+  end
+
+  defp default_module({var, _meta, ctx}, env) when is_atom(var) and is_atom(ctx),
+    do: Map.fetch(env.defaults, var)
+
+  defp default_module(_module_ast, _env), do: :error
 
   defp piped(acc, env, meta, right) do
     case right do

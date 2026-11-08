@@ -130,11 +130,17 @@ defmodule Trailblazer.Graph.Resolve do
               line: ref.line,
               uncertain: uncertain
             }
+            |> with_provenance(ref[:provenance])
           end)
       end
     end)
     |> Enum.uniq()
   end
+
+  # An edge says how it was guessed only when the reference does; a settled edge
+  # carries no provenance key at all.
+  defp with_provenance(edge, nil), do: edge
+  defp with_provenance(edge, provenance), do: Map.put(edge, :provenance, provenance)
 
   def stale_citations(repo_id) do
     graph = index(Store.graph_snapshot(repo_id))

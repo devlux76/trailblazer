@@ -94,8 +94,8 @@ defmodule Trailblazer.Store.Resolution.Publish do
 
     by_owner =
       batch.edges
-      |> Enum.map(&{&1.from_id, &1.to_id, &1.kind, &1.uncertain, &1[:line]})
-      |> Enum.group_by(fn {from, _, _, _, _} -> Map.fetch!(keys, from) end)
+      |> Enum.map(&{&1.from_id, &1.to_id, &1.kind, &1.uncertain, &1[:line], &1[:provenance]})
+      |> Enum.group_by(fn {from, _, _, _, _, _} -> Map.fetch!(keys, from) end)
       |> Map.new(fn {key, edges} -> {key, edges |> Enum.uniq() |> Enum.sort()} end)
 
     old =
@@ -137,14 +137,14 @@ defmodule Trailblazer.Store.Resolution.Publish do
       |> Enum.flat_map(fn chunk ->
         query(
           conn,
-          "SELECT from_id,to_id,kind,uncertain,line FROM edge WHERE from_id IN (#{marks(chunk)})",
+          "SELECT from_id,to_id,kind,uncertain,line,provenance FROM edge WHERE from_id IN (#{marks(chunk)})",
           chunk
         ).rows
       end)
-      |> Enum.map(fn [from, to, kind, uncertain, line] ->
-        {from, to, kind, uncertain == 1, line}
+      |> Enum.map(fn [from, to, kind, uncertain, line, provenance] ->
+        {from, to, kind, uncertain == 1, line, provenance}
       end)
-      |> Enum.group_by(fn {from, _, _, _, _} -> Map.fetch!(keys, from) end)
+      |> Enum.group_by(fn {from, _, _, _, _, _} -> Map.fetch!(keys, from) end)
       |> Map.new(fn {key, edges} -> {key, Enum.sort(edges)} end)
 
     edge_changed = Enum.filter(changed, &(Map.get(existing, &1, []) != Map.get(by_owner, &1, [])))
@@ -158,11 +158,11 @@ defmodule Trailblazer.Store.Resolution.Publish do
     insert(
       conn,
       "edge",
-      ~w(repo_id from_id to_id kind uncertain line),
+      ~w(repo_id from_id to_id kind uncertain line provenance),
       for(
         owner <- edge_changed,
-        {from, to, kind, uncertain, line} <- Map.get(by_owner, owner, []),
-        do: [repo, from, to, kind, if(uncertain, do: 1, else: 0), line]
+        {from, to, kind, uncertain, line, provenance} <- Map.get(by_owner, owner, []),
+        do: [repo, from, to, kind, if(uncertain, do: 1, else: 0), line, provenance]
       )
     )
 

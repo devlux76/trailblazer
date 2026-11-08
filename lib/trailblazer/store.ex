@@ -107,6 +107,8 @@ defmodule Trailblazer.Store do
   # to date (E8 in the register).
   @added_columns [
     {"ref", "ambiguous", "INTEGER NOT NULL DEFAULT 0"},
+    {"ref", "provenance", "TEXT"},
+    {"edge", "provenance", "TEXT"},
     {"node", "ord", "INTEGER NOT NULL DEFAULT 0"},
     {"repo", "watched", "INTEGER NOT NULL DEFAULT 0"},
     {"repo", "indexed_head", "TEXT"},
