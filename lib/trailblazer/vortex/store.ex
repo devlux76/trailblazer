@@ -357,6 +357,8 @@ defmodule Trailblazer.Vortex.Store do
     end)
   end
 
+  defdelegate return_outcome(id, outcome, summary), to: Trailblazer.Vortex.Store.Returns
+
   def acknowledgment(id, peer, room, request_id, message_id) do
     CaseStore.transaction(fn conn ->
       put(
@@ -410,7 +412,8 @@ defmodule Trailblazer.Vortex.Store do
     }
   end
 
-  defp put(conn, case_id, peer, room, type, request_id, payload, receipt \\ true, suffix \\ "") do
+  @doc false
+  def put(conn, case_id, peer, room, type, request_id, payload, receipt \\ true, suffix \\ "") do
     id =
       type <> ":" <> Base.encode16(:crypto.hash(:sha256, case_id <> peer <> suffix), case: :lower)
 

@@ -303,7 +303,15 @@ defmodule Trailblazer.Vortex.BridgeReleaseTest do
 
     :ok = Bridge.pump(recovered)
     assert Enum.find(Bridge.status(recovered).requests, &(&1.case_id == id)).returned_fix == fix
-    assert Store.get(id).state == "waiting_verification"
+    assert Store.get(id).returned_fix == fix
+    # This case has no lifecycle record, so the recovered bridge's verifier rejects the return.
+    Enum.reduce_while(1..100, nil, fn _, _ ->
+      if Store.get(id).state == "return_rejected",
+        do: {:halt, :ok},
+        else: {:cont, Process.sleep(50)}
+    end)
+
+    assert Store.get(id).state == "return_rejected"
     assert length(Enum.filter(Store.outbox(), &(&1.type == "receipt"))) <= 1
   end
 

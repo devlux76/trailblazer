@@ -10,7 +10,7 @@ defmodule Trailblazer.Vortex.Bridge do
 
   alias Trailblazer.Events
   alias Trailblazer.Loop.{Runner, CaseRecord}
-  alias Trailblazer.Vortex.{Protocol, Store, Transport}
+  alias Trailblazer.Vortex.{Protocol, ReturnVerifier, Store, Transport}
   alias Trailblazer.Vortex.Bridge.{Inbound, Outbox, Resources}
 
   alias Trailblazer.Backstop
@@ -361,6 +361,21 @@ defmodule Trailblazer.Vortex.Bridge do
     end
   end
 
+  # A returned fix's verdict. The verifier runs as a bridge job, so a return
+  # still being checked when the bridge dies is verified again on restart.
+  defp completed({:return_verify, id}, result, state) do
+    {outcome, summary} =
+      case result do
+        {:verified, text} -> {"verified", text}
+        {:rejected, text} -> {"rejected", text}
+        {:failed, text} -> {"failed", text}
+        other -> {"failed", "return verification did not finish: #{inspect(other)}"}
+      end
+
+    Store.return_outcome(id, outcome, summary)
+    Outbox.flush(state)
+  end
+
   defp completed({:send, peer, attempted}, result, state) do
     # A job started before the hot load that added `transmitted` returns a list.
     {receipted, sent} =
@@ -397,6 +412,8 @@ defmodule Trailblazer.Vortex.Bridge do
       Store.finish(id, frontier(state, request))
     end
 
+    state = start_return_verifications(state)
+
     if state.active == nil and not state.resource_busy do
       case Enum.find(Store.holds(), fn [id, _] ->
              CaseRecord.get(id, inline: false).status != "open"
@@ -406,6 +423,20 @@ defmodule Trailblazer.Vortex.Bridge do
       end
     else
       state
+    end
+  end
+
+  # Every return waiting for its verdict gets one verifier job; a job already
+  # running for it is left alone. A verdict is written only from
+  # waiting_verification, so a second run can never change it.
+  defp start_return_verifications(state) do
+    running = for {_, %{kind: {:return_verify, id}}} <- state.jobs, into: MapSet.new(), do: id
+
+    for id <- Store.ids(),
+        %{state: "waiting_verification"} <- [Store.get(id)],
+        not MapSet.member?(running, id),
+        reduce: state do
+      state -> job(state, {:return_verify, id}, fn -> ReturnVerifier.verify(id) end)
     end
   end
 
