@@ -37,7 +37,12 @@ fn main() {
     // before its dependencies' archives, and the tree-sitter archives are the
     // ones that need libirc, so it has to come after them, at the end.
     match archive {
-        Some(archive) => println!("cargo:rustc-link-arg={}", archive.display()),
+        // The archive's path names the oneAPI version `latest` resolved to; when an
+        // upgrade moves `latest`, the old path disappears and this reruns.
+        Some(archive) => {
+            println!("cargo:rerun-if-changed={}", archive.display());
+            println!("cargo:rustc-link-arg={}", archive.display())
+        }
         None => println!("cargo:warning=CC is Intel's ({}) but libirc.a was not found next to it", compiler_name()),
     }
 }
