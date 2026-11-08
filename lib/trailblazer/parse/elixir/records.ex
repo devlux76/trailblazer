@@ -18,11 +18,38 @@ defmodule Trailblazer.Parse.Elixir.Records do
     put_ref(acc, acc.seq, from_of(env), kind_in(env, kind), target, arity, Env.line_of(meta))
   end
 
+  # A call the walk can only guess at: its target is uncertain, and the provenance
+  # says how the guess was made (see Trailblazer.Parse.Elixir.Defaults).
+  @doc false
+  def add_guessed_ref(acc, env, kind, target, arity, meta, provenance) do
+    put_ref(
+      acc,
+      acc.seq,
+      from_of(env),
+      kind_in(env, kind),
+      target,
+      arity,
+      Env.line_of(meta),
+      true,
+      provenance
+    )
+  end
+
   # Every reference carries the number the walk gave it, so that the ones
   # settled at the end of a module keep their place among the ones settled as
   # they were read.
   @doc false
-  def put_ref(acc, seq, from_key, kind, target, arity, line, ambiguous \\ false) do
+  def put_ref(
+        acc,
+        seq,
+        from_key,
+        kind,
+        target,
+        arity,
+        line,
+        ambiguous \\ false,
+        provenance \\ nil
+      ) do
     ref = %{
       from_key: from_key,
       kind: kind,
@@ -30,7 +57,8 @@ defmodule Trailblazer.Parse.Elixir.Records do
       arity: arity,
       line: line,
       seq: seq,
-      ambiguous: ambiguous
+      ambiguous: ambiguous,
+      provenance: provenance
     }
 
     %{acc | seq: acc.seq + 1, refs: [ref | acc.refs]}

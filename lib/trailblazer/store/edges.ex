@@ -6,7 +6,7 @@ defmodule Trailblazer.Store.Edges do
   import Trailblazer.Store.Sql
   import Trailblazer.Store.Writes, only: [batch_digest: 1, same_batch?: 5, remember_batch: 5]
 
-  @edge_columns "id, repo_id, from_id, to_id, kind, uncertain, line"
+  @edge_columns "id, repo_id, from_id, to_id, kind, uncertain, line, provenance"
   @edge_select "SELECT #{@edge_columns} FROM edge"
 
   @edge_batch 500
@@ -67,10 +67,18 @@ defmodule Trailblazer.Store.Edges do
         write(
           conn,
           :"edge_insert_#{length(batch)}",
-          "INSERT INTO edge (repo_id, from_id, to_id, kind, uncertain, line) VALUES " <>
-            Enum.map_join(batch, ", ", fn _ -> "(?, ?, ?, ?, ?, ?)" end),
+          "INSERT INTO edge (repo_id, from_id, to_id, kind, uncertain, line, provenance) VALUES " <>
+            Enum.map_join(batch, ", ", fn _ -> "(?, ?, ?, ?, ?, ?, ?)" end),
           Enum.flat_map(batch, fn edge ->
-            [repo_id, edge.from_id, edge.to_id, edge.kind, sql_bool(edge.uncertain), edge[:line]]
+            [
+              repo_id,
+              edge.from_id,
+              edge.to_id,
+              edge.kind,
+              sql_bool(edge.uncertain),
+              edge[:line],
+              edge[:provenance]
+            ]
           end)
         )
       end

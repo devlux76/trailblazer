@@ -7,7 +7,7 @@ defmodule Trailblazer.Store.Sql do
   @node_select "SELECT #{@node_columns} FROM node"
 
   @ref_select """
-  SELECT r.id, r.repo_id, r.path, r.from_key, n.id AS from_id, r.kind, r.target, r.arity, r.line, r.ambiguous
+  SELECT r.id, r.repo_id, r.path, r.from_key, n.id AS from_id, r.kind, r.target, r.arity, r.line, r.ambiguous, r.provenance
   FROM ref r
   LEFT JOIN node n ON n.repo_id = r.repo_id AND n.key = r.from_key
   """

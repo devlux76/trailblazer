@@ -118,7 +118,7 @@ defmodule Trailblazer.Store.Resolution do
           refs =
             scoped(
               conn,
-              "SELECT from_key,path,kind,target,arity,line,ambiguous FROM ref",
+              "SELECT from_key,path,kind,target,arity,line,ambiguous,provenance FROM ref",
               repo,
               "from_key",
               sources

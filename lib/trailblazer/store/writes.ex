@@ -239,7 +239,7 @@ defmodule Trailblazer.Store.Writes do
       write(
         conn,
         :ref_insert,
-        "INSERT INTO ref (repo_id, path, from_key, kind, target, arity, line, ambiguous) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO ref (repo_id, path, from_key, kind, target, arity, line, ambiguous, provenance) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         [
           repo_id,
           path,
@@ -248,7 +248,8 @@ defmodule Trailblazer.Store.Writes do
           ref.target,
           ref[:arity],
           ref[:line],
-          if(ref[:ambiguous], do: 1, else: 0)
+          if(ref[:ambiguous], do: 1, else: 0),
+          ref[:provenance]
         ]
       )
     end

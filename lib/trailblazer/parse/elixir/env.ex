@@ -39,7 +39,9 @@ defmodule Trailblazer.Parse.Elixir.Env do
       current: nil,
       test: nil,
       describe: [],
-      ex_unit: false
+      ex_unit: false,
+      # the variables of the function being read that name a default module
+      defaults: %{}
     }
   end
 

@@ -73,6 +73,7 @@ defmodule Trailblazer.Query do
               line: edge.line,
               uncertain: edge.uncertain
             }
+            |> with_provenance(edge[:provenance])
           ]
         else
           _other -> []
@@ -111,12 +112,14 @@ defmodule Trailblazer.Query do
           if MapSet.member?(seen, edge.from_id), do: nil, else: own_node(repo_id, edge.from_id)
 
         if node do
-          item = %{
-            node: summary(node),
-            distance: distance,
-            via: edge.kind,
-            uncertain: edge.uncertain
-          }
+          item =
+            %{
+              node: summary(node),
+              distance: distance,
+              via: edge.kind,
+              uncertain: edge.uncertain
+            }
+            |> with_provenance(edge[:provenance])
 
           {[node.id | next], MapSet.put(seen, node.id), [item | found]}
         else
@@ -330,4 +333,9 @@ defmodule Trailblazer.Query do
   end
 
   defp summary(node), do: Map.take(node, @summary)
+
+  # A guessed edge says how it was guessed (e.g. "default_module"); a settled one
+  # has no provenance and the JSON leaves the key out.
+  defp with_provenance(item, nil), do: item
+  defp with_provenance(item, provenance), do: Map.put(item, :provenance, provenance)
 end
