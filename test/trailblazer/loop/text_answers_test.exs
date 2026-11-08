@@ -164,4 +164,24 @@ defmodule Trailblazer.Loop.TextAnswersTest do
     diff = "--- a/lib/c.ts\n+++ b/lib/c.ts\n@@\n+x\n--- a/gone.ts\n+++ b/gone.ts\n"
     assert TextAnswers.changed_files(dir, diff) == [{"lib/c.ts", "x\n"}]
   end
+
+  test "one unlabelled fence is the one named file that does not exist yet", %{dir: dir} do
+    write(dir, "lib/rules.ts", "export const A = 1;\n")
+    current = TextAnswers.current_files(dir, ["tests/rules.test.ts", "lib/rules.ts"])
+    # live sojourney:a6929b3: the whole new test file, fenced, no path line
+    reply =
+      "Here is the file:\n```typescript\nimport { A } from \"../lib/rules\";\ntest(\"a\", () => {});\n```\n"
+
+    assert {:ok, [block]} = TextAnswers.answer_blocks(reply, current)
+    assert block.path == "tests/rules.test.ts"
+    File.mkdir_p!(Path.join(dir, "tests"))
+    assert {:ok, _} = Edits.apply(dir, [block])
+    assert read(dir, "tests/rules.test.ts") =~ "import { A } from"
+
+    # two files missing, or two fences: not certain, so nothing
+    two_missing = TextAnswers.current_files(dir, ["tests/a.test.ts", "tests/b.test.ts"])
+    assert TextAnswers.answer_blocks(reply, two_missing) == :none
+    two_fences = reply <> "```ts\nx\n```\n"
+    assert TextAnswers.answer_blocks(two_fences, current) == :none
+  end
 end

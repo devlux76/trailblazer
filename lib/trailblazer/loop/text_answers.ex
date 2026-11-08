@@ -143,6 +143,9 @@ defmodule Trailblazer.Loop.TextAnswers do
     end
   end
 
+  @edit_span ~r/^[ \t]*<edit\b.*?^[ \t]*<\/edit>[ \t]*$/ms
+  @fence_span ~r/(?:^|\n)(`{3,})[^\n`]*\n.*?\n\1[ \t]*(?=\n|\z)/s
+
   @doc """
   Whole-file answers: each file as its path on a line (or in the fence's
   info string) followed by one fenced block holding the complete new file.
@@ -154,13 +157,25 @@ defmodule Trailblazer.Loop.TextAnswers do
   """
   def whole_file_blocks(text, current) when is_binary(text) and is_map(current) do
     case native_writes(text, current) do
-      [] -> fenced_files(text, current)
+      [] -> with(:none <- fenced_files(text, current), do: unlabelled_new_file(text, current))
       files -> to_blocks(files, current)
     end
   end
 
-  @edit_span ~r/^[ \t]*<edit\b.*?^[ \t]*<\/edit>[ \t]*$/ms
-  @fence_span ~r/(?:^|\n)(`{3,})[^\n`]*\n.*?\n\1[ \t]*(?=\n|\z)/s
+  # One fenced block with no path line, when exactly one named file does not
+  # exist yet, can only be that file (live, sojourney:a6929b3 2026-11-07: lucet
+  # wrote tests/fireRules.test.ts whole, unlabelled, twice). Anything less
+  # certain stays :none.
+  defp unlabelled_new_file(text, current) do
+    with [path] <- for({path, nil} <- current, do: path),
+         [[{start, _len} | _]] <- Regex.scan(@fence_span, text, return: :index) do
+      before = binary_part(text, 0, start)
+      rest = binary_part(text, start, byte_size(text) - start)
+      fenced_files(before <> "\n" <> path <> "\n" <> String.trim_leading(rest, "\n"), current)
+    else
+      _ -> :none
+    end
+  end
 
   @doc """
   A whole-file-mode reply: files written whole (`whole_file_blocks/2`) plus
