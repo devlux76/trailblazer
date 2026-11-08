@@ -166,6 +166,12 @@ It performs no coding inference and makes only one recovery attempt; failed
 review keeps the artifact for inspection instead of regenerating or resetting.
 Unambiguous Markdown verdict headings use the existing exact PASS/FAIL rules.
 
+A complete native `submit_edits` reply from a case that failed at artifact
+preparation can also be replayed under the same gates: one tool call, strict
+schema, no truncation, recorded blocks equal to the call's blocks, and no check
+or review after the edit. It makes no coder call and no retry; preparation,
+check, review and Companion run fresh.
+
 An explicit assignment can set `planner assign ... --read-rounds N` (0 through
 6, default 6). The validated task field survives admission and persisted case
 recovery. Zero advertises only `submit_edits` from the first coder call;
